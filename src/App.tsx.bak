@@ -1,5 +1,5 @@
 // src/App.tsx
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Activity,
   Play,
@@ -27,21 +27,33 @@ import {
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
-import { getFirestore, doc, setDoc, onSnapshot, type Firestore } from 'firebase/firestore';
+import {
+  getAuth,
+  signInAnonymously,
+  onAuthStateChanged,
+  signOut,
+  type Auth,
+} from 'firebase/auth';
+import {
+  getFirestore,
+  doc,
+  setDoc,
+  onSnapshot,
+  type Firestore,
+} from 'firebase/firestore';
 
 import { DECISION_TREE } from './data/decisionTree';
 import type { PainLogEntry, UserData } from './state/types';
 
 // --- Firebase Configuration ---
 const firebaseConfig = {
-  apiKey: 'AIzaSyBlNWkezjbXlOZ7SQCuN9FWO0ScV4zuTc8',
-  authDomain: 'neuroactive.firebaseapp.com',
-  projectId: 'neuroactive',
-  storageBucket: 'neuroactive.firebasestorage.app',
-  messagingSenderId: '1010503840940',
-  appId: '1:1010503840940:web:90874fb37a70c9c7115b09',
-  measurementId: 'G-4X86RF0RQT',
+  apiKey: "AIzaSyBlNWkezjbXlOZ7SQCuN9FWO0ScV4zuTc8",
+  authDomain: "neuroactive.firebaseapp.com",
+  projectId: "neuroactive",
+  storageBucket: "neuroactive.firebasestorage.app",
+  messagingSenderId: "1010503840940",
+  appId: "1:1010503840940:web:90874fb37a70c9c7115b09",
+  measurementId: "G-4X86RF0RQT"
 };
 
 // This helps organize data in the database
@@ -56,13 +68,15 @@ try {
   auth = getAuth(app);
   db = getFirestore(app);
 } catch (error) {
-  console.error('Firebase Initialization Error:', error);
+  console.error("Firebase Initialization Error:", error);
 }
 
 // --- Helper Components ---
+
 const CentralizationGraphic = () => (
   <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-lg my-4 animate-fade-in">
     <div className="flex flex-col md:flex-row gap-8 justify-center items-center">
+      {/* Good Side */}
       <div className="text-center">
         <h4 className="font-bold text-green-700 mb-2">Centralization (Good)</h4>
         <div className="relative w-32 h-48 bg-gray-100 rounded-lg mx-auto border-2 border-green-100">
@@ -75,9 +89,12 @@ const CentralizationGraphic = () => (
             <ArrowUp size={24} strokeWidth={3} />
           </div>
         </div>
-        <p className="text-xs text-gray-500 mt-2 max-w-[150px]">Pain retreats from leg/buttock towards the spine.</p>
+        <p className="text-xs text-gray-500 mt-2 max-w-[150px]">
+          Pain retreats from leg/buttock towards the spine.
+        </p>
       </div>
 
+      {/* Bad Side */}
       <div className="text-center">
         <h4 className="font-bold text-red-700 mb-2">Peripheralization (Bad)</h4>
         <div className="relative w-32 h-48 bg-gray-100 rounded-lg mx-auto border-2 border-red-100">
@@ -90,13 +107,21 @@ const CentralizationGraphic = () => (
             <ArrowDown size={24} strokeWidth={3} />
           </div>
         </div>
-        <p className="text-xs text-gray-500 mt-2 max-w-[150px]">Pain travels further down the leg or arm.</p>
+        <p className="text-xs text-gray-500 mt-2 max-w-[150px]">
+          Pain travels further down the leg or arm.
+        </p>
       </div>
     </div>
   </div>
 );
 
-const LegalDisclaimer = ({ onAgree, onCancel }: { onAgree: () => void; onCancel: () => void }) => (
+const LegalDisclaimer = ({
+  onAgree,
+  onCancel,
+}: {
+  onAgree: () => void;
+  onCancel: () => void;
+}) => (
   <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
     <div className="bg-white max-w-2xl w-full rounded-xl shadow-2xl max-h-[90vh] flex flex-col">
       <div className="p-6 border-b bg-red-50 rounded-t-xl">
@@ -112,34 +137,40 @@ const LegalDisclaimer = ({ onAgree, onCancel }: { onAgree: () => void; onCancel:
 
         <div className="p-4 bg-gray-50 rounded-lg border border-gray-100">
           <p className="mb-2">
-            <strong>1. Not Medical Advice:</strong> The content provided in this application (NeuroActive) including
-            text, graphics, images, and video, is for informational and educational purposes only. It is not intended
-            to be a substitute for professional medical advice, diagnosis, or treatment.
+            <strong>1. Not Medical Advice:</strong> The content provided in this application (NeuroActive)
+            including text, graphics, images, and video, is for informational and educational purposes only.
+            It is not intended to be a substitute for professional medical advice, diagnosis, or treatment.
           </p>
 
           <p className="mb-2">
-            <strong>2. No Doctor-Patient Relationship:</strong> Usage of this app does not establish a doctor-patient
-            relationship between you and Dr. Bruene. Dr. Bruene is licensed in Illinois, and this application is not
-            intended to provide medical services outside of this jurisdiction.
+            <strong>2. No Doctor-Patient Relationship:</strong> Usage of this app does not establish a
+            doctor-patient relationship between you and Dr. Bruene. Dr. Bruene is licensed in Illinois,
+            and this application is not intended to provide medical services outside of this jurisdiction.
           </p>
 
           <p className="mb-2">
-            <strong>3. Assumption of Risk:</strong> You acknowledge that participation in these exercises involves a
-            risk of injury. By continuing, you voluntarily assume all risks associated with these activities.
+            <strong>3. Assumption of Risk:</strong> You acknowledge that participation in these exercises
+            involves a risk of injury. By continuing, you voluntarily assume all risks associated with
+            these activities.
           </p>
 
           <p>
-            <strong>4. Emergency:</strong> If you think you may have a medical emergency, call your doctor or 911
-            immediately. Do not disregard professional medical advice or delay in seeking it because of something you
-            have read in this app.
+            <strong>4. Emergency:</strong> If you think you may have a medical emergency, call your doctor
+            or 911 immediately. Do not disregard professional medical advice or delay in seeking it
+            because of something you have read in this app.
           </p>
         </div>
 
-        <p className="text-xs text-gray-500 mt-4">By clicking "I Agree", you acknowledge that you have read and understood these terms.</p>
+        <p className="text-xs text-gray-500 mt-4">
+          By clicking "I Agree", you acknowledge that you have read and understood these terms.
+        </p>
       </div>
 
       <div className="p-6 border-t bg-gray-50 rounded-b-xl flex justify-end gap-3">
-        <button onClick={onCancel} className="px-4 py-2 text-gray-600 font-medium hover:bg-gray-200 rounded-lg transition-colors">
+        <button
+          onClick={onCancel}
+          className="px-4 py-2 text-gray-600 font-medium hover:bg-gray-200 rounded-lg transition-colors"
+        >
           Decline
         </button>
         <button
@@ -200,7 +231,10 @@ const SettingsView = ({
             {isPremium ? (
               <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold">Active</span>
             ) : (
-              <button onClick={onUpgrade} className="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-purple-700">
+              <button
+                onClick={onUpgrade}
+                className="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-purple-700"
+              >
                 Upgrade
               </button>
             )}
@@ -229,10 +263,12 @@ const SettingsView = ({
           <h3 className="font-bold text-red-900 mb-2 flex items-center gap-2">
             <ShieldAlert size={20} /> Danger Zone
           </h3>
-          <p className="text-sm text-red-700 mb-4">Resetting your journey will clear your current prescription and history. This cannot be undone.</p>
+          <p className="text-sm text-red-700 mb-4">
+            Resetting your journey will clear your current prescription and history. This cannot be undone.
+          </p>
           <button
             onClick={() => {
-              if (confirm('Are you sure you want to reset your journey? All progress will be lost.')) {
+              if (confirm("Are you sure you want to reset your journey? All progress will be lost.")) {
                 onReset();
               }
             }}
@@ -242,7 +278,10 @@ const SettingsView = ({
           </button>
         </div>
 
-        <button onClick={onLogout} className="w-full text-gray-400 font-medium py-4 hover:text-gray-600 flex items-center justify-center gap-2">
+        <button
+          onClick={onLogout}
+          className="w-full text-gray-400 font-medium py-4 hover:text-gray-600 flex items-center justify-center gap-2"
+        >
           <LogOut size={18} /> Sign Out
         </button>
       </div>
@@ -251,7 +290,13 @@ const SettingsView = ({
 };
 
 // --- Pain Tracker Component ---
-const PainTracker = ({ onSaveLog, existingLog }: { onSaveLog: (entry: PainLogEntry) => void; existingLog?: PainLogEntry }) => {
+const PainTracker = ({
+  onSaveLog,
+  existingLog,
+}: {
+  onSaveLog: (entry: PainLogEntry) => void;
+  existingLog?: PainLogEntry;
+}) => {
   const [score, setScore] = useState(existingLog ? existingLog.score : 5);
   const [status, setStatus] = useState<'Better' | 'Same' | 'Worse' | null>(existingLog ? existingLog.status : null);
   const [submitted, setSubmitted] = useState(!!existingLog);
@@ -279,7 +324,11 @@ const PainTracker = ({ onSaveLog, existingLog }: { onSaveLog: (entry: PainLogEnt
           </div>
           <div
             className={`px-3 py-1 rounded font-bold ${
-              status === 'Better' ? 'bg-green-100 text-green-700' : status === 'Worse' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+              status === 'Better'
+                ? 'bg-green-100 text-green-700'
+                : status === 'Worse'
+                ? 'bg-red-100 text-red-700'
+                : 'bg-yellow-100 text-yellow-700'
             }`}
           >
             {status}
@@ -318,7 +367,9 @@ const PainTracker = ({ onSaveLog, existingLog }: { onSaveLog: (entry: PainLogEnt
           <button
             onClick={() => setStatus('Better')}
             className={`p-3 rounded-lg border text-sm font-medium transition-all ${
-              status === 'Better' ? 'bg-green-600 text-white border-green-600' : 'bg-white border-gray-200 text-gray-600 hover:border-green-500'
+              status === 'Better'
+                ? 'bg-green-600 text-white border-green-600'
+                : 'bg-white border-gray-200 text-gray-600 hover:border-green-500'
             }`}
           >
             <TrendingUp className="mx-auto mb-1" size={16} /> Better
@@ -326,7 +377,9 @@ const PainTracker = ({ onSaveLog, existingLog }: { onSaveLog: (entry: PainLogEnt
           <button
             onClick={() => setStatus('Same')}
             className={`p-3 rounded-lg border text-sm font-medium transition-all ${
-              status === 'Same' ? 'bg-yellow-500 text-white border-yellow-500' : 'bg-white border-gray-200 text-gray-600 hover:border-yellow-400'
+              status === 'Same'
+                ? 'bg-yellow-500 text-white border-yellow-500'
+                : 'bg-white border-gray-200 text-gray-600 hover:border-yellow-400'
             }`}
           >
             <Minus className="mx-auto mb-1" size={16} /> Same
@@ -334,7 +387,9 @@ const PainTracker = ({ onSaveLog, existingLog }: { onSaveLog: (entry: PainLogEnt
           <button
             onClick={() => setStatus('Worse')}
             className={`p-3 rounded-lg border text-sm font-medium transition-all ${
-              status === 'Worse' ? 'bg-red-600 text-white border-red-600' : 'bg-white border-gray-200 text-gray-600 hover:border-red-500'
+              status === 'Worse'
+                ? 'bg-red-600 text-white border-red-600'
+                : 'bg-white border-gray-200 text-gray-600 hover:border-red-500'
             }`}
           >
             <TrendingDown className="mx-auto mb-1" size={16} /> Worse
@@ -380,12 +435,12 @@ const PainGraph = ({ logs }: { logs: PainLogEntry[] }) => {
 const LibraryView = ({ isPremium, onUnlock }: { isPremium: boolean; onUnlock: () => void }) => {
   const [filter, setFilter] = useState<'All' | 'Supine' | 'Prone' | 'Side Lying' | 'Quadruped' | 'MDT'>('All');
 
-  const libraryItems = useMemo(
-    () => Object.values(DECISION_TREE).filter((node) => node.type === 'video' && node.libraryCategory),
-    []
+  const libraryItems = Object.values(DECISION_TREE).filter(
+    (node) => node.type === 'video' && node.libraryCategory
   );
 
-  const filteredItems = filter === 'All' ? libraryItems : libraryItems.filter((item) => item.libraryCategory === filter);
+  const filteredItems =
+    filter === 'All' ? libraryItems : libraryItems.filter((item) => item.libraryCategory === filter);
 
   return (
     <div className="min-h-screen bg-gray-50 pb-20">
@@ -417,7 +472,10 @@ const LibraryView = ({ isPremium, onUnlock }: { isPremium: boolean; onUnlock: ()
                 <h3 className="font-bold text-xl mb-1">Unlock "God Mode"</h3>
                 <p className="text-indigo-100 text-sm">Access the full DNS & MDT exercise library.</p>
               </div>
-              <button onClick={onUnlock} className="bg-white text-indigo-700 px-4 py-2 rounded-lg font-bold hover:bg-indigo-50 transition-colors">
+              <button
+                onClick={onUnlock}
+                className="bg-white text-indigo-700 px-4 py-2 rounded-lg font-bold hover:bg-indigo-50 transition-colors"
+              >
                 Upgrade
               </button>
             </div>
@@ -425,7 +483,10 @@ const LibraryView = ({ isPremium, onUnlock }: { isPremium: boolean; onUnlock: ()
         )}
 
         {filteredItems.map((item) => (
-          <div key={item.id} className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden group hover:shadow-md transition-all">
+          <div
+            key={item.id}
+            className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden group hover:shadow-md transition-all"
+          >
             <div className="aspect-video bg-gray-100 relative flex items-center justify-center">
               {item.isPremium && !isPremium ? (
                 <div className="absolute inset-0 bg-gray-900/60 flex flex-col items-center justify-center text-white backdrop-blur-sm z-10">
@@ -437,16 +498,21 @@ const LibraryView = ({ isPremium, onUnlock }: { isPremium: boolean; onUnlock: ()
               )}
 
               <div className="absolute inset-0 bg-gradient-to-br from-slate-200 via-slate-100 to-white" />
-              <div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_30%_20%,rgba(59,130,246,0.35),transparent_45%),radial-gradient(circle_at_70%_60%,rgba(99,102,241,0.35),transparent_50%)]" />
-              <div className="absolute bottom-3 left-3 right-3 text-white/90 drop-shadow">
-                <div className="text-xs font-semibold uppercase tracking-wider opacity-80">{item.libraryCategory}</div>
-                <div className="text-sm font-bold line-clamp-1">{item.text}</div>
-              </div>
+<div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_30%_20%,rgba(59,130,246,0.35),transparent_45%),radial-gradient(circle_at_70%_60%,rgba(99,102,241,0.35),transparent_50%)]" />
+<div className="absolute bottom-3 left-3 right-3 text-white/90 drop-shadow">
+  <div className="text-xs font-semibold uppercase tracking-wider opacity-80">
+    {item.libraryCategory}
+  </div>
+  <div className="text-sm font-bold line-clamp-1">{item.text}</div>
+</div>
+
             </div>
 
             <div className="p-4">
               <div className="flex justify-between items-start mb-2">
-                <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded">{item.libraryCategory}</span>
+                <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded">
+                  {item.libraryCategory}
+                </span>
                 {item.isPremium && (
                   <span className="text-xs text-amber-600 font-medium flex items-center gap-1">
                     <Activity size={12} /> Pro
@@ -482,43 +548,11 @@ export default function App() {
   const [activePrescriptions, setActivePrescriptions] = useState<string[]>([]);
   const [activeJourney, setActiveJourney] = useState<string | null>(null);
   const [painLog, setPainLog] = useState<PainLogEntry[]>([]);
-  const [phaseLocks, setPhaseLocks] = useState<Record<string, number>>({});
-  const [lastCheckInAt, setLastCheckInAt] = useState<string | null>(null);
   const [showTerms, setShowTerms] = useState(false);
   const [hasAgreedToTerms, setHasAgreedToTerms] = useState(false);
   const [pendingView, setPendingView] = useState<'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings' | null>(null);
   const [simulatedTime, setSimulatedTime] = useState<number>(Date.now());
   const [isPlaying, setIsPlaying] = useState(false);
-
-  // --- time helpers (single source of truth)
-  const todayISO = () => new Date(simulatedTime).toISOString().split('T')[0];
-
-  const hasTodayCheckIn = () => {
-    const t = todayISO();
-    return painLog.some((l) => l.date === t);
-  };
-
-  const isPhaseLocked = (key: string) => {
-    const until = phaseLocks?.[key];
-    if (!until) return false;
-    return Date.now() < until;
-  };
-
-  // Firebase: save user data
-  const saveUserData = async (updates: Partial<UserData>) => {
-    if (!auth || !db || !auth.currentUser) return;
-    const uid = auth.currentUser.uid;
-    const docRef = doc(db, 'artifacts', appId, 'users', uid, 'userData', 'main');
-    await setDoc(docRef, updates, { merge: true });
-  };
-
-  // If you want to actually create locks later, this is safe and non-conflicting
-  const lockPhaseForHours = async (key: string, hours: number) => {
-    const until = Date.now() + hours * 60 * 60 * 1000;
-    const updated = { ...(phaseLocks || {}), [key]: until };
-    setPhaseLocks(updated);
-    await saveUserData({ phaseLocks: updated });
-  };
 
   // Firebase Auth & Data Sync
   useEffect(() => {
@@ -546,8 +580,6 @@ export default function App() {
           if (typeof data.currentNodeId === 'string') setCurrentNodeId(data.currentNodeId);
           if (typeof data.isPremium === 'boolean') setIsPremium(data.isPremium);
           if (Array.isArray(data.painLog)) setPainLog(data.painLog);
-          if (data.phaseLocks && typeof data.phaseLocks === 'object') setPhaseLocks(data.phaseLocks as Record<string, number>);
-          if (typeof data.lastCheckInAt === 'string') setLastCheckInAt(data.lastCheckInAt);
           if (typeof data.hasAgreedToTerms === 'boolean') setHasAgreedToTerms(data.hasAgreedToTerms);
         });
       } else {
@@ -561,12 +593,42 @@ export default function App() {
     };
   }, []);
 
-  const handleSavePainLog = async (entry: PainLogEntry) => {
-    // Replace today's log if it already exists
-    const next = [...painLog.filter((l) => l.date !== entry.date), entry].sort((a, b) => a.date.localeCompare(b.date));
-    setPainLog(next);
-    setLastCheckInAt(entry.date);
-    await saveUserData({ painLog: next, lastCheckInAt: entry.date });
+  const saveUserData = async (updates: Partial<UserData>) => {
+    if (!auth || !db || !auth.currentUser) return;
+    const uid = auth.currentUser.uid;
+    const docRef = doc(db, 'artifacts', appId, 'users', uid, 'userData', 'main');
+    await setDoc(docRef, updates, { merge: true });
+  };
+const todayISO = () => new Date().toISOString().split('T')[0];
+
+const getLock = (key: string) => {
+  // We store locks in Firestore (userData.phaseLocks)
+  // In this component we read them from state via onSnapshot into UserData fields.
+  // Since App.tsx currently stores only specific pieces, we’ll track locks locally via a simple object on window
+  // BUT: we can do it properly by adding phaseLocks to state. (Below does proper state-free access via saveUserData)
+  return null;
+};
+
+// returns true if user has completed today's check-in
+const hasTodayCheckIn = () => {
+  const t = todayISO();
+  return painLog.some(l => l.date === t);
+};
+
+// convenience: set locks (merge into userData)
+const setPhaseLocks = async (updates: Record<string, number>) => {
+  // merge into existing locks in Firestore
+  // we don’t have phaseLocks in state right now, so we set by merge-writing
+  await saveUserData({
+    phaseLocks: updates as any, // merge: true will merge object fields
+    lastCheckInAt: hasTodayCheckIn() ? todayISO() : undefined,
+  });
+};
+
+  const handleSavePainLog = (entry: PainLogEntry) => {
+    const newLog = [...painLog, entry];
+    setPainLog(newLog);
+    saveUserData({ painLog: newLog });
   };
 
   const handleResetJourney = async () => {
@@ -596,8 +658,6 @@ export default function App() {
     setCurrentNodeId('start');
     setIsPremium(false);
     setPainLog([]);
-    setPhaseLocks({});
-    setLastCheckInAt(null);
     setHasAgreedToTerms(false);
     setCurrentView('landing');
     setIsPlaying(false);
@@ -679,16 +739,11 @@ export default function App() {
             src="/logo.png"
             alt="NeuroActive"
             className="h-10 w-auto object-contain"
-            onError={(e) => {
-              (e.currentTarget as HTMLImageElement).src = '/logo.png';
-            }}
+            onError={(e) => { (e.currentTarget as HTMLImageElement).src = '/logo.png'; }}
           />
           <span className="text-xl font-bold text-gray-900">NeuroActive</span>
         </div>
-        <button
-          onClick={() => attemptNavigation('dashboard')}
-          className="text-sm font-semibold text-gray-600 hover:text-blue-600"
-        >
+        <button onClick={() => attemptNavigation('dashboard')} className="text-sm font-semibold text-gray-600 hover:text-blue-600">
           Login
         </button>
       </header>
@@ -698,20 +753,12 @@ export default function App() {
           src="/logo.png"
           alt="NeuroActive"
           className="h-24 w-auto object-contain mb-8"
-          onError={(e) => {
-            (e.currentTarget as HTMLImageElement).src = '/logo.png';
-          }}
+          onError={(e) => { (e.currentTarget as HTMLImageElement).src = '/logo.png'; }}
         />
-
         <h1 className="text-4xl md:text-5xl font-extrabold text-gray-900 mb-6">
-          Choose your own adventure rehab with{' '}
-          <span className="text-blue-600">DNS & MDT</span>
+          Recover Smarter with <span className="text-blue-600">DNS & MDT</span>
         </h1>
-
-        <p className="text-lg text-gray-600 max-w-2xl mb-8">
-          Clinical-grade self-assessment and rehabilitation, built to guide you step by step.
-        </p>
-
+        <p className="text-lg text-gray-600 max-w-2xl mb-8">Clinical grade self-assessment and rehabilitation.</p>
         <button
           onClick={() => attemptNavigation('dashboard')}
           className="bg-blue-600 text-white px-8 py-4 rounded-full font-bold text-lg shadow-lg hover:bg-blue-700 transition-all flex items-center gap-2"
@@ -721,8 +768,6 @@ export default function App() {
       </main>
     </div>
   );
-
-
 
   const Paywall = () => (
     <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
@@ -739,7 +784,10 @@ export default function App() {
           >
             <CreditCard size={20} /> Start 7-Day Free Trial
           </button>
-          <button onClick={() => setCurrentView('dashboard')} className="w-full mt-3 text-gray-500 text-sm hover:text-gray-700">
+          <button
+            onClick={() => setCurrentView('dashboard')}
+            className="w-full mt-3 text-gray-500 text-sm hover:text-gray-700"
+          >
             No thanks, take me back
           </button>
         </div>
@@ -748,7 +796,7 @@ export default function App() {
   );
 
   const Dashboard = () => {
-    const today = todayISO();
+    const today = new Date().toISOString().split('T')[0];
     const todayLog = painLog.find((log) => log.date === today);
 
     return (
@@ -756,7 +804,12 @@ export default function App() {
         <div className="bg-white border-b sticky top-0 z-30">
           <div className="max-w-5xl mx-auto px-6 py-4 flex justify-between items-center">
             <div className="flex items-center gap-2">
-              <img src="/logo.png" alt="NeuroActive" className="h-8 w-auto object-contain" onError={(e) => ((e.currentTarget as HTMLImageElement).src = '/logo.png')} />
+              <img
+                src="/logo.png"
+                alt="NeuroActive"
+                className="h-8 w-auto object-contain"
+                onError={(e) => { (e.currentTarget as HTMLImageElement).src = '/logo.png'; }}
+              />
               <span className="font-bold text-gray-900">NeuroActive</span>
             </div>
             <div className="flex items-center gap-4">
@@ -768,7 +821,10 @@ export default function App() {
                   UPGRADE
                 </button>
               )}
-              <button onClick={() => setCurrentView('settings')} className="bg-gray-100 p-2 rounded-full hover:bg-gray-200 transition-colors">
+              <button
+                onClick={() => setCurrentView('settings')}
+                className="bg-gray-100 p-2 rounded-full hover:bg-gray-200 transition-colors"
+              >
                 <User size={20} className="text-gray-600" />
               </button>
             </div>
@@ -784,12 +840,7 @@ export default function App() {
               </p>
             </div>
             <button
-              onClick={() => {
-                setHistory([]);
-                setCurrentNodeId('start');
-                setCurrentView('assessment');
-                setIsPlaying(false);
-              }}
+              onClick={() => { setHistory([]); setCurrentNodeId('start'); setCurrentView('assessment'); setIsPlaying(false); }}
               className="bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold shadow hover:bg-blue-700 transition-colors"
             >
               New Assessment
@@ -811,7 +862,10 @@ export default function App() {
                 <p className="text-gray-300 text-sm">Browse DNS & MDT exercises by position.</p>
               </div>
             </div>
-            <button onClick={() => setCurrentView('library')} className="bg-white text-gray-900 px-4 py-2 rounded-lg font-bold text-sm hover:bg-gray-100">
+            <button
+              onClick={() => setCurrentView('library')}
+              className="bg-white text-gray-900 px-4 py-2 rounded-lg font-bold text-sm hover:bg-gray-100"
+            >
               Browse
             </button>
           </div>
@@ -832,7 +886,9 @@ export default function App() {
                       <div>
                         <h4 className="font-bold text-gray-800">{node.text}</h4>
                         {node.prescriptionFrequency && (
-                          <div className="text-xs text-indigo-600 font-bold bg-indigo-50 inline-block px-2 py-1 rounded mt-1">{node.prescriptionFrequency}</div>
+                          <div className="text-xs text-indigo-600 font-bold bg-indigo-50 inline-block px-2 py-1 rounded mt-1">
+                            {node.prescriptionFrequency}
+                          </div>
                         )}
                       </div>
                       <Play size={20} className="text-gray-400" />
@@ -869,19 +925,22 @@ export default function App() {
               allowFullScreen
             />
           ) : (
-            <button onClick={() => setIsPlaying(true)} className="w-full h-full relative flex items-center justify-center group">
+            <button
+              onClick={() => setIsPlaying(true)}
+              className="w-full h-full relative flex items-center justify-center group"
+            >
               <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent z-10" />
               <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-700" />
-              <div className="absolute inset-0 opacity-40 bg-[radial-gradient(circle_at_30%_20%,rgba(59,130,246,0.55),transparent_45%),radial-gradient(circle_at_70%_60%,rgba(99,102,241,0.55),transparent_50%)]" />
-              <div className="absolute bottom-4 left-4 right-4 text-white">
-                <div className="text-xs font-semibold uppercase tracking-wider text-white/70">Exercise</div>
-                <div className="text-lg font-extrabold leading-tight line-clamp-2">{data.text}</div>
-                {data.prescriptionFrequency && (
-                  <div className="mt-2 inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-white/90 border border-white/15">
-                    {data.prescriptionFrequency}
-                  </div>
-                )}
-              </div>
+<div className="absolute inset-0 opacity-40 bg-[radial-gradient(circle_at_30%_20%,rgba(59,130,246,0.55),transparent_45%),radial-gradient(circle_at_70%_60%,rgba(99,102,241,0.55),transparent_50%)]" />
+<div className="absolute bottom-4 left-4 right-4 text-white">
+  <div className="text-xs font-semibold uppercase tracking-wider text-white/70">Exercise</div>
+  <div className="text-lg font-extrabold leading-tight line-clamp-2">{data.text}</div>
+  {data.prescriptionFrequency && (
+    <div className="mt-2 inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-white/90 border border-white/15">
+      {data.prescriptionFrequency}
+    </div>
+  )}
+</div>
 
               <div className="absolute z-20 bg-white/20 backdrop-blur-sm p-4 rounded-full border border-white/30 group-hover:scale-110 transition-transform">
                 <Play className="text-white fill-current" size={32} />
@@ -915,7 +974,10 @@ export default function App() {
             <p className="text-gray-600 mt-2">
               The decision tree does not contain a node with id: <span className="font-mono">{currentNodeId}</span>
             </p>
-            <button onClick={() => { setCurrentNodeId('start'); setHistory([]); }} className="mt-4 bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold">
+            <button
+              onClick={() => { setCurrentNodeId('start'); setHistory([]); }}
+              className="mt-4 bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold"
+            >
               Go to start
             </button>
           </div>
@@ -950,6 +1012,7 @@ export default function App() {
             <h2 className="text-2xl font-bold text-gray-900 mb-4">{currentNode.text}</h2>
             <p className="text-gray-600 mb-6">{currentNode.description}</p>
 
+            {/* You can re-enable this whenever you want */}
             {/* <CentralizationGraphic /> */}
           </div>
 
@@ -991,11 +1054,6 @@ export default function App() {
               </div>
             </div>
           )}
-
-          {/* Example: if you ever want to show lock status in UI */}
-          {/* <div className="mt-6 text-xs text-gray-400">
-            Locked? {String(isPhaseLocked('lb_phase_0'))} | Checked in today? {String(hasTodayCheckIn())} | lastCheckInAt: {String(lastCheckInAt)}
-          </div> */}
         </div>
       </div>
     );
