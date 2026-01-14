@@ -1,3 +1,5 @@
+// src/state/types.ts
+
 export type DecisionNode = {
   id: string;
   type: 'question' | 'video' | 'result';
@@ -5,23 +7,25 @@ export type DecisionNode = {
   description?: string;
   options?: { label: string; nextId: string }[];
 
-  // video
+  // video / library metadata
   videoId?: string;
-
-  // premium + progression metadata
-  isPremium?: boolean;
+  isPremium?: boolean; // keep for Library-only gating
   journeyName?: string;
+
   prescriptionFrequency?: string;
   prescriptionDuration?: number;
   replaces?: string[];
 
-  // library categorization
-  libraryCategory?: 'Supine' | 'Prone' | 'Side Lying' | 'Quadruped' | 'MDT';
+  libraryCategory?: 'All' | 'Supine' | 'Prone' | 'Side Lying' | 'Quadruped' | 'Standing' | 'MDT';
 
-  // optional informational flags (UI can ignore these for now)
+  // tiering
+  journeyTier?: 'A' | 'B' | 'C'; // A=pain triage, B=performance, C=returning/graduate path
+
+  // optional clinical flags (display-only)
   flagLevel?: 'green' | 'yellow' | 'red';
   flagText?: string;
 };
+
 
 export type PainLogEntry = {
   date: string; // YYYY-MM-DD

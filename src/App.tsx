@@ -1,5 +1,5 @@
 // src/App.tsx
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react'; // Removed 'React' default import
 import {
   Activity,
   Play,
@@ -12,11 +12,10 @@ import {
   CreditCard,
   FastForward,
   HelpCircle,
-  ArrowUp,
-  ArrowDown,
+  // ArrowUp,   <-- Commented out unused icons
+  // ArrowDown,
   ClipboardList,
   Library,
-  ExternalLink,
   TrendingUp,
   TrendingDown,
   Minus,
@@ -32,6 +31,7 @@ import { getFirestore, doc, setDoc, onSnapshot, type Firestore } from 'firebase/
 
 import { DECISION_TREE } from './data/decisionTree';
 import type { PainLogEntry, UserData } from './state/types';
+import VideoPlayer from './components/VideoPlayer';
 
 // --- Firebase Configuration ---
 const firebaseConfig = {
@@ -60,6 +60,8 @@ try {
 }
 
 // --- Helper Components ---
+// NOTE: Commented out because it is not currently used in the UI
+/*
 const CentralizationGraphic = () => (
   <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-lg my-4 animate-fade-in">
     <div className="flex flex-col md:flex-row gap-8 justify-center items-center">
@@ -95,6 +97,7 @@ const CentralizationGraphic = () => (
     </div>
   </div>
 );
+*/
 
 const LegalDisclaimer = ({ onAgree, onCancel }: { onAgree: () => void; onCancel: () => void }) => (
   <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
@@ -251,15 +254,32 @@ const SettingsView = ({
 };
 
 // --- Pain Tracker Component ---
-const PainTracker = ({ onSaveLog, existingLog }: { onSaveLog: (entry: PainLogEntry) => void; existingLog?: PainLogEntry }) => {
+const PainTracker = ({
+  onSaveLog,
+  existingLog,
+  todayISO,
+}: {
+  onSaveLog: (entry: PainLogEntry) => void;
+  existingLog?: PainLogEntry;
+  todayISO: () => string;
+}) => {
   const [score, setScore] = useState(existingLog ? existingLog.score : 5);
   const [status, setStatus] = useState<'Better' | 'Same' | 'Worse' | null>(existingLog ? existingLog.status : null);
   const [submitted, setSubmitted] = useState(!!existingLog);
 
+  // Sync state when existingLog loads (e.g. from Firestore)
+  useEffect(() => {
+    if (existingLog) {
+      setScore(existingLog.score);
+      setStatus(existingLog.status);
+      setSubmitted(true);
+    }
+  }, [existingLog]);
+
   const handleSubmit = () => {
     if (!status) return;
     const entry: PainLogEntry = {
-      date: new Date().toISOString().split('T')[0],
+      date: todayISO(),
       score,
       status,
     };
@@ -377,13 +397,11 @@ const PainGraph = ({ logs }: { logs: PainLogEntry[] }) => {
   );
 };
 
-const LibraryView = ({ isPremium, onUnlock }: { isPremium: boolean; onUnlock: () => void }) => {
+// UPDATED: Now uses declarative navigation + autoplay
+const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUnlock: () => void; onPlay: (id: string) => void }) => {
   const [filter, setFilter] = useState<'All' | 'Supine' | 'Prone' | 'Side Lying' | 'Quadruped' | 'MDT'>('All');
 
-  const libraryItems = useMemo(
-    () => Object.values(DECISION_TREE).filter((node) => node.type === 'video' && node.libraryCategory),
-    []
-  );
+  const libraryItems = Object.values(DECISION_TREE).filter((node) => node.type === 'video' && node.libraryCategory);
 
   const filteredItems = filter === 'All' ? libraryItems : libraryItems.filter((item) => item.libraryCategory === filter);
 
@@ -459,7 +477,11 @@ const LibraryView = ({ isPremium, onUnlock }: { isPremium: boolean; onUnlock: ()
 
               <button
                 onClick={() => {
-                  if (item.isPremium && !isPremium) onUnlock();
+                  if (item.isPremium && !isPremium) {
+                    onUnlock();
+                  } else {
+                    onPlay(item.id);
+                  }
                 }}
                 className="mt-4 w-full border border-gray-200 text-gray-600 text-sm font-medium py-2 rounded-lg hover:bg-gray-50 transition-colors"
               >
@@ -482,17 +504,29 @@ export default function App() {
   const [activePrescriptions, setActivePrescriptions] = useState<string[]>([]);
   const [activeJourney, setActiveJourney] = useState<string | null>(null);
   const [painLog, setPainLog] = useState<PainLogEntry[]>([]);
-  const [phaseLocks, setPhaseLocks] = useState<Record<string, number>>({});
-  const [lastCheckInAt, setLastCheckInAt] = useState<string | null>(null);
+  
+  // NOTE: These are unused in this build but kept for future phases
+  // const [phaseLocks, setPhaseLocks] = useState<Record<string, number>>({});
+  // const [lastCheckInAt, setLastCheckInAt] = useState<string | null>(null);
+
   const [showTerms, setShowTerms] = useState(false);
   const [hasAgreedToTerms, setHasAgreedToTerms] = useState(false);
+  
+  // Pending state for terms agreement flow + Autoplay Intent
+  const [pendingNodeId, setPendingNodeId] = useState<string | null>(null);
   const [pendingView, setPendingView] = useState<'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings' | null>(null);
+  
+  // CHANGED: Token pattern "nodeId:timestamp" prevents stale autoplay across nodes
+  const [autoplayToken, setAutoplayToken] = useState<string | null>(null);
+  const [pendingAutoplay, setPendingAutoplay] = useState(false);
+  
   const [simulatedTime, setSimulatedTime] = useState<number>(Date.now());
-  const [isPlaying, setIsPlaying] = useState(false);
 
   // --- time helpers (single source of truth)
   const todayISO = () => new Date(simulatedTime).toISOString().split('T')[0];
 
+  // NOTE: Unused, kept for future logic
+  /*
   const hasTodayCheckIn = () => {
     const t = todayISO();
     return painLog.some((l) => l.date === t);
@@ -501,8 +535,9 @@ export default function App() {
   const isPhaseLocked = (key: string) => {
     const until = phaseLocks?.[key];
     if (!until) return false;
-    return Date.now() < until;
+    return simulatedTime < until;
   };
+  */
 
   // Firebase: save user data
   const saveUserData = async (updates: Partial<UserData>) => {
@@ -512,13 +547,15 @@ export default function App() {
     await setDoc(docRef, updates, { merge: true });
   };
 
-  // If you want to actually create locks later, this is safe and non-conflicting
+  // NOTE: Unused in this build
+  /*
   const lockPhaseForHours = async (key: string, hours: number) => {
-    const until = Date.now() + hours * 60 * 60 * 1000;
+    const until = simulatedTime + hours * 60 * 60 * 1000;
     const updated = { ...(phaseLocks || {}), [key]: until };
     setPhaseLocks(updated);
     await saveUserData({ phaseLocks: updated });
   };
+  */
 
   // Firebase Auth & Data Sync
   useEffect(() => {
@@ -546,8 +583,8 @@ export default function App() {
           if (typeof data.currentNodeId === 'string') setCurrentNodeId(data.currentNodeId);
           if (typeof data.isPremium === 'boolean') setIsPremium(data.isPremium);
           if (Array.isArray(data.painLog)) setPainLog(data.painLog);
-          if (data.phaseLocks && typeof data.phaseLocks === 'object') setPhaseLocks(data.phaseLocks as Record<string, number>);
-          if (typeof data.lastCheckInAt === 'string') setLastCheckInAt(data.lastCheckInAt);
+          // if (data.phaseLocks && typeof data.phaseLocks === 'object') setPhaseLocks(data.phaseLocks as Record<string, number>);
+          // if (typeof data.lastCheckInAt === 'string') setLastCheckInAt(data.lastCheckInAt);
           if (typeof data.hasAgreedToTerms === 'boolean') setHasAgreedToTerms(data.hasAgreedToTerms);
         });
       } else {
@@ -565,7 +602,7 @@ export default function App() {
     // Replace today's log if it already exists
     const next = [...painLog.filter((l) => l.date !== entry.date), entry].sort((a, b) => a.date.localeCompare(b.date));
     setPainLog(next);
-    setLastCheckInAt(entry.date);
+    // setLastCheckInAt(entry.date);
     await saveUserData({ painLog: next, lastCheckInAt: entry.date });
   };
 
@@ -583,7 +620,8 @@ export default function App() {
     setHistory([]);
     setCurrentNodeId('start');
     setCurrentView('dashboard');
-    setIsPlaying(false);
+    // Ensure no autoplay intent survives the reset
+    setAutoplayToken(null);
   };
 
   const handleLogout = async () => {
@@ -596,18 +634,40 @@ export default function App() {
     setCurrentNodeId('start');
     setIsPremium(false);
     setPainLog([]);
-    setPhaseLocks({});
-    setLastCheckInAt(null);
+    // setPhaseLocks({});
+    // setLastCheckInAt(null);
     setHasAgreedToTerms(false);
     setCurrentView('landing');
-    setIsPlaying(false);
+    // Clear autoplay intent
+    setAutoplayToken(null);
   };
 
-  const attemptNavigation = (targetView: 'assessment' | 'dashboard' | 'library') => {
+  // UPDATED: Honest navigation intent handler (Strict Mode)
+  const attemptNavigation = (
+    targetView: 'assessment' | 'dashboard' | 'library',
+    nodeId?: string,
+    autoplay: boolean = false
+  ) => {
     if (hasAgreedToTerms) {
+      if (targetView === 'assessment') {
+        if (nodeId) {
+          setCurrentNodeId(nodeId);
+          if (autoplay) setAutoplayToken(`${nodeId}:${Date.now()}`);
+          else setAutoplayToken(null);
+        } else {
+          // No specific node means "fresh assessment", kill any stale autoplay intent
+          setAutoplayToken(null);
+        }
+      } else {
+        // Leaving assessment implies killing the video token
+        setAutoplayToken(null);
+      }
+      
       setCurrentView(targetView);
     } else {
       setPendingView(targetView);
+      if (nodeId && targetView === 'assessment') setPendingNodeId(nodeId);
+      setPendingAutoplay(autoplay); // Store intent
       setShowTerms(true);
     }
   };
@@ -617,15 +677,40 @@ export default function App() {
     setShowTerms(false);
     saveUserData({ hasAgreedToTerms: true });
 
-    if (pendingView) {
-      setCurrentView(pendingView as any);
-      setPendingView(null);
+    // Capture intent locally before clearing state (clean atomic transition)
+    const nextNode = pendingNodeId;
+    const nextView = pendingView;
+    const shouldAutoplay = pendingAutoplay;
+
+    // Clear pending state immediately
+    setPendingNodeId(null);
+    setPendingView(null);
+    setPendingAutoplay(false);
+
+    // Apply intent
+    if (nextView === 'assessment') {
+      if (nextNode) {
+        setCurrentNodeId(nextNode);
+        setAutoplayToken(shouldAutoplay ? `${nextNode}:${Date.now()}` : null);
+      } else {
+        // terms accepted then entering assessment generically: kill any stale token
+        setAutoplayToken(null);
+      }
+    } else {
+      // Going elsewhere? kill token
+      setAutoplayToken(null);
+    }
+    
+    if (nextView) {
+      setCurrentView(nextView as any);
     }
   };
 
   const handleTermsDecline = () => {
     setShowTerms(false);
     setPendingView(null);
+    setPendingNodeId(null);
+    setPendingAutoplay(false);
   };
 
   const handleOptionClick = (nextId: string) => {
@@ -633,12 +718,6 @@ export default function App() {
 
     if (!nextNode) {
       console.error(`Decision tree missing node: ${nextId}`);
-      return;
-    }
-
-    if (nextNode.isPremium && !isPremium) {
-      setCurrentNodeId(nextId);
-      setCurrentView('paywall');
       return;
     }
 
@@ -659,8 +738,9 @@ export default function App() {
     setHistory(newHistory);
     updates.history = newHistory;
 
+    // Clear autoplay intent when navigating deeper
+    setAutoplayToken(null);
     setCurrentNodeId(nextId);
-    setIsPlaying(false);
 
     saveUserData(updates);
   };
@@ -787,8 +867,8 @@ export default function App() {
               onClick={() => {
                 setHistory([]);
                 setCurrentNodeId('start');
-                setCurrentView('assessment');
-                setIsPlaying(false);
+                // UPDATED: Use proper navigation wrapper
+                attemptNavigation('assessment');
               }}
               className="bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold shadow hover:bg-blue-700 transition-colors"
             >
@@ -797,7 +877,7 @@ export default function App() {
           </div>
 
           <div className="grid md:grid-cols-2 gap-6">
-            <PainTracker onSaveLog={handleSavePainLog} existingLog={todayLog} />
+            <PainTracker onSaveLog={handleSavePainLog} existingLog={todayLog} todayISO={todayISO} />
             <PainGraph logs={painLog} />
           </div>
 
@@ -828,7 +908,12 @@ export default function App() {
                   const node = DECISION_TREE[id];
                   if (!node) return null;
                   return (
-                    <div key={id} className="bg-white p-4 rounded-lg shadow-sm flex justify-between items-center">
+                    <button
+                      key={id}
+                      // UPDATED: Now uses navigation state machine properly
+                      onClick={() => attemptNavigation('assessment', id, true)}
+                      className="w-full bg-white p-4 rounded-lg shadow-sm flex justify-between items-center hover:bg-indigo-50 transition-colors text-left"
+                    >
                       <div>
                         <h4 className="font-bold text-gray-800">{node.text}</h4>
                         {node.prescriptionFrequency && (
@@ -836,69 +921,12 @@ export default function App() {
                         )}
                       </div>
                       <Play size={20} className="text-gray-400" />
-                    </div>
+                    </button>
                   );
                 })}
               </div>
             </div>
           )}
-        </div>
-      </div>
-    );
-  };
-
-  const VideoPlayer = ({ nodeId }: { nodeId: string }) => {
-    const data = DECISION_TREE[nodeId];
-
-    const getVimeoSrc = (id: string) => {
-      const separator = id.includes('?') ? '&' : '?';
-      return `https://player.vimeo.com/video/${id}${separator}autoplay=1&title=0&byline=0&portrait=0&muted=1&playsinline=1&loop=1`;
-    };
-
-    if (!data || !data.videoId) return null;
-
-    return (
-      <div className="mb-6">
-        <div className="bg-black aspect-video rounded-xl overflow-hidden shadow-lg relative">
-          {isPlaying ? (
-            <iframe
-              src={getVimeoSrc(data.videoId)}
-              className="w-full h-full"
-              frameBorder="0"
-              allow="autoplay; fullscreen; picture-in-picture"
-              allowFullScreen
-            />
-          ) : (
-            <button onClick={() => setIsPlaying(true)} className="w-full h-full relative flex items-center justify-center group">
-              <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent z-10" />
-              <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-700" />
-              <div className="absolute inset-0 opacity-40 bg-[radial-gradient(circle_at_30%_20%,rgba(59,130,246,0.55),transparent_45%),radial-gradient(circle_at_70%_60%,rgba(99,102,241,0.55),transparent_50%)]" />
-              <div className="absolute bottom-4 left-4 right-4 text-white">
-                <div className="text-xs font-semibold uppercase tracking-wider text-white/70">Exercise</div>
-                <div className="text-lg font-extrabold leading-tight line-clamp-2">{data.text}</div>
-                {data.prescriptionFrequency && (
-                  <div className="mt-2 inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-white/90 border border-white/15">
-                    {data.prescriptionFrequency}
-                  </div>
-                )}
-              </div>
-
-              <div className="absolute z-20 bg-white/20 backdrop-blur-sm p-4 rounded-full border border-white/30 group-hover:scale-110 transition-transform">
-                <Play className="text-white fill-current" size={32} />
-              </div>
-            </button>
-          )}
-        </div>
-
-        <div className="mt-3 text-center space-y-1">
-          <a
-            href={`https://vimeo.com/${data.videoId.split('?')[0]}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-blue-600 transition-colors"
-          >
-            <ExternalLink size={12} /> Test Link: Watch on Vimeo
-          </a>
         </div>
       </div>
     );
@@ -928,13 +956,13 @@ export default function App() {
         <div className="bg-white shadow-sm p-4 sticky top-0 z-30 flex items-center justify-between">
           <button
             onClick={() => {
+              setAutoplayToken(null);
               if (history.length > 0) {
-                setCurrentNodeId(history[history.length - 1]);
+                const prevId = history[history.length - 1];
+                setCurrentNodeId(prevId);
                 setHistory((prev) => prev.slice(0, -1));
-                setIsPlaying(false);
               } else {
                 setCurrentView('dashboard');
-                setIsPlaying(false);
               }
             }}
             className="text-gray-500 hover:text-gray-900 flex items-center gap-1"
@@ -953,10 +981,16 @@ export default function App() {
             {/* <CentralizationGraphic /> */}
           </div>
 
-          {currentNode.type === 'video' && (
-            <div className="mb-6">
-              <VideoPlayer nodeId={currentNodeId} />
-            </div>
+          {currentNode.type === 'video' && currentNode.videoId && (
+            <VideoPlayer
+              key={currentNodeId} 
+              nodeId={currentNodeId}
+              title={currentNode.text}
+              frequency={currentNode.prescriptionFrequency}
+              videoId={currentNode.videoId}
+              autoplayToken={autoplayToken} // CHANGED: Passed token instead of trigger
+              onConsumeAutoplay={() => setAutoplayToken(null)} // CHANGED: Clear token after use
+            />
           )}
 
           {currentNode.type !== 'video' && (
@@ -1028,7 +1062,15 @@ export default function App() {
           onUpgrade={handleUpgrade}
         />
       )}
-      {currentView === 'library' && <LibraryView isPremium={isPremium} onUnlock={() => setCurrentView('paywall')} />}
+      {currentView === 'library' && (
+        <LibraryView
+          isPremium={isPremium}
+          onUnlock={() => setCurrentView('paywall')}
+          onPlay={(id) => {
+            attemptNavigation('assessment', id, true);
+          }}
+        />
+      )}
       <DevTimeSkip />
     </>
   );

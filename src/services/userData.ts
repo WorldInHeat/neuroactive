@@ -8,6 +8,6 @@ export async function saveUserData(updates: Partial<UserData>) {
 
   const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'userData', 'main');
   await setDoc(ref, updates, { merge: true });
-},
+}
 
 
