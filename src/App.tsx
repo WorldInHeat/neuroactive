@@ -729,7 +729,11 @@ export default function App() {
     }
 
     if (nextNode.type === 'video') {
-      const newPrescriptions = [...activePrescriptions.filter((id) => id !== nextId), nextId];
+      const toRemove = new Set(nextNode.replaces ?? []);
+      const newPrescriptions = [
+        ...activePrescriptions.filter((id) => id !== nextId && !toRemove.has(id)),
+        nextId,
+      ];
       setActivePrescriptions(newPrescriptions);
       updates.activePrescriptions = newPrescriptions;
     }
@@ -1067,11 +1071,14 @@ export default function App() {
           isPremium={isPremium}
           onUnlock={() => setCurrentView('paywall')}
           onPlay={(id) => {
+            const newHistory = [...history, currentNodeId];
+            setHistory(newHistory);
+            saveUserData({ history: newHistory });
             attemptNavigation('assessment', id, true);
           }}
         />
       )}
-      <DevTimeSkip />
+      {import.meta.env.DEV && <DevTimeSkip />}
     </>
   );
 }
