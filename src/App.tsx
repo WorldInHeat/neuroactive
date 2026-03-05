@@ -378,9 +378,31 @@ const PainGraph = ({ logs }: { logs: PainLogEntry[] }) => {
   const last7Logs = logs.slice(-7);
   if (logs.length === 0) return null;
 
+  let trend: { label: string; color: string; Icon: typeof TrendingDown } | null = null;
+  if (logs.length >= 3) {
+    const last3 = logs.slice(-3);
+    const prevAvg = (last3[0].score + last3[1].score) / 2;
+    const latest = last3[2].score;
+    if (latest < prevAvg - 0.5) {
+      trend = { label: 'Pain improving', color: '#00e096', Icon: TrendingDown };
+    } else if (latest > prevAvg + 0.5) {
+      trend = { label: 'Pain worsening', color: '#ff4466', Icon: TrendingUp };
+    } else {
+      trend = { label: 'Holding steady', color: '#ffcc00', Icon: Minus };
+    }
+  }
+
   return (
     <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] mt-6">
-      <h3 className="font-bold text-sm text-[#6b849e] uppercase tracking-wider mb-4">Pain History</h3>
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="font-bold text-sm text-[#6b849e] uppercase tracking-wider">Pain History</h3>
+        {trend && (
+          <div className="flex items-center gap-1 text-xs font-bold" style={{ color: trend.color }}>
+            <trend.Icon size={13} />
+            {trend.label}
+          </div>
+        )}
+      </div>
       <div className="flex items-end justify-between h-32 gap-2">
         {last7Logs.map((log, i) => (
           <div key={i} className="flex flex-col items-center flex-1">
@@ -855,6 +877,27 @@ export default function App() {
     const today = todayISO();
     const todayLog = painLog.find((log) => log.date === today);
 
+    const streak = (() => {
+      if (painLog.length === 0) return 0;
+      const logDates = new Set(painLog.map((l) => l.date));
+      const cursor = new Date(simulatedTime);
+      if (!logDates.has(cursor.toISOString().split('T')[0])) {
+        cursor.setDate(cursor.getDate() - 1);
+      }
+      let count = 0;
+      while (logDates.has(cursor.toISOString().split('T')[0])) {
+        count++;
+        cursor.setDate(cursor.getDate() - 1);
+      }
+      return count;
+    })();
+
+    const flagAccent: Record<string, string> = {
+      green: '#00e096',
+      yellow: '#ffcc00',
+      red: '#ff4466',
+    };
+
     return (
       <div className="min-h-screen bg-[#080d1a] pb-20">
         <div className="border-b sticky top-0 z-30 bg-[#0f1829] border-[#1a2a42]">
@@ -887,6 +930,12 @@ export default function App() {
               <p className="text-[#6b849e]">
                 You are currently on the <span className="font-bold text-[#00d4c8]">{activeJourney || 'General'}</span> track.
               </p>
+              {streak > 0 && (
+                <div className="flex items-center gap-1.5 mt-3 text-sm font-bold" style={{ color: '#ffcc00' }}>
+                  <Activity size={14} />
+                  {streak}-day check-in streak
+                </div>
+              )}
             </div>
             <button
               onClick={() => {
@@ -935,11 +984,13 @@ export default function App() {
                 {activePrescriptions.map((id) => {
                   const node = DECISION_TREE[id];
                   if (!node) return null;
+                  const accentColor = node.flagLevel ? flagAccent[node.flagLevel] : undefined;
                   return (
                     <button
                       key={id}
                       onClick={() => attemptNavigation('assessment', id, true)}
                       className="w-full bg-[#080d1a] p-4 rounded-lg border border-[#1a2a42] flex justify-between items-center hover:border-[#7c5cfc]/50 hover:bg-[#7c5cfc]/5 transition-all text-left"
+                      style={accentColor ? { borderLeftColor: accentColor, borderLeftWidth: '3px' } : undefined}
                     >
                       <div>
                         <h4 className="font-bold text-[#f0f4f8]">{node.text}</h4>
