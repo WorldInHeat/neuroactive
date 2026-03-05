@@ -964,13 +964,17 @@ export default function App() {
 
     if (!currentNode) {
       return (
-        <div className="min-h-screen bg-gray-50 p-6">
-          <div className="max-w-2xl mx-auto bg-white p-6 rounded-xl border">
-            <h2 className="text-xl font-bold text-red-700">Missing Node</h2>
-            <p className="text-gray-600 mt-2">
-              The decision tree does not contain a node with id: <span className="font-mono">{currentNodeId}</span>
+        <div className="min-h-screen bg-[#080d1a] p-6">
+          <div className="max-w-2xl mx-auto bg-[#0f1829] p-6 rounded-xl border border-[#1a2a42]">
+            <h2 className="text-xl font-bold text-[#ff4466]">Missing Node</h2>
+            <p className="text-[#6b849e] mt-2">
+              The decision tree does not contain a node with id: <span className="font-mono text-[#f0f4f8]">{currentNodeId}</span>
             </p>
-            <button onClick={() => { setCurrentNodeId('start'); setHistory([]); }} className="mt-4 bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold">
+            <button
+              onClick={() => { setCurrentNodeId('start'); setHistory([]); }}
+              className="mt-4 px-4 py-2 rounded-lg font-semibold text-[#080d1a]"
+              style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+            >
               Go to start
             </button>
           </div>
@@ -978,85 +982,117 @@ export default function App() {
       );
     }
 
+    const flagMap = {
+      green:  { color: '#00e096', label: currentNode.flagText || 'Safe to self-manage' },
+      yellow: { color: '#ffcc00', label: currentNode.flagText || 'Caution — proceed carefully' },
+      red:    { color: '#ff4466', label: currentNode.flagText || 'Stop — refer out' },
+    };
+    const flag = currentNode.flagLevel ? flagMap[currentNode.flagLevel] : null;
+
+    const depth = history.length;
+    const progressPct = Math.min((depth / 12) * 100, 100);
+
     return (
-      <div className="min-h-screen bg-gray-50 pb-20">
-        <div className="bg-white shadow-sm p-4 sticky top-0 z-30 flex items-center justify-between">
-          <button
-            onClick={() => {
-              setAutoplayToken(null);
-              if (history.length > 0) {
-                const prevId = history[history.length - 1];
-                setCurrentNodeId(prevId);
-                setHistory((prev) => prev.slice(0, -1));
-              } else {
-                setCurrentView('dashboard');
-              }
-            }}
-            className="text-gray-500 hover:text-gray-900 flex items-center gap-1"
-          >
-            <ArrowLeft size={20} /> Back
-          </button>
-          <div className="font-semibold text-gray-700">Assessment</div>
-          <div className="w-16"></div>
+      <div className="min-h-screen bg-[#080d1a] pb-20">
+        {/* Header */}
+        <div className="bg-[#0f1829] border-b border-[#1a2a42] sticky top-0 z-30">
+          <div className="p-4 flex items-center justify-between">
+            <button
+              onClick={() => {
+                setAutoplayToken(null);
+                if (history.length > 0) {
+                  const prevId = history[history.length - 1];
+                  setCurrentNodeId(prevId);
+                  setHistory((prev) => prev.slice(0, -1));
+                } else {
+                  setCurrentView('dashboard');
+                }
+              }}
+              className="text-[#6b849e] hover:text-[#f0f4f8] flex items-center gap-1 transition-colors"
+            >
+              <ArrowLeft size={20} /> Back
+            </button>
+            <div className="font-semibold text-[#f0f4f8]">Assessment</div>
+            <div className="text-sm font-medium text-[#6b849e] w-16 text-right">
+              {depth === 0 ? 'Start' : `Step ${depth + 1}`}
+            </div>
+          </div>
+          {/* Progress bar */}
+          <div className="h-0.5 bg-[#1a2a42]">
+            <div
+              className="h-full transition-all duration-500 ease-out"
+              style={{ width: `${progressPct}%`, background: 'linear-gradient(90deg, #00d4c8, #7c5cfc)' }}
+            />
+          </div>
         </div>
 
         <div className="max-w-2xl mx-auto p-6 mt-6">
-          <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 text-center mb-8">
-            <h2 className="text-2xl font-bold text-gray-900 mb-4">{currentNode.text}</h2>
-            <p className="text-gray-600 mb-6">{currentNode.description}</p>
-
-            {/* <CentralizationGraphic /> */}
+          {/* Node card */}
+          <div className="bg-[#0f1829] p-8 rounded-2xl border border-[#1a2a42] text-center mb-6">
+            {flag && (
+              <div
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold mb-5"
+                style={{
+                  backgroundColor: `${flag.color}18`,
+                  color: flag.color,
+                  border: `1px solid ${flag.color}40`,
+                }}
+              >
+                <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: flag.color }} />
+                {flag.label}
+              </div>
+            )}
+            <h2 className="text-2xl font-bold text-[#f0f4f8] mb-4">{currentNode.text}</h2>
+            <p className="text-[#6b849e]">{currentNode.description}</p>
           </div>
 
+          {/* Video player */}
           {currentNode.type === 'video' && currentNode.videoId && (
             <VideoPlayer
-              key={currentNodeId} 
+              key={currentNodeId}
               nodeId={currentNodeId}
               title={currentNode.text}
               frequency={currentNode.prescriptionFrequency}
               videoId={currentNode.videoId}
-              autoplayToken={autoplayToken} // CHANGED: Passed token instead of trigger
-              onConsumeAutoplay={() => setAutoplayToken(null)} // CHANGED: Clear token after use
+              autoplayToken={autoplayToken}
+              onConsumeAutoplay={() => setAutoplayToken(null)}
             />
           )}
 
+          {/* Question options */}
           {currentNode.type !== 'video' && (
-            <div className="grid gap-4">
+            <div className="grid gap-3">
               {currentNode.options?.map((opt, idx) => (
                 <button
                   key={idx}
                   onClick={() => handleOptionClick(opt.nextId)}
-                  className="bg-white hover:bg-blue-50 border-2 border-transparent hover:border-blue-500 p-6 rounded-xl shadow-sm transition-all text-left group flex items-center justify-between"
+                  className="bg-[#0f1829] hover:bg-[#00d4c8]/5 border border-[#1a2a42] hover:border-[#00d4c8]/40 p-5 rounded-xl transition-all text-left group flex items-center justify-between"
                 >
-                  <span className="text-lg font-medium text-gray-700 group-hover:text-blue-700">{opt.label}</span>
-                  <ChevronRight className="text-gray-300 group-hover:text-blue-500" />
+                  <span className="text-base font-medium text-[#f0f4f8] group-hover:text-[#00d4c8] transition-colors">{opt.label}</span>
+                  <ChevronRight className="text-[#1a2a42] group-hover:text-[#00d4c8] flex-shrink-0 transition-colors" />
                 </button>
               ))}
             </div>
           )}
 
+          {/* Clinical check-in for video nodes */}
           {currentNode.type === 'video' && (
-            <div className="rounded-xl p-6 bg-blue-50 border border-blue-100">
-              <h3 className="font-bold text-gray-900 mb-4">Clinical Check-In</h3>
+            <div className="rounded-xl p-6 mt-4 bg-[#0f1829] border border-[#1a2a42]">
+              <h3 className="font-bold text-[#f0f4f8] mb-4">Clinical Check-In</h3>
               <div className="grid gap-3">
                 {currentNode.options?.map((opt, idx) => (
                   <button
                     key={idx}
                     onClick={() => handleOptionClick(opt.nextId)}
-                    className="bg-white p-4 rounded-lg border border-blue-100 hover:border-blue-300 hover:shadow-md text-left transition-all flex justify-between items-center group"
+                    className="bg-[#080d1a] p-4 rounded-lg border border-[#1a2a42] hover:border-[#7c5cfc]/50 hover:bg-[#7c5cfc]/5 text-left transition-all flex justify-between items-center group"
                   >
-                    <span className="font-medium text-gray-700 group-hover:text-blue-700">{opt.label}</span>
-                    <ChevronRight className="text-gray-400 group-hover:text-blue-500" size={20} />
+                    <span className="font-medium text-[#6b849e] group-hover:text-[#f0f4f8] transition-colors">{opt.label}</span>
+                    <ChevronRight className="text-[#1a2a42] group-hover:text-[#7c5cfc] flex-shrink-0 transition-colors" size={20} />
                   </button>
                 ))}
               </div>
             </div>
           )}
-
-          {/* Example: if you ever want to show lock status in UI */}
-          {/* <div className="mt-6 text-xs text-gray-400">
-            Locked? {String(isPhaseLocked('lb_phase_0'))} | Checked in today? {String(hasTodayCheckIn())} | lastCheckInAt: {String(lastCheckInAt)}
-          </div> */}
         </div>
       </div>
     );
