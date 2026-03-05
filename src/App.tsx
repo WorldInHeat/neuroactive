@@ -171,81 +171,89 @@ const SettingsView = ({
   onUpgrade: () => void;
 }) => {
   return (
-    <div className="min-h-screen bg-gray-50 pb-20">
-      <div className="bg-white border-b sticky top-0 z-30 flex items-center justify-between p-4">
-        <button onClick={onBack} className="text-gray-500 hover:text-gray-900 flex items-center gap-1">
+    <div className="min-h-screen bg-[#080d1a] pb-20">
+      <div className="bg-[#0f1829] border-b border-[#1a2a42] sticky top-0 z-30 flex items-center justify-between p-4">
+        <button onClick={onBack} className="text-[#6b849e] hover:text-[#f0f4f8] flex items-center gap-1 transition-colors">
           <ArrowLeft size={20} /> Back
         </button>
-        <div className="font-semibold text-gray-700">Profile & Settings</div>
+        <div className="font-semibold text-[#f0f4f8]">Profile & Settings</div>
         <div className="w-16"></div>
       </div>
 
       <div className="max-w-xl mx-auto p-6 space-y-6">
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4">
-          <div className="bg-blue-100 p-4 rounded-full">
-            <User size={32} className="text-blue-600" />
+        {/* User card */}
+        <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] flex items-center gap-4">
+          <div className="bg-[#00d4c8]/15 p-4 rounded-full border border-[#00d4c8]/30">
+            <User size={32} className="text-[#00d4c8]" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-gray-900">Guest User</h2>
-            <p className="text-sm text-gray-500">NeuroActive Member</p>
+            <h2 className="text-xl font-bold text-[#f0f4f8]">Guest User</h2>
+            <p className="text-sm text-[#6b849e]">NeuroActive Member</p>
           </div>
         </div>
 
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-          <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2">
-            <CreditCard size={20} className="text-purple-600" /> Subscription
+        {/* Subscription */}
+        <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42]">
+          <h3 className="font-bold text-[#f0f4f8] mb-4 flex items-center gap-2">
+            <CreditCard size={20} className="text-[#7c5cfc]" /> Subscription
           </h3>
-          <div className="flex justify-between items-center bg-gray-50 p-4 rounded-xl border border-gray-200">
+          <div className="flex justify-between items-center bg-[#080d1a] p-4 rounded-xl border border-[#1a2a42]">
             <div>
-              <span className="text-xs font-bold text-gray-500 uppercase">Current Plan</span>
-              <div className="text-lg font-bold text-gray-900">{isPremium ? 'God Mode (Pro)' : 'Free Tier'}</div>
+              <span className="text-xs font-bold text-[#6b849e] uppercase">Current Plan</span>
+              <div className="text-lg font-bold text-[#f0f4f8]">{isPremium ? 'God Mode (Pro)' : 'Free Tier'}</div>
             </div>
             {isPremium ? (
-              <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold">Active</span>
+              <span className="bg-[#00e096]/15 text-[#00e096] border border-[#00e096]/30 px-3 py-1 rounded-full text-xs font-bold">Active</span>
             ) : (
-              <button onClick={onUpgrade} className="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-purple-700">
+              <button
+                onClick={onUpgrade}
+                className="px-4 py-2 rounded-lg text-sm font-bold text-[#080d1a] hover:opacity-90 transition-all"
+                style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+              >
                 Upgrade
               </button>
             )}
           </div>
         </div>
 
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 space-y-4">
-          <h3 className="font-bold text-gray-900 flex items-center gap-2">
-            <HelpCircle size={20} className="text-blue-600" /> Support
+        {/* Support */}
+        <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] space-y-1">
+          <h3 className="font-bold text-[#f0f4f8] mb-3 flex items-center gap-2">
+            <HelpCircle size={20} className="text-[#00d4c8]" /> Support
           </h3>
-          <button className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 text-left">
-            <span className="flex items-center gap-3 text-gray-700">
+          <button className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-[#1a2a42] text-left transition-colors">
+            <span className="flex items-center gap-3 text-[#6b849e]">
               <Mail size={18} /> Contact Dr. Bruene
             </span>
-            <ChevronRight size={16} className="text-gray-400" />
+            <ChevronRight size={16} className="text-[#1a2a42]" />
           </button>
-          <button className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 text-left">
-            <span className="flex items-center gap-3 text-gray-700">
+          <button className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-[#1a2a42] text-left transition-colors">
+            <span className="flex items-center gap-3 text-[#6b849e]">
               <FileText size={18} /> Terms of Service
             </span>
-            <ChevronRight size={16} className="text-gray-400" />
+            <ChevronRight size={16} className="text-[#1a2a42]" />
           </button>
         </div>
 
-        <div className="bg-red-50 p-6 rounded-2xl border border-red-100">
-          <h3 className="font-bold text-red-900 mb-2 flex items-center gap-2">
+        {/* Danger zone */}
+        <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#ff4466]/20">
+          <h3 className="font-bold text-[#ff4466] mb-2 flex items-center gap-2">
             <ShieldAlert size={20} /> Danger Zone
           </h3>
-          <p className="text-sm text-red-700 mb-4">Resetting your journey will clear your current prescription and history. This cannot be undone.</p>
+          <p className="text-sm text-[#6b849e] mb-4">Resetting your journey will clear your current prescription and history. This cannot be undone.</p>
           <button
             onClick={() => {
               if (confirm('Are you sure you want to reset your journey? All progress will be lost.')) {
                 onReset();
               }
             }}
-            className="w-full bg-white border border-red-200 text-red-600 py-3 rounded-lg font-bold hover:bg-red-50 transition-colors flex items-center justify-center gap-2"
+            className="w-full bg-[#080d1a] border border-[#ff4466]/30 text-[#ff4466] py-3 rounded-lg font-bold hover:bg-[#ff4466]/10 transition-colors flex items-center justify-center gap-2"
           >
             <Trash2 size={18} /> Reset Journey
           </button>
         </div>
 
-        <button onClick={onLogout} className="w-full text-gray-400 font-medium py-4 hover:text-gray-600 flex items-center justify-center gap-2">
+        <button onClick={onLogout} className="w-full text-[#6b849e] font-medium py-4 hover:text-[#f0f4f8] flex items-center justify-center gap-2 transition-colors">
           <LogOut size={18} /> Sign Out
         </button>
       </div>
@@ -422,29 +430,29 @@ const PainGraph = ({ logs }: { logs: PainLogEntry[] }) => {
   );
 };
 
-// UPDATED: Now uses declarative navigation + autoplay
 const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUnlock: () => void; onPlay: (id: string) => void }) => {
   const [filter, setFilter] = useState<'All' | 'Supine' | 'Prone' | 'Side Lying' | 'Quadruped' | 'MDT'>('All');
 
   const libraryItems = Object.values(DECISION_TREE).filter((node) => node.type === 'video' && node.libraryCategory);
-
   const filteredItems = filter === 'All' ? libraryItems : libraryItems.filter((item) => item.libraryCategory === filter);
 
   return (
-    <div className="min-h-screen bg-gray-50 pb-20">
-      <div className="bg-white border-b sticky top-0 z-30 p-4">
-        <h2 className="text-2xl font-bold text-gray-900 mb-4 flex items-center gap-2">
-          <Library className="text-blue-600" /> Movement Library
+    <div className="min-h-screen bg-[#080d1a] pb-20">
+      <div className="bg-[#0f1829] border-b border-[#1a2a42] sticky top-0 z-30 p-4">
+        <h2 className="text-2xl font-bold text-[#f0f4f8] mb-4 flex items-center gap-2">
+          <Library className="text-[#00d4c8]" /> Movement Library
         </h2>
-
         <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
           {['All', 'Supine', 'Prone', 'Side Lying', 'Quadruped', 'MDT'].map((cat) => (
             <button
               key={cat}
               onClick={() => setFilter(cat as any)}
-              className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${
-                filter === cat ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
+              className="px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-all"
+              style={
+                filter === cat
+                  ? { background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)', color: '#080d1a' }
+                  : { backgroundColor: '#1a2a42', color: '#6b849e' }
+              }
             >
               {cat}
             </button>
@@ -454,52 +462,54 @@ const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUn
 
       <div className="p-4 grid md:grid-cols-2 gap-4 max-w-5xl mx-auto">
         {!isPremium && (
-          <div className="col-span-full bg-gradient-to-r from-indigo-600 to-purple-700 rounded-xl p-6 text-white shadow-lg mb-4">
-            <div className="flex justify-between items-center">
-              <div>
-                <h3 className="font-bold text-xl mb-1">Unlock "God Mode"</h3>
-                <p className="text-indigo-100 text-sm">Access the full DNS & MDT exercise library.</p>
-              </div>
-              <button onClick={onUnlock} className="bg-white text-indigo-700 px-4 py-2 rounded-lg font-bold hover:bg-indigo-50 transition-colors">
-                Upgrade
-              </button>
+          <div className="col-span-full rounded-xl p-6 mb-2 border border-[#00d4c8]/20 flex justify-between items-center" style={{ background: 'linear-gradient(135deg, rgba(0,212,200,0.12), rgba(124,92,252,0.12))' }}>
+            <div>
+              <h3 className="font-bold text-lg text-[#f0f4f8] mb-1">Unlock God Mode</h3>
+              <p className="text-[#6b849e] text-sm">Access the full DNS & MDT exercise library.</p>
             </div>
+            <button
+              onClick={onUnlock}
+              className="px-4 py-2 rounded-lg font-bold text-sm text-[#080d1a] hover:opacity-90 transition-all flex-shrink-0 ml-4"
+              style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+            >
+              Upgrade
+            </button>
           </div>
         )}
 
         {filteredItems.map((item) => (
-          <div key={item.id} className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden group hover:shadow-md transition-all">
-            <div className="aspect-video bg-gray-100 relative flex items-center justify-center">
+          <div key={item.id} className="bg-[#0f1829] rounded-xl border border-[#1a2a42] overflow-hidden group hover:border-[#00d4c8]/30 transition-all">
+            <div className="aspect-video relative flex items-center justify-center">
+              {/* Dark thumbnail background */}
+              <div className="absolute inset-0 bg-gradient-to-br from-[#0f1829] via-[#1a2a42] to-[#080d1a]" />
+              <div className="absolute inset-0 opacity-25 bg-[radial-gradient(circle_at_30%_20%,#00d4c8,transparent_50%),radial-gradient(circle_at_70%_70%,#7c5cfc,transparent_50%)]" />
+
               {item.isPremium && !isPremium ? (
-                <div className="absolute inset-0 bg-gray-900/60 flex flex-col items-center justify-center text-white backdrop-blur-sm z-10">
-                  <Lock size={32} className="mb-2" />
-                  <span className="text-xs font-bold uppercase tracking-wider">Premium Content</span>
+                <div className="absolute inset-0 bg-[#080d1a]/70 flex flex-col items-center justify-center backdrop-blur-sm z-10">
+                  <Lock size={28} className="mb-2 text-[#6b849e]" />
+                  <span className="text-xs font-bold text-[#6b849e] uppercase tracking-wider">Premium</span>
                 </div>
               ) : (
-                <Play size={40} className="text-gray-400 group-hover:text-blue-600 transition-colors" />
+                <Play size={36} className="relative z-10 text-[#6b849e] group-hover:text-[#00d4c8] transition-colors" />
               )}
 
-              <div className="absolute inset-0 bg-gradient-to-br from-slate-200 via-slate-100 to-white" />
-              <div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_30%_20%,rgba(59,130,246,0.35),transparent_45%),radial-gradient(circle_at_70%_60%,rgba(99,102,241,0.35),transparent_50%)]" />
-              <div className="absolute bottom-3 left-3 right-3 text-white/90 drop-shadow">
-                <div className="text-xs font-semibold uppercase tracking-wider opacity-80">{item.libraryCategory}</div>
-                <div className="text-sm font-bold line-clamp-1">{item.text}</div>
+              <div className="absolute bottom-3 left-3 right-3 z-10">
+                <div className="text-xs font-semibold text-[#6b849e] uppercase tracking-wider">{item.libraryCategory}</div>
+                <div className="text-sm font-bold text-[#f0f4f8] line-clamp-1">{item.text}</div>
               </div>
             </div>
 
             <div className="p-4">
               <div className="flex justify-between items-start mb-2">
-                <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded">{item.libraryCategory}</span>
+                <span className="text-xs font-bold text-[#00d4c8] bg-[#00d4c8]/10 px-2 py-1 rounded">{item.libraryCategory}</span>
                 {item.isPremium && (
-                  <span className="text-xs text-amber-600 font-medium flex items-center gap-1">
+                  <span className="text-xs text-[#7c5cfc] font-bold flex items-center gap-1">
                     <Activity size={12} /> Pro
                   </span>
                 )}
               </div>
-
-              <h3 className="font-bold text-gray-900 mb-1">{item.text}</h3>
-              <p className="text-xs text-gray-500 line-clamp-2">{item.description}</p>
-
+              <h3 className="font-bold text-[#f0f4f8] mb-1">{item.text}</h3>
+              <p className="text-xs text-[#6b849e] line-clamp-2">{item.description}</p>
               <button
                 onClick={() => {
                   if (item.isPremium && !isPremium) {
@@ -508,7 +518,7 @@ const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUn
                     onPlay(item.id);
                   }
                 }}
-                className="mt-4 w-full border border-gray-200 text-gray-600 text-sm font-medium py-2 rounded-lg hover:bg-gray-50 transition-colors"
+                className="mt-4 w-full border border-[#00d4c8]/40 text-[#00d4c8] text-sm font-medium py-2 rounded-lg hover:bg-[#00d4c8]/10 transition-colors"
               >
                 {item.isPremium && !isPremium ? 'Unlock to Watch' : 'Watch Video'}
               </button>
@@ -851,21 +861,78 @@ export default function App() {
 
 
   const Paywall = () => (
-    <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
-      <div className="bg-white max-w-lg w-full rounded-2xl overflow-hidden shadow-2xl relative">
-        <div className="bg-gradient-to-r from-blue-600 to-indigo-700 p-8 text-white text-center">
-          <Lock className="mx-auto mb-4 opacity-80" size={48} />
-          <h2 className="text-3xl font-bold mb-2">Unlock God Mode</h2>
-          <p className="opacity-90">Access the entire DNS Developmental Library and all advanced protocols.</p>
+    <div className="min-h-screen bg-[#080d1a] overflow-y-auto">
+      <div className="max-w-lg mx-auto px-6 py-12 space-y-8">
+        {/* Back */}
+        <button onClick={() => setCurrentView('dashboard')} className="text-[#6b849e] hover:text-[#f0f4f8] flex items-center gap-1 transition-colors text-sm">
+          <ArrowLeft size={16} /> Back
+        </button>
+
+        {/* Doctor header */}
+        <div className="text-center">
+          <div
+            className="w-20 h-20 rounded-full mx-auto mb-5 flex items-center justify-center border-2 border-[#00d4c8]/40"
+            style={{ background: 'linear-gradient(135deg, rgba(0,212,200,0.15), rgba(124,92,252,0.15))' }}
+          >
+            <User size={36} className="text-[#00d4c8]" />
+          </div>
+          <h1 className="text-2xl font-extrabold text-[#f0f4f8] mb-2">Dr. Adam Bruene, D.C., Cert. MDT, DNSP</h1>
+          <p className="text-[#6b849e] text-sm leading-relaxed max-w-sm mx-auto">
+            The only app built on dual certification in McKenzie MDT and Dynamic Neuromuscular Stabilization
+          </p>
         </div>
-        <div className="p-8 space-y-6">
+
+        {/* Credential pills */}
+        <div className="flex flex-wrap justify-center gap-2">
+          {[
+            'Licensed Chiropractic Physician · Illinois',
+            'Certified McKenzie Practitioner (MDT)',
+            'DNS Certified Practitioner (DNSP)',
+          ].map((cred) => (
+            <span
+              key={cred}
+              className="text-xs font-semibold px-3 py-1.5 rounded-full text-[#00d4c8]"
+              style={{ border: '1px solid rgba(0,212,200,0.4)', backgroundColor: 'rgba(0,212,200,0.08)' }}
+            >
+              {cred}
+            </span>
+          ))}
+        </div>
+
+        {/* Bio */}
+        <div className="bg-[#0f1829] border border-[#1a2a42] rounded-2xl p-6">
+          <p className="text-[#6b849e] text-sm leading-relaxed">
+            "15+ years of clinical experience in spine rehabilitation and movement-based care. Treated patients across MLB, NHL, MLS, and international rugby. This app runs on the same clinical reasoning frameworks used in real practice — not generic exercise content."
+          </p>
+        </div>
+
+        {/* Feature list */}
+        <div className="bg-[#0f1829] border border-[#1a2a42] rounded-2xl p-6 space-y-3">
+          <h3 className="font-bold text-[#f0f4f8] mb-4">What you unlock</h3>
+          {[
+            'Full DNS Developmental Exercise Library',
+            'All MDT Assessment Protocols',
+            'Cervical & Lumbar clinical pathways',
+            'Premium video instruction for every drill',
+            'New clinical content added regularly',
+          ].map((feature) => (
+            <div key={feature} className="flex items-start gap-3">
+              <CheckCircle size={16} className="text-[#00d4c8] flex-shrink-0 mt-0.5" />
+              <span className="text-sm text-[#f0f4f8]">{feature}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* CTA */}
+        <div className="space-y-3 pb-8">
           <button
             onClick={handleUpgrade}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl shadow-md transition-all flex justify-center items-center gap-2"
+            className="w-full py-4 rounded-xl font-bold text-lg text-[#080d1a] hover:opacity-90 active:scale-95 transition-all flex justify-center items-center gap-2"
+            style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
           >
             <CreditCard size={20} /> Start 7-Day Free Trial
           </button>
-          <button onClick={() => setCurrentView('dashboard')} className="w-full mt-3 text-gray-500 text-sm hover:text-gray-700">
+          <button onClick={() => setCurrentView('dashboard')} className="w-full text-[#6b849e] text-sm hover:text-[#f0f4f8] transition-colors py-2">
             No thanks, take me back
           </button>
         </div>
