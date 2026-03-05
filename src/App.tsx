@@ -289,17 +289,17 @@ const PainTracker = ({
 
   if (submitted) {
     return (
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-green-100 text-center animate-fade-in">
-        <CheckCircle className="text-green-500 mx-auto mb-2" size={32} />
-        <h3 className="font-bold text-gray-900">Check-in Complete</h3>
-        <p className="text-sm text-gray-500">Thanks for logging your progress today.</p>
+      <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#00e096]/20 text-center animate-fade-in">
+        <CheckCircle className="text-[#00e096] mx-auto mb-2" size={32} />
+        <h3 className="font-bold text-[#f0f4f8]">Check-in Complete</h3>
+        <p className="text-sm text-[#6b849e]">Thanks for logging your progress today.</p>
         <div className="mt-4 flex justify-center gap-4 text-sm">
-          <div className="bg-gray-50 px-3 py-1 rounded">
+          <div className="bg-[#1a2a42] text-[#f0f4f8] px-3 py-1 rounded">
             Pain: <strong>{score}/10</strong>
           </div>
           <div
             className={`px-3 py-1 rounded font-bold ${
-              status === 'Better' ? 'bg-green-100 text-green-700' : status === 'Worse' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+              status === 'Better' ? 'bg-[#00e096]/15 text-[#00e096]' : status === 'Worse' ? 'bg-[#ff4466]/15 text-[#ff4466]' : 'bg-[#ffcc00]/15 text-[#ffcc00]'
             }`}
           >
             {status}
@@ -310,35 +310,35 @@ const PainTracker = ({
   }
 
   return (
-    <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-      <h3 className="font-bold text-lg text-gray-900 mb-4 flex items-center gap-2">
-        <Activity className="text-blue-600" /> Daily Check-in
+    <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42]">
+      <h3 className="font-bold text-lg text-[#f0f4f8] mb-4 flex items-center gap-2">
+        <Activity className="text-[#00d4c8]" /> Daily Check-in
       </h3>
 
       <div className="mb-6">
-        <label className="block text-sm font-medium text-gray-700 mb-2">Pain Level (0-10)</label>
+        <label className="block text-sm font-medium text-[#6b849e] mb-2">Pain Level (0-10)</label>
         <input
           type="range"
           min="0"
           max="10"
           value={score}
           onChange={(e) => setScore(parseInt(e.target.value))}
-          className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+          className="w-full h-2 bg-[#1a2a42] rounded-lg appearance-none cursor-pointer accent-[#00d4c8]"
         />
-        <div className="flex justify-between text-xs text-gray-400 mt-1">
+        <div className="flex justify-between text-xs text-[#6b849e] mt-1">
           <span>No Pain</span>
-          <span className="font-bold text-gray-900 text-lg">{score}</span>
+          <span className="font-bold text-[#f0f4f8] text-lg">{score}</span>
           <span>Worst Possible</span>
         </div>
       </div>
 
       <div className="mb-6">
-        <label className="block text-sm font-medium text-gray-700 mb-2">Status vs Yesterday</label>
+        <label className="block text-sm font-medium text-[#6b849e] mb-2">Status vs Yesterday</label>
         <div className="grid grid-cols-3 gap-2">
           <button
             onClick={() => setStatus('Better')}
             className={`p-3 rounded-lg border text-sm font-medium transition-all ${
-              status === 'Better' ? 'bg-green-600 text-white border-green-600' : 'bg-white border-gray-200 text-gray-600 hover:border-green-500'
+              status === 'Better' ? 'bg-[#00e096]/20 text-[#00e096] border-[#00e096]' : 'bg-[#080d1a] border-[#1a2a42] text-[#6b849e] hover:border-[#00e096]/50'
             }`}
           >
             <TrendingUp className="mx-auto mb-1" size={16} /> Better
@@ -346,7 +346,7 @@ const PainTracker = ({
           <button
             onClick={() => setStatus('Same')}
             className={`p-3 rounded-lg border text-sm font-medium transition-all ${
-              status === 'Same' ? 'bg-yellow-500 text-white border-yellow-500' : 'bg-white border-gray-200 text-gray-600 hover:border-yellow-400'
+              status === 'Same' ? 'bg-[#ffcc00]/20 text-[#ffcc00] border-[#ffcc00]' : 'bg-[#080d1a] border-[#1a2a42] text-[#6b849e] hover:border-[#ffcc00]/50'
             }`}
           >
             <Minus className="mx-auto mb-1" size={16} /> Same
@@ -354,7 +354,7 @@ const PainTracker = ({
           <button
             onClick={() => setStatus('Worse')}
             className={`p-3 rounded-lg border text-sm font-medium transition-all ${
-              status === 'Worse' ? 'bg-red-600 text-white border-red-600' : 'bg-white border-gray-200 text-gray-600 hover:border-red-500'
+              status === 'Worse' ? 'bg-[#ff4466]/20 text-[#ff4466] border-[#ff4466]' : 'bg-[#080d1a] border-[#1a2a42] text-[#6b849e] hover:border-[#ff4466]/50'
             }`}
           >
             <TrendingDown className="mx-auto mb-1" size={16} /> Worse
@@ -365,7 +365,8 @@ const PainTracker = ({
       <button
         onClick={handleSubmit}
         disabled={!status}
-        className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold disabled:opacity-50 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
+        className="w-full py-3 rounded-lg font-bold disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-90 transition-all text-[#080d1a]"
+        style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
       >
         Save Log
       </button>
@@ -378,18 +379,20 @@ const PainGraph = ({ logs }: { logs: PainLogEntry[] }) => {
   if (logs.length === 0) return null;
 
   return (
-    <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mt-6">
-      <h3 className="font-bold text-sm text-gray-500 uppercase tracking-wider mb-4">Pain History</h3>
+    <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] mt-6">
+      <h3 className="font-bold text-sm text-[#6b849e] uppercase tracking-wider mb-4">Pain History</h3>
       <div className="flex items-end justify-between h-32 gap-2">
         {last7Logs.map((log, i) => (
           <div key={i} className="flex flex-col items-center flex-1">
             <div
-              className={`w-full rounded-t-sm transition-all ${
-                log.score < 4 ? 'bg-green-400' : log.score < 7 ? 'bg-yellow-400' : 'bg-red-400'
-              }`}
-              style={{ height: `${(log.score / 10) * 100}%`, minHeight: '4px' }}
+              className="w-full rounded-t-sm transition-all"
+              style={{
+                height: `${(log.score / 10) * 100}%`,
+                minHeight: '4px',
+                backgroundColor: log.score < 4 ? '#00e096' : log.score < 7 ? '#ffcc00' : '#ff4466',
+              }}
             />
-            <span className="text-[10px] text-gray-400 mt-1">{log.date.slice(5)}</span>
+            <span className="text-[10px] text-[#6b849e] mt-1">{log.date.slice(5)}</span>
           </div>
         ))}
       </div>
@@ -756,8 +759,11 @@ export default function App() {
   };
 
   const LandingPage = () => (
-    <div className="flex flex-col min-h-screen bg-white">
-      <header className="flex justify-between items-center p-6 border-b sticky top-0 z-50 bg-white/80 backdrop-blur-md border-gray-100">
+    <div className="flex flex-col min-h-screen bg-[#080d1a]">
+      <header
+        className="flex justify-between items-center p-6 border-b sticky top-0 z-50 backdrop-blur-md border-[#1a2a42]"
+        style={{ backgroundColor: 'rgba(8,13,26,0.85)' }}
+      >
         <div className="flex items-center gap-2">
           <img
             src="/logo.png"
@@ -767,38 +773,52 @@ export default function App() {
               (e.currentTarget as HTMLImageElement).src = '/logo.png';
             }}
           />
-          <span className="text-xl font-bold text-gray-900">NeuroActive</span>
+          <span className="text-xl font-bold text-[#f0f4f8]">NeuroActive</span>
         </div>
         <button
           onClick={() => attemptNavigation('dashboard')}
-          className="text-sm font-semibold text-gray-600 hover:text-blue-600"
+          className="text-sm font-semibold text-[#00d4c8] hover:opacity-80 transition-opacity"
         >
           Login
         </button>
       </header>
 
-      <main className="flex-1 flex flex-col items-center justify-center text-center p-8 bg-gradient-to-b from-blue-50 to-white">
+      <main className="flex-1 flex flex-col items-center justify-center text-center px-8 py-16 relative overflow-hidden">
+        {/* ambient glow blobs */}
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[600px] rounded-full opacity-10 blur-3xl pointer-events-none" style={{ background: 'radial-gradient(circle, #00d4c8 0%, transparent 70%)' }} />
+        <div className="absolute bottom-1/4 left-1/2 -translate-x-1/2 w-[400px] h-[400px] rounded-full opacity-10 blur-3xl pointer-events-none" style={{ background: 'radial-gradient(circle, #7c5cfc 0%, transparent 70%)' }} />
+
         <img
           src="/logo.png"
           alt="NeuroActive"
-          className="h-24 w-auto object-contain mb-8"
+          className="h-24 w-auto object-contain mb-10 relative z-10"
           onError={(e) => {
             (e.currentTarget as HTMLImageElement).src = '/logo.png';
           }}
         />
 
-        <h1 className="text-4xl md:text-5xl font-extrabold text-gray-900 mb-6">
+        <h1 className="text-4xl md:text-5xl font-extrabold text-[#f0f4f8] mb-6 max-w-3xl leading-tight relative z-10">
           Choose your own adventure rehab with{' '}
-          <span className="text-blue-600">DNS & MDT</span>
+          <span
+            style={{
+              background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+              backgroundClip: 'text',
+            }}
+          >
+            DNS & MDT
+          </span>
         </h1>
 
-        <p className="text-lg text-gray-600 max-w-2xl mb-8">
+        <p className="text-lg text-[#6b849e] max-w-xl mb-10 relative z-10">
           Clinical-grade self-assessment and rehabilitation, built to guide you step by step.
         </p>
 
         <button
           onClick={() => attemptNavigation('dashboard')}
-          className="bg-blue-600 text-white px-8 py-4 rounded-full font-bold text-lg shadow-lg hover:bg-blue-700 transition-all flex items-center gap-2"
+          className="relative z-10 px-8 py-4 rounded-full font-bold text-lg shadow-lg flex items-center gap-2 hover:opacity-90 active:scale-95 transition-all text-[#080d1a]"
+          style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
         >
           Start Your Recovery <ChevronRight />
         </button>
@@ -836,45 +856,46 @@ export default function App() {
     const todayLog = painLog.find((log) => log.date === today);
 
     return (
-      <div className="min-h-screen bg-gray-50 pb-20">
-        <div className="bg-white border-b sticky top-0 z-30">
+      <div className="min-h-screen bg-[#080d1a] pb-20">
+        <div className="border-b sticky top-0 z-30 bg-[#0f1829] border-[#1a2a42]">
           <div className="max-w-5xl mx-auto px-6 py-4 flex justify-between items-center">
             <div className="flex items-center gap-2">
               <img src="/logo.png" alt="NeuroActive" className="h-8 w-auto object-contain" onError={(e) => ((e.currentTarget as HTMLImageElement).src = '/logo.png')} />
-              <span className="font-bold text-gray-900">NeuroActive</span>
+              <span className="font-bold text-[#f0f4f8]">NeuroActive</span>
             </div>
             <div className="flex items-center gap-4">
               {!isPremium && (
                 <button
                   onClick={() => setCurrentView('paywall')}
-                  className="text-xs font-bold bg-gradient-to-r from-orange-400 to-pink-500 text-white px-3 py-1.5 rounded-full hover:shadow-md transition-all"
+                  className="text-xs font-bold text-[#080d1a] px-3 py-1.5 rounded-full hover:opacity-90 transition-all"
+                  style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
                 >
                   UPGRADE
                 </button>
               )}
-              <button onClick={() => setCurrentView('settings')} className="bg-gray-100 p-2 rounded-full hover:bg-gray-200 transition-colors">
-                <User size={20} className="text-gray-600" />
+              <button onClick={() => setCurrentView('settings')} className="bg-[#1a2a42] p-2 rounded-full hover:opacity-80 transition-opacity">
+                <User size={20} className="text-[#6b849e]" />
               </button>
             </div>
           </div>
         </div>
 
         <div className="max-w-5xl mx-auto p-6 space-y-8">
-          <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 flex flex-col md:flex-row items-center justify-between gap-6">
+          <div className="bg-[#0f1829] p-8 rounded-2xl border border-[#1a2a42] flex flex-col md:flex-row items-center justify-between gap-6">
             <div>
-              <h1 className="text-2xl font-bold text-gray-900 mb-2">Welcome back.</h1>
-              <p className="text-gray-600">
-                You are currently on the <span className="font-bold text-blue-600">{activeJourney || 'General'}</span> track.
+              <h1 className="text-2xl font-bold text-[#f0f4f8] mb-2">Welcome back.</h1>
+              <p className="text-[#6b849e]">
+                You are currently on the <span className="font-bold text-[#00d4c8]">{activeJourney || 'General'}</span> track.
               </p>
             </div>
             <button
               onClick={() => {
                 setHistory([]);
                 setCurrentNodeId('start');
-                // UPDATED: Use proper navigation wrapper
                 attemptNavigation('assessment');
               }}
-              className="bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold shadow hover:bg-blue-700 transition-colors"
+              className="px-6 py-3 rounded-lg font-semibold text-[#080d1a] hover:opacity-90 active:scale-95 transition-all"
+              style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
             >
               New Assessment
             </button>
@@ -885,26 +906,29 @@ export default function App() {
             <PainGraph logs={painLog} />
           </div>
 
-          <div className="bg-gradient-to-br from-gray-900 to-gray-800 rounded-2xl p-6 text-white shadow-lg flex items-center justify-between">
+          <div className="bg-[#0f1829] rounded-2xl border border-[#1a2a42] p-6 flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <div className="bg-white/10 p-3 rounded-full">
-                <Library size={24} />
+              <div className="bg-[#1a2a42] p-3 rounded-full">
+                <Library size={24} className="text-[#00d4c8]" />
               </div>
               <div>
-                <h3 className="font-bold text-lg">Movement Library</h3>
-                <p className="text-gray-300 text-sm">Browse DNS & MDT exercises by position.</p>
+                <h3 className="font-bold text-lg text-[#f0f4f8]">Movement Library</h3>
+                <p className="text-[#6b849e] text-sm">Browse DNS & MDT exercises by position.</p>
               </div>
             </div>
-            <button onClick={() => setCurrentView('library')} className="bg-white text-gray-900 px-4 py-2 rounded-lg font-bold text-sm hover:bg-gray-100">
+            <button
+              onClick={() => setCurrentView('library')}
+              className="border border-[#00d4c8] text-[#00d4c8] px-4 py-2 rounded-lg font-bold text-sm hover:bg-[#00d4c8]/10 transition-colors"
+            >
               Browse
             </button>
           </div>
 
           {activePrescriptions.length > 0 && (
-            <div className="bg-indigo-50 p-6 rounded-2xl border border-indigo-100">
+            <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42]">
               <div className="flex items-center gap-2 mb-4">
-                <ClipboardList className="text-indigo-600" />
-                <h3 className="font-bold text-lg text-indigo-900">My Prescription</h3>
+                <ClipboardList className="text-[#7c5cfc]" />
+                <h3 className="font-bold text-lg text-[#f0f4f8]">My Prescription</h3>
               </div>
 
               <div className="space-y-3">
@@ -914,17 +938,16 @@ export default function App() {
                   return (
                     <button
                       key={id}
-                      // UPDATED: Now uses navigation state machine properly
                       onClick={() => attemptNavigation('assessment', id, true)}
-                      className="w-full bg-white p-4 rounded-lg shadow-sm flex justify-between items-center hover:bg-indigo-50 transition-colors text-left"
+                      className="w-full bg-[#080d1a] p-4 rounded-lg border border-[#1a2a42] flex justify-between items-center hover:border-[#7c5cfc]/50 hover:bg-[#7c5cfc]/5 transition-all text-left"
                     >
                       <div>
-                        <h4 className="font-bold text-gray-800">{node.text}</h4>
+                        <h4 className="font-bold text-[#f0f4f8]">{node.text}</h4>
                         {node.prescriptionFrequency && (
-                          <div className="text-xs text-indigo-600 font-bold bg-indigo-50 inline-block px-2 py-1 rounded mt-1">{node.prescriptionFrequency}</div>
+                          <div className="text-xs text-[#7c5cfc] font-bold bg-[#7c5cfc]/10 inline-block px-2 py-1 rounded mt-1">{node.prescriptionFrequency}</div>
                         )}
                       </div>
-                      <Play size={20} className="text-gray-400" />
+                      <Play size={20} className="text-[#6b849e]" />
                     </button>
                   );
                 })}
