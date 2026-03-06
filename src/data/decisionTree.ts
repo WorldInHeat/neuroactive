@@ -721,11 +721,14 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
   lb_post_mdt_check: {
     id: 'lb_post_mdt_check',
     type: 'question',
-    text: 'After your extension work — any leg or nerve symptoms?',
-    description: 'Even without prior leg symptoms, extension work can sometimes create or reveal nerve tension. Check in before progressing.',
+    text: 'After your extension work — what happened to your symptoms?',
+    description: 'Centralization means symptoms are moving toward the spine, the painful area is getting smaller, or peripheral symptoms are retreating. This is the goal — even partial centralization is a green light.',
+    flagLevel: 'green',
     options: [
-      { label: 'Yes — I have some leg, buttock or nerve symptoms', nextId: 'vid_sciatic_slider' },
-      { label: 'No — pain is local only, no leg symptoms', nextId: 'vid_dns_3mo' },
+      { label: 'Centralized — pain moved toward spine / area got smaller', nextId: 'vid_dns_3mo' },
+      { label: 'Partial — somewhat better but not fully centralized yet', nextId: 'lb_extension_dose_hold_24h' },
+      { label: 'No change after consistent dosing', nextId: 'lb_troubleshoot_intro' },
+      { label: 'Worse — symptoms spreading outward or further down', nextId: 'lb_troubleshoot_intro' },
     ],
   },
 
