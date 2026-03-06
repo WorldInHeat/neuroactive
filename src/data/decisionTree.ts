@@ -123,19 +123,42 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
   },
 
   // --- Cervical troubleshooting ---
-  // FIX: Now reachable — linked from vid_mdt_ret_ext_standard and cervical stall nodes
   cs_troubleshoot_intro: {
     id: 'cs_troubleshoot_intro',
-    type: 'video',
-    text: 'Cervical Troubleshooting (Next Best Options)',
-    description:
-      'If retraction/extension causes symptoms to move further down the arm, try: (1) sustained options + lateral bias, then (2) traction if needed.',
-    videoId: '1151051123',
-    journeyTier: 'A',
+    type: 'question',
+    text: 'Cervical Troubleshooting — Step by Step',
+    description: 'Work through these in order before moving to the next. Most non-responders are under-dosing or not reaching true end range.',
     flagLevel: 'yellow',
     options: [
-      { label: 'Improved / centralized', nextId: 'neck_nerve_check_post_mdt' },
-      { label: 'No change / still peripheralizing → Try traction', nextId: 'cs_troubleshoot_traction' },
+      { label: 'Step 1 — Recheck technique: am I truly at end range retraction?', nextId: 'cs_troubleshoot_technique' },
+      { label: 'I have already rechecked technique — move to Step 2', nextId: 'cs_troubleshoot_sustained' },
+      { label: 'I have tried all steps and symptoms are spreading', nextId: 'refer_out' },
+    ],
+  },
+
+  cs_troubleshoot_technique: {
+    id: 'cs_troubleshoot_technique',
+    type: 'result',
+    text: 'End Range Check',
+    description: 'True retraction means your chin moves straight back — not tucked down, not tilted. Your neck should feel compressed at the back. If you have been stopping short of this, full end range often changes the response completely. Dose: 10 reps every 2 hours for 24 hours at true end range.',
+    flagLevel: 'yellow',
+    options: [
+      { label: 'Tried true end range — centralizing / improving', nextId: 'neck_post_mdt_check' },
+      { label: 'Tried true end range — no change, move to sustained hold', nextId: 'cs_troubleshoot_sustained' },
+      { label: 'Worse / spreading further down arm', nextId: 'refer_out' },
+    ],
+  },
+
+  cs_troubleshoot_sustained: {
+    id: 'cs_troubleshoot_sustained',
+    type: 'result',
+    text: 'Sustained End Range Hold',
+    description: 'Instead of repetitions, hold retraction+extension at end range for 30–60 seconds. Some derangements respond to sustained loading rather than repeated movement. Do 3–5 holds per session, every 2 hours.',
+    flagLevel: 'yellow',
+    options: [
+      { label: 'Improving / centralizing', nextId: 'neck_post_mdt_check' },
+      { label: 'No change — move to overpressure', nextId: 'vid_mdt_ret_overpressure' },
+      { label: 'Worse / spreading', nextId: 'refer_out' },
     ],
   },
 
@@ -778,11 +801,15 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
   neck_red_flag_check: {
     id: 'neck_red_flag_check',
     type: 'question',
-    text: 'Severity of arm symptoms?',
-    description: 'Any true weakness, progressive numbness, loss of coordination, or major neurologic changes?',
+    text: 'Any of the following?',
+    description: 'These signs suggest spinal cord involvement or serious pathology and require in-person evaluation.',
+    flagLevel: 'red',
     options: [
-      { label: 'Yes / concerning symptoms', nextId: 'refer_out_urgent' },
-      { label: 'No true weakness (pain / tingle only)', nextId: 'neck_directional_screen' },
+      {
+        label: 'Yes — any of: hand clumsiness / dropping things, balance or gait changes, electric shock down spine with chin tuck (Lhermitte\'s), bilateral arm symptoms, progressive weakness, bowel/bladder changes',
+        nextId: 'refer_out_urgent',
+      },
+      { label: 'No — pain/tingle in one arm only, no neurologic signs', nextId: 'neck_directional_screen' },
     ],
   },
 
@@ -796,6 +823,20 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
       { label: 'Looking down / slouched positions', nextId: 'neck_ret_only_gate' },
       { label: 'Looking up clearly worsens symptoms', nextId: 'neck_extension_intolerant' },
       { label: 'Not sure', nextId: 'neck_ret_only_gate' },
+      { label: 'Extension clearly worsens, flexion clearly helps (rare)', nextId: 'cs_flexion_exception' },
+    ],
+  },
+
+  cs_flexion_exception: {
+    id: 'cs_flexion_exception',
+    type: 'result',
+    text: 'Flexion as Directional Preference (Rare)',
+    description: 'Flexion as a true directional preference is extremely rare in the cervical spine. Before proceeding, confirm: (1) retraction/extension was genuinely tried at true end range for at least 48 hours, (2) symptoms clearly and consistently worsen with extension and improve with flexion. If both are true, proceed cautiously with chin-to-chest end range loading.',
+    flagLevel: 'yellow',
+    flagText: 'Rare exception — confirm extension was truly trialed first',
+    options: [
+      { label: 'Confirmed — extension trialed properly, flexion clearly helps', nextId: 'vid_dns_dnf' },
+      { label: 'Not sure — go back and retry extension properly', nextId: 'cs_troubleshoot_technique' },
     ],
   },
 
@@ -863,10 +904,9 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     libraryCategory: 'MDT',
     flagLevel: 'green',
     options: [
-      { label: 'Centralizing / clearly better', nextId: 'neck_hold_then_stabilize' },
+      { label: 'Centralizing / clearly better', nextId: 'neck_post_mdt_check' },
       { label: 'Better, but not perfect centralization', nextId: 'neck_hold_24_48h' },
       { label: 'No change', nextId: 'vid_mdt_ret_overpressure' },
-      // FIX: Now routes to cs_troubleshoot_intro before refer_out
       { label: 'No change after 48h / stalled', nextId: 'cs_troubleshoot_intro' },
       { label: 'Worse / symptoms spread further down arm', nextId: 'refer_out' },
     ],
@@ -880,8 +920,22 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
       'If you feel meaningfully better (even without perfect centralization), stay consistent and do not half-dose. Re-check tomorrow.',
     flagLevel: 'green',
     options: [
-      { label: 'Continue this for now', nextId: 'neck_recheck_after_hold' },
-      { label: 'Worse / spreading', nextId: 'refer_out' },
+      { label: 'Centralizing — symptoms retreating toward neck', nextId: 'neck_post_mdt_check' },
+      { label: 'Worse / spreading further down arm', nextId: 'refer_out' },
+    ],
+  },
+
+  neck_post_mdt_check: {
+    id: 'neck_post_mdt_check',
+    type: 'question',
+    text: 'After your cervical retraction/extension work — what happened to your symptoms?',
+    description: 'Centralization means arm symptoms are retreating toward the neck, the painful area is getting smaller, or neck pain is replacing arm pain. Even partial centralization is a green light.',
+    flagLevel: 'green',
+    options: [
+      { label: 'Centralized — arm symptoms retreating / area got smaller', nextId: 'neck_hold_then_stabilize' },
+      { label: 'Partial — somewhat better but not fully centralized yet', nextId: 'neck_hold_24_48h' },
+      { label: 'No change after consistent dosing', nextId: 'cs_troubleshoot_intro' },
+      { label: 'Worse — symptoms spreading further down arm', nextId: 'cs_troubleshoot_intro' },
     ],
   },
 
