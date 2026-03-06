@@ -32,6 +32,7 @@ import { getFirestore, doc, setDoc, onSnapshot, type Firestore } from 'firebase/
 import { DECISION_TREE } from './data/decisionTree';
 import type { PainLogEntry, UserData } from './state/types';
 import VideoPlayer from './components/VideoPlayer';
+import SessionSummary from './components/SessionSummary';
 
 // --- Firebase Configuration ---
 const firebaseConfig = {
@@ -1098,6 +1099,19 @@ export default function App() {
       );
     }
 
+
+    // Show session summary when user reaches a result node that has active prescriptions
+    if (currentNode.type === 'result' && activePrescriptions.length > 0) {
+      return (
+        <SessionSummary
+          nodeId={currentNodeId}
+          prescriptions={activePrescriptions}
+          painDrawingData={null}
+          onDone={() => setCurrentView('dashboard')}
+          decisionTree={DECISION_TREE}
+        />
+      );
+    }
 
     const flagMap = {
       green:  { color: '#00e096', label: currentNode.flagText || 'Safe to self-manage' },
