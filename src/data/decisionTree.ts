@@ -102,7 +102,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     journeyTier: 'A',
     flagLevel: 'yellow',
     options: [
-      { label: 'Tried these options and improved / centralized', nextId: 'lb_nerve_check_post_mdt' },
+      { label: 'Tried these options and improved / centralized', nextId: 'vid_dns_3mo' },
       { label: 'No change / still peripheralizing → Try traction', nextId: 'lb_troubleshoot_traction' },
     ],
   },
@@ -117,7 +117,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     journeyTier: 'A',
     flagLevel: 'yellow',
     options: [
-      { label: 'Improved / centralized', nextId: 'lb_nerve_check_post_mdt' },
+      { label: 'Improved / centralized', nextId: 'vid_dns_3mo' },
       { label: 'No change / worse → Refer out', nextId: 'refer_out' },
     ],
   },
@@ -375,7 +375,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     libraryCategory: 'MDT',
     flagLevel: 'green',
     options: [
-      { label: 'Pain centralized', nextId: 'lb_nerve_check_post_mdt' },
+      { label: 'Pain centralized', nextId: 'vid_dns_3mo' },
       { label: 'No change after 24h', nextId: 'lb_troubleshoot_intro' },
       { label: 'Worse / peripheralizing', nextId: 'refer_out' },
     ],
@@ -403,7 +403,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     libraryCategory: 'MDT',
     flagLevel: 'green',
     options: [
-      { label: 'Better / more centralized', nextId: 'lb_nerve_check_post_mdt' },
+      { label: 'Better / more centralized', nextId: 'lb_post_mdt_check' },
       { label: 'No change yet', nextId: 'lb_extension_dose_hold_24h' },
       // FIX: Now routes to troubleshooting instead of straight to refer_out
       { label: 'No change after 48h / stalled', nextId: 'lb_troubleshoot_intro' },
@@ -712,8 +712,20 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
       'If you are improving even without perfect centralization, that is still a green / yellow light. Stay consistent. Do NOT half-dose. Re-check tomorrow.',
     flagLevel: 'green',
     options: [
-      { label: 'Continue extension only for now', nextId: 'lb_nerve_check_post_mdt' },
+      { label: 'Continue extension only for now', nextId: 'lb_post_mdt_check' },
+      { label: 'Making steady progress — hold another day', nextId: 'lb_hold_24_48h' },
       { label: 'I am worse / spreading', nextId: 'refer_out' },
+    ],
+  },
+
+  lb_post_mdt_check: {
+    id: 'lb_post_mdt_check',
+    type: 'question',
+    text: 'After your extension work — any leg or nerve symptoms?',
+    description: 'Sometimes symptoms shift during treatment. This helps us decide if nerve mobilization is needed.',
+    options: [
+      { label: 'Yes — still some nerve tightness or pain down the leg', nextId: 'vid_sciatic_slider' },
+      { label: 'No — symptoms are local or fully resolved', nextId: 'vid_dns_3mo' },
     ],
   },
 
