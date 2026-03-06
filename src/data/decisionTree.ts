@@ -722,10 +722,10 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     id: 'lb_post_mdt_check',
     type: 'question',
     text: 'After your extension work — any leg or nerve symptoms?',
-    description: 'Sometimes symptoms shift during treatment. This helps us decide if nerve mobilization is needed.',
+    description: 'Even without prior leg symptoms, extension work can sometimes create or reveal nerve tension. Check in before progressing.',
     options: [
-      { label: 'Yes — still some nerve tightness or pain down the leg', nextId: 'vid_sciatic_slider' },
-      { label: 'No — symptoms are local or fully resolved', nextId: 'vid_dns_3mo' },
+      { label: 'Yes — I have some leg, buttock or nerve symptoms', nextId: 'vid_sciatic_slider' },
+      { label: 'No — pain is local only, no leg symptoms', nextId: 'vid_dns_3mo' },
     ],
   },
 
