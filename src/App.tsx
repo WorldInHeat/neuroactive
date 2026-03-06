@@ -655,7 +655,6 @@ export default function App() {
     setHistory([]);
     setCurrentNodeId('start');
     setCurrentView('dashboard');
-    // Ensure no autoplay intent survives the reset
     setAutoplayToken(null);
   };
 
@@ -673,7 +672,6 @@ export default function App() {
     // setLastCheckInAt(null);
     setHasAgreedToTerms(false);
     setCurrentView('landing');
-    // Clear autoplay intent
     setAutoplayToken(null);
   };
 
@@ -1099,6 +1097,7 @@ export default function App() {
         </div>
       );
     }
+
 
     const flagMap = {
       green:  { color: '#00e096', label: currentNode.flagText || 'Safe to self-manage' },
