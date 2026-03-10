@@ -61,44 +61,6 @@ try {
 }
 
 // --- Helper Components ---
-// NOTE: Commented out because it is not currently used in the UI
-/*
-const CentralizationGraphic = () => (
-  <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-lg my-4 animate-fade-in">
-    <div className="flex flex-col md:flex-row gap-8 justify-center items-center">
-      <div className="text-center">
-        <h4 className="font-bold text-green-700 mb-2">Centralization (Good)</h4>
-        <div className="relative w-32 h-48 bg-gray-100 rounded-lg mx-auto border-2 border-green-100">
-          <div className="absolute top-2 left-1/2 -translate-x-1/2 w-8 h-8 rounded-full border-2 border-gray-300"></div>
-          <div className="absolute top-10 left-1/2 -translate-x-1/2 w-0.5 h-16 bg-gray-300"></div>
-          <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-16 h-20 border-t-2 border-gray-300"></div>
-          <div className="absolute bottom-0 left-4 w-0.5 h-20 bg-gray-300"></div>
-          <div className="absolute bottom-0 right-4 w-0.5 h-20 bg-gray-300"></div>
-          <div className="absolute bottom-4 right-2 text-green-500 animate-bounce">
-            <ArrowUp size={24} strokeWidth={3} />
-          </div>
-        </div>
-        <p className="text-xs text-gray-500 mt-2 max-w-[150px]">Pain retreats from leg/buttock towards the spine.</p>
-      </div>
-
-      <div className="text-center">
-        <h4 className="font-bold text-red-700 mb-2">Peripheralization (Bad)</h4>
-        <div className="relative w-32 h-48 bg-gray-100 rounded-lg mx-auto border-2 border-red-100">
-          <div className="absolute top-2 left-1/2 -translate-x-1/2 w-8 h-8 rounded-full border-2 border-gray-300"></div>
-          <div className="absolute top-10 left-1/2 -translate-x-1/2 w-0.5 h-16 bg-gray-300"></div>
-          <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-16 h-20 border-t-2 border-gray-300"></div>
-          <div className="absolute bottom-0 left-4 w-0.5 h-20 bg-gray-300"></div>
-          <div className="absolute bottom-0 right-4 w-0.5 h-20 bg-gray-300"></div>
-          <div className="absolute bottom-8 right-2 text-red-500">
-            <ArrowDown size={24} strokeWidth={3} />
-          </div>
-        </div>
-        <p className="text-xs text-gray-500 mt-2 max-w-[150px]">Pain travels further down the leg or arm.</p>
-      </div>
-    </div>
-  </div>
-);
-*/
 
 const LegalDisclaimer = ({ onAgree, onCancel }: { onAgree: () => void; onCancel: () => void }) => (
   <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
