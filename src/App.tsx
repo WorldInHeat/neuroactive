@@ -502,7 +502,8 @@ export default function App() {
   const [activePrescriptions, setActivePrescriptions] = useState<string[]>([]);
   const [activeJourney, setActiveJourney] = useState<string | null>(null);
   const [painLog, setPainLog] = useState<PainLogEntry[]>([]);
-  
+  const [troubleshootingAttempts, setTroubleshootingAttempts] = useState(0);
+
   // NOTE: These are unused in this build but kept for future phases
   // const [phaseLocks, setPhaseLocks] = useState<Record<string, number>>({});
   // const [lastCheckInAt, setLastCheckInAt] = useState<string | null>(null);
@@ -584,6 +585,7 @@ export default function App() {
           // if (data.phaseLocks && typeof data.phaseLocks === 'object') setPhaseLocks(data.phaseLocks as Record<string, number>);
           // if (typeof data.lastCheckInAt === 'string') setLastCheckInAt(data.lastCheckInAt);
           if (typeof data.hasAgreedToTerms === 'boolean') setHasAgreedToTerms(data.hasAgreedToTerms);
+          setTroubleshootingAttempts(data.troubleshootingAttempts ?? 0);
         });
       } else {
         signInAnonymously(auth).catch(console.error);
@@ -610,6 +612,7 @@ export default function App() {
       activePrescriptions: [],
       history: [],
       currentNodeId: 'start',
+      troubleshootingAttempts: 0,
     };
     await saveUserData(updates);
 
@@ -617,6 +620,7 @@ export default function App() {
     setActivePrescriptions([]);
     setHistory([]);
     setCurrentNodeId('start');
+    setTroubleshootingAttempts(0);
     setCurrentView('dashboard');
     setAutoplayToken(null);
   };
@@ -718,6 +722,12 @@ export default function App() {
     }
 
     const updates: Partial<UserData> = { currentNodeId: nextId };
+
+    if (nextId.includes('troubleshoot')) {
+      const newCount = troubleshootingAttempts + 1;
+      setTroubleshootingAttempts(newCount);
+      updates.troubleshootingAttempts = newCount;
+    }
 
     if (nextNode.journeyName) {
       setActiveJourney(nextNode.journeyName);
@@ -1153,39 +1163,71 @@ export default function App() {
           )}
 
           {/* Question options */}
-          {currentNode.type !== 'video' && (
-            <div className="grid gap-3">
-              {currentNode.options?.map((opt, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => handleOptionClick(opt.nextId)}
-                  className="bg-[#0f1829] hover:bg-[#00d4c8]/5 border border-[#1a2a42] hover:border-[#00d4c8]/40 p-5 rounded-xl transition-all text-left group flex items-center justify-between"
-                >
-                  <span className="text-base font-medium text-[#f0f4f8] group-hover:text-[#00d4c8] transition-colors">{opt.label}</span>
-                  <ChevronRight className="text-[#1a2a42] group-hover:text-[#00d4c8] flex-shrink-0 transition-colors" />
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Clinical check-in for video nodes */}
-          {currentNode.type === 'video' && (
-            <div className="rounded-xl p-6 mt-4 bg-[#0f1829] border border-[#1a2a42]">
-              <h3 className="font-bold text-[#f0f4f8] mb-4">Clinical Check-In</h3>
+          {currentNode.type !== 'video' && (() => {
+            const isInTroubleshootContext = currentNodeId.includes('troubleshoot') || currentNodeId.includes('peripheralizing');
+            const forceReferOut = troubleshootingAttempts >= 3 && isInTroubleshootContext;
+            const effectiveOptions = forceReferOut
+              ? (currentNode.options ?? []).map((opt) =>
+                  opt.nextId === 'refer_out' || opt.nextId === 'refer_out_urgent'
+                    ? opt
+                    : { ...opt, nextId: 'refer_out' }
+                )
+              : (currentNode.options ?? []);
+            return (
               <div className="grid gap-3">
-                {currentNode.options?.map((opt, idx) => (
+                {forceReferOut && (
+                  <div className="rounded-xl p-4 bg-yellow-900/20 border border-yellow-500/40 text-yellow-300 text-sm">
+                    You have worked through several troubleshooting approaches without sufficient improvement. In-person evaluation is now recommended.
+                  </div>
+                )}
+                {effectiveOptions.map((opt, idx) => (
                   <button
                     key={idx}
                     onClick={() => handleOptionClick(opt.nextId)}
-                    className="bg-[#080d1a] p-4 rounded-lg border border-[#1a2a42] hover:border-[#7c5cfc]/50 hover:bg-[#7c5cfc]/5 text-left transition-all flex justify-between items-center group"
+                    className="bg-[#0f1829] hover:bg-[#00d4c8]/5 border border-[#1a2a42] hover:border-[#00d4c8]/40 p-5 rounded-xl transition-all text-left group flex items-center justify-between"
                   >
-                    <span className="font-medium text-[#6b849e] group-hover:text-[#f0f4f8] transition-colors">{opt.label}</span>
-                    <ChevronRight className="text-[#1a2a42] group-hover:text-[#7c5cfc] flex-shrink-0 transition-colors" size={20} />
+                    <span className="text-base font-medium text-[#f0f4f8] group-hover:text-[#00d4c8] transition-colors">{opt.label}</span>
+                    <ChevronRight className="text-[#1a2a42] group-hover:text-[#00d4c8] flex-shrink-0 transition-colors" />
                   </button>
                 ))}
               </div>
-            </div>
-          )}
+            );
+          })()}
+
+          {/* Clinical check-in for video nodes */}
+          {currentNode.type === 'video' && (() => {
+            const isInTroubleshootContext = currentNodeId.includes('troubleshoot') || currentNodeId.includes('peripheralizing');
+            const forceReferOut = troubleshootingAttempts >= 3 && isInTroubleshootContext;
+            const effectiveOptions = forceReferOut
+              ? (currentNode.options ?? []).map((opt) =>
+                  opt.nextId === 'refer_out' || opt.nextId === 'refer_out_urgent'
+                    ? opt
+                    : { ...opt, nextId: 'refer_out' }
+                )
+              : (currentNode.options ?? []);
+            return (
+              <div className="rounded-xl p-6 mt-4 bg-[#0f1829] border border-[#1a2a42]">
+                <h3 className="font-bold text-[#f0f4f8] mb-4">Clinical Check-In</h3>
+                {forceReferOut && (
+                  <div className="rounded-xl p-4 mb-4 bg-yellow-900/20 border border-yellow-500/40 text-yellow-300 text-sm">
+                    You have worked through several troubleshooting approaches without sufficient improvement. In-person evaluation is now recommended.
+                  </div>
+                )}
+                <div className="grid gap-3">
+                  {effectiveOptions.map((opt, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => handleOptionClick(opt.nextId)}
+                      className="bg-[#080d1a] p-4 rounded-lg border border-[#1a2a42] hover:border-[#7c5cfc]/50 hover:bg-[#7c5cfc]/5 text-left transition-all flex justify-between items-center group"
+                    >
+                      <span className="font-medium text-[#6b849e] group-hover:text-[#f0f4f8] transition-colors">{opt.label}</span>
+                      <ChevronRight className="text-[#1a2a42] group-hover:text-[#7c5cfc] flex-shrink-0 transition-colors" size={20} />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       </div>
     );

@@ -46,4 +46,6 @@ export type UserData = {
   // Phase gating
   phaseLocks?: Record<string, number>; // Date.now() timestamps
   lastCheckInAt?: string; // YYYY-MM-DD
+
+  troubleshootingAttempts?: number;
 };
