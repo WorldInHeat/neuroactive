@@ -398,9 +398,11 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     libraryCategory: 'MDT',
     flagLevel: 'green',
     options: [
-      { label: 'Pain centralized', nextId: 'vid_dns_3mo' },
-      { label: 'No change after 24h', nextId: 'lb_troubleshoot_intro' },
-      { label: 'Worse / peripheralizing', nextId: 'refer_out' },
+      { label: '🟢 Green light — improving, centralizing, or abolishing', nextId: 'lb_post_mdt_check' },
+      { label: '🟡 Yellow — pain during that fully settles afterward (continue same dose)', nextId: 'lb_hold_24_48h' },
+      { label: '🟡 Yellow — no change yet (increase volume / push end range)', nextId: 'lb_extension_dose_hold_24h' },
+      { label: '🔴 Red — remaining worse after movement', nextId: 'lb_troubleshoot_remaining_worse' },
+      { label: '🔴 Red — peripheralizing (symptoms spreading further down)', nextId: 'lb_troubleshoot_peripheralizing' },
     ],
   },
 
@@ -412,8 +414,9 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     videoId: '1151049975',
     libraryCategory: 'MDT',
     options: [
-      { label: 'I can now cross midline', nextId: 'lb_soft_shift_confirmed' },
-      { label: 'Still blocked / stalled', nextId: 'lb_hard_shift_fallback' },
+      { label: '🟢 Green light — shift correcting, can cross midline, symptoms improving', nextId: 'lb_soft_shift_confirmed' },
+      { label: '🟡 Yellow — shift improving but not yet past midline (keep going)', nextId: 'lb_shift_hardness_test' },
+      { label: '🔴 Red — no change in shift after consistent attempts, or symptoms spreading', nextId: 'lb_troubleshoot_peripheralizing' },
     ],
   },
 
@@ -426,11 +429,11 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     libraryCategory: 'MDT',
     flagLevel: 'green',
     options: [
-      { label: 'Better / more centralized', nextId: 'lb_post_mdt_check' },
-      { label: 'No change yet', nextId: 'lb_extension_dose_hold_24h' },
-      // FIX: Now routes to troubleshooting instead of straight to refer_out
-      { label: 'No change after 48h / stalled', nextId: 'lb_troubleshoot_intro' },
-      { label: 'Worse / pain spreading further down', nextId: 'refer_out' },
+      { label: '🟢 Green light — improving, centralizing, or abolishing', nextId: 'lb_post_mdt_check' },
+      { label: '🟡 Yellow — pain during that fully settles afterward (continue same dose)', nextId: 'lb_hold_24_48h' },
+      { label: '🟡 Yellow — no change yet (increase volume / push end range)', nextId: 'lb_extension_dose_hold_24h' },
+      { label: '🔴 Red — remaining worse after movement', nextId: 'lb_troubleshoot_remaining_worse' },
+      { label: '🔴 Red — peripheralizing (symptoms spreading further down)', nextId: 'lb_troubleshoot_peripheralizing' },
     ],
   },
 
@@ -442,9 +445,11 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     videoId: '1159492220',
     libraryCategory: 'MDT',
     options: [
-      { label: 'Centralizing / improving', nextId: 'vid_mdt_pressup' },
-      { label: 'No change after 24h', nextId: 'lb_troubleshoot_intro' },
-      { label: 'Worse / peripheralizing', nextId: 'refer_out' },
+      { label: '🟢 Green light — improving, centralizing, or abolishing', nextId: 'vid_mdt_pressup' },
+      { label: '🟡 Yellow — pain during that fully settles afterward (continue same dose)', nextId: 'lb_hold_24_48h' },
+      { label: '🟡 Yellow — no change yet (increase volume / push end range)', nextId: 'lb_extension_dose_hold_24h' },
+      { label: '🔴 Red — remaining worse after movement', nextId: 'lb_troubleshoot_remaining_worse' },
+      { label: '🔴 Red — peripheralizing (symptoms spreading further down)', nextId: 'lb_troubleshoot_peripheralizing' },
     ],
   },
 
@@ -470,7 +475,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     type: 'video',
     text: 'Lumbar Assessment',
     description:
-      'Watch this video to understand how to classify your back pain. We need to determine your pain type and severity.',
+      'Before anything else, we need to understand how your symptoms behave. What makes them worse? What makes them better? Your answers to these questions — not just where it hurts — are what guide your self-management. Watch this video, then answer a few questions about your pain behavior.',
     videoId: '1151049975',
     journeyName: 'Lumbar Rehab',
     options: [
@@ -485,7 +490,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     type: 'question',
     text: 'Phase 0A: Safety first',
     description:
-      'If you have progressive weakness, loss of bladder/bowel control, saddle numbness, fever, or major trauma, you should not use this app for self-treatment.',
+      'First, find the most comfortable position you can — lying face down is often the best option when pain is severe. Before we continue, we need to rule out a small number of symptoms that mean this program is not appropriate right now and you need to be seen in person. These include: numbness or tingling in the groin, inner thighs, or genitals (the area that would touch a bicycle seat), loss of control of your bladder or bowel, weakness that is getting progressively worse rather than staying the same, or symptoms following a significant fall or accident.',
     flagLevel: 'red',
     options: [
       { label: 'I have red flags / progressive weakness', nextId: 'refer_out_urgent' },
@@ -499,7 +504,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     type: 'question',
     text: 'Phase 0B: Quick screen',
     description:
-      'We will still treat this like a derangement until proven otherwise. Next: check leg symptoms and shift.',
+      'Good — the fact that you can move around means we have room to work. The goal right now is simple: find a movement direction that makes your symptoms better. Most people with back pain have one, even if they have not found it yet. Here is the key principle we work from: if we can change it, we can fix it. If your symptoms respond to movement or position — getting better or worse — we can exploit that. More of what helps, less of what does not, and give your body the conditions it needs to heal.',
     flagLevel: 'green',
     options: [
       { label: 'Continue', nextId: 'lb_leg_symptom_check' },
@@ -512,7 +517,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     id: 'lb_leg_symptom_check',
     type: 'question',
     text: 'Do symptoms go below the knee?',
-    description: 'Below-the-knee symptoms can indicate nerve root involvement and change your treatment path.',
+    description: 'Pain that travels below the knee tells us something important — it suggests the nerve root may be involved, not just the disc or surrounding tissue. This is still very manageable, but it changes which exercises we start with and how carefully we progress. Be precise here — thigh and buttock pain counts as local. Below the knee is a different category.',
     options: [
       { label: 'Yes, below the knee (sciatica / nerve pain)', nextId: 'lb_red_flag_check' },
       { label: 'No, back / buttock / thigh only', nextId: 'lb_non_radicular_path' },
@@ -525,7 +530,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     type: 'question',
     text: 'Good — local symptoms only',
     description:
-      'No below-the-knee involvement. We will focus on spinal mechanical assessment without nerve screening.',
+      'Good news — pain that stays above the knee points to a more straightforward mechanical picture. Here is the key principle we work from: if we can change it, we can fix it. If your symptoms respond to movement or position — getting better or worse — we can exploit that. More of what helps, less of what does not, and give your body the conditions it needs to heal.',
     flagLevel: 'green',
     options: [
       { label: 'Continue to assessment', nextId: 'lb_lateral_shift_check' },
@@ -536,7 +541,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     id: 'lb_red_flag_check',
     type: 'question',
     text: 'Severity of leg symptoms?',
-    description: 'Any true weakness, progressive numbness, or loss of control?',
+    description: 'There is an important distinction here. Are you avoiding certain movements because they hurt — but if you had to, you could do them? Or are you physically unable to perform tasks regardless of pain? True neurological weakness looks like: foot drop (dragging your foot when you walk), inability to climb stairs, difficulty lifting the front of your foot off the ground, or legs that simply give out. Pain that makes you not want to move is different from a leg that cannot move. Which describes you?',
     options: [
       { label: 'Numbness / weakness is significant or worsening', nextId: 'refer_out_urgent' },
       { label: 'Just pain / tingle, no true weakness', nextId: 'lb_lateral_shift_check' },
@@ -548,7 +553,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     id: 'lb_lateral_shift_check',
     type: 'question',
     text: 'Look in a mirror. Is your upper body visibly shifted?',
-    description: 'A lateral shift often needs correction as first priority before extension work.',
+    description: 'Stand in front of a mirror and look at your overall shape. Are you "I" shaped — shoulders stacked over your hips, relatively symmetrical? Or are you "C" shaped — your upper body visibly leaning or shifted to one side relative to your pelvis? A lateral shift is common with acute back pain and needs to be addressed before we move on. Be honest here — even a subtle shift matters.',
     options: [
       { label: 'Yes, I am shifted to one side', nextId: 'lb_shift_direction' },
       { label: 'No, I am straight / symmetrical', nextId: 'lb_mechanical_pattern' },
@@ -632,7 +637,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     id: 'lb_shift_hardness_test',
     type: 'question',
     text: 'Test your shift: Can you correct it past midline?',
-    description: 'Gently push your hips the opposite direction. Goal: restore and maintain past-midline access.',
+    description: 'Gently push your hips toward the opposite side and try to go past neutral — not just straight, but slightly past midline — and hold that position. A soft shift means you can get there and maintain it — it might be uncomfortable or it might actually feel relieving, but you can achieve and hold past midline. A hard shift means you literally cannot get past midline and stay there — not just because of pain, but because your body will not allow it. Which describes you?',
     options: [
       { label: 'Yes, I can cross midline', nextId: 'lb_soft_shift_confirmed' },
       { label: 'No, it feels hard / blocked', nextId: 'lb_hard_shift_plan' },
@@ -692,26 +697,23 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     id: 'lb_mechanical_pattern',
     type: 'question',
     text: 'What makes it worse?',
-    description: 'This helps confirm directional stress and guides exercise selection.',
+    description: 'What consistently aggravates your symptoms most? This helps us decide where to start and how aggressively to load. There are no wrong answers.',
     options: [
-      { label: 'Sitting / bending forward', nextId: 'lb_extension_tolerance_check' },
-      // FIX: lb_flexion_intolerant now reachable
-      { label: 'Standing / walking', nextId: 'lb_flexion_intolerant' },
-      { label: 'Load — lifting or carrying weight', nextId: 'lb_extension_tolerance_check' },
+      { label: 'Sitting or bending forward', nextId: 'lb_extension_tolerance_check' },
+      { label: 'Standing or walking', nextId: 'lb_extension_caution' },
+      { label: 'Load — lifting or carrying weight', nextId: 'lb_extension_caution' },
     ],
   },
 
-  // FIX: lb_flexion_intolerant now properly reachable from lb_mechanical_pattern
-  lb_flexion_intolerant: {
-    id: 'lb_flexion_intolerant',
+  lb_extension_caution: {
+    id: 'lb_extension_caution',
     type: 'result',
-    text: 'Flexion Intolerance / Extension-loaded pattern',
+    text: 'Proceeding with caution — gentle extension first',
     description:
-      'Standing and walking sensitivity can still be derangement, but if extension is clearly not tolerated, we shift to neutral stabilization and loading control first.',
+      'We are still going to test extension — but we will start gently, in a supported position, without pushing to end range initially. Here is the rule that guides everything from this point forward: pain during a movement is acceptable and does not mean stop. What matters is whether you remain worse after the movement than you were before. If symptoms settle back to baseline within a few minutes of finishing, we continue. If you are consistently worse afterwards, we change direction.',
     flagLevel: 'yellow',
     options: [
-      { label: 'Try extension anyway (tolerable)', nextId: 'lb_extension_tolerance_check' },
-      { label: 'Extension is not tolerated — go straight to stabilization', nextId: 'lb_hold_week1' },
+      { label: 'Start gentle prone extension', nextId: 'vid_mdt_prone_gradual' },
     ],
   },
 
@@ -722,6 +724,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     description:
       'If very acute, start micro-dosing or static prone. If tolerable, start standing extension or press-ups.',
     options: [
+      { label: 'Before starting — show me how to read my symptoms', nextId: 'lb_traffic_light_explainer' },
       { label: 'Extension feels good or freeing', nextId: 'vid_mdt_standing_ext' },
       { label: 'Extension is painful / blocked (need to go slow)', nextId: 'vid_mdt_prone_gradual' },
     ],
@@ -873,9 +876,11 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     libraryCategory: 'MDT',
     flagLevel: 'yellow',
     options: [
-      { label: 'I can now add extension', nextId: 'vid_mdt_ret_ext_standard' },
-      { label: 'No change', nextId: 'vid_mdt_ret_overpressure' },
-      { label: 'Worse / symptoms spread further down arm', nextId: 'refer_out' },
+      { label: '🟢 Green light — improving, centralizing, ready to add extension', nextId: 'vid_mdt_ret_ext_standard' },
+      { label: '🟡 Yellow — pain during that fully settles afterward (continue same dose)', nextId: 'vid_mdt_ret_overpressure' },
+      { label: '🟡 Yellow — no change yet (increase volume / push end range)', nextId: 'vid_mdt_ret_overpressure' },
+      { label: '🔴 Red — remaining worse after movement', nextId: 'cs_troubleshoot_intro' },
+      { label: '🔴 Red — peripheralizing (symptoms spreading further down arm)', nextId: 'cs_troubleshoot_intro' },
     ],
   },
 
@@ -904,11 +909,11 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     libraryCategory: 'MDT',
     flagLevel: 'green',
     options: [
-      { label: 'Centralizing / clearly better', nextId: 'neck_post_mdt_check' },
-      { label: 'Better, but not perfect centralization', nextId: 'neck_hold_24_48h' },
-      { label: 'No change', nextId: 'vid_mdt_ret_overpressure' },
-      { label: 'No change after 48h / stalled', nextId: 'cs_troubleshoot_intro' },
-      { label: 'Worse / symptoms spread further down arm', nextId: 'refer_out' },
+      { label: '🟢 Green light — improving, centralizing, or arm symptoms retreating toward neck', nextId: 'neck_post_mdt_check' },
+      { label: '🟡 Yellow — pain during that fully settles afterward (continue same dose)', nextId: 'neck_hold_24_48h' },
+      { label: '🟡 Yellow — no change yet (increase volume / push end range)', nextId: 'neck_hold_24_48h' },
+      { label: '🔴 Red — remaining worse after movement', nextId: 'cs_troubleshoot_intro' },
+      { label: '🔴 Red — peripheralizing (symptoms spreading further down arm)', nextId: 'cs_troubleshoot_intro' },
     ],
   },
 
@@ -1067,6 +1072,192 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     options: [
       { label: 'DNF activating well', nextId: 'vid_dns_prone_3mo' },
       { label: 'Cannot find the movement / neck cramping', nextId: 'vid_dns_dnf' },
+    ],
+  },
+
+  // =========================
+  // TRAFFIC LIGHT EXPLAINER
+  // =========================
+  lb_traffic_light_explainer: {
+    id: 'lb_traffic_light_explainer',
+    type: 'result',
+    text: 'How to read your symptoms',
+    description: `🟢 GREEN LIGHT — three patterns all count:
+- Improving — symptoms are in the same place but less intense, fading, or easier to ignore
+- Centralizing — symptoms are moving toward the spine. Foot → calf → thigh → back is progress, even if the back feels more intense temporarily. A new or increased central pain while peripheral symptoms clear is still a green light
+- Abolishing — symptoms are gone or nearly gone
+Important: If you had leg symptoms and now have more back pain but less leg pain — that is not getting worse. That is centralization. That is exactly what we are looking for.
+
+🟡 YELLOW LIGHT — two patterns, different instructions:
+- Pain during movement that fully settles afterward — continue at the same dose. Your body is responding, give it time
+- No change yet — increase your volume or push closer to true end range. Most non-responders are under-dosing or stopping short of end range
+
+🔴 RED LIGHT — either of these means stop:
+- You remain worse after the movement than you were before it started. If symptoms do not settle back to baseline within a few minutes of finishing, this direction needs to change
+- Peripheralization — symptoms spreading further from the spine. Pain or numbness moving further down the leg or arm, or appearing in a new area below where it was before. This is the opposite of what we want and means we need to reassess immediately`,
+    flagLevel: 'green',
+    options: [
+      { label: 'I understand — start my first exercise', nextId: 'vid_mdt_standing_ext' },
+      { label: 'I need to start prone (more acute / blocked)', nextId: 'vid_mdt_prone_gradual' },
+    ],
+  },
+
+  // =========================
+  // LUMBAR TROUBLESHOOTING HIERARCHY
+  // =========================
+  lb_troubleshoot_remaining_worse: {
+    id: 'lb_troubleshoot_remaining_worse',
+    type: 'question',
+    text: 'Troubleshooting — Remaining Worse',
+    description: 'You are consistently worse after the movement. We are going to work through a hierarchy of options before considering referral. Most people find their response changes with one of these adjustments.',
+    flagLevel: 'yellow',
+    options: [
+      { label: 'Step 1 — Recheck technique: am I truly at end range?', nextId: 'lb_troubleshoot_technique_check' },
+      { label: 'I have rechecked technique — move to Step 2', nextId: 'lb_troubleshoot_sustained' },
+      { label: 'I have tried Steps 1 and 2 — move to Step 3', nextId: 'vid_mdt_supine_knees_side' },
+      { label: 'I have tried all steps — still no improvement', nextId: 'refer_out' },
+    ],
+  },
+
+  lb_troubleshoot_technique_check: {
+    id: 'lb_troubleshoot_technique_check',
+    type: 'result',
+    text: 'End Range Technique Check',
+    description: 'True end range extension means your elbows are fully straight, your hips stay on the surface, and you are holding the top position for a full breath before lowering. Most people stop 80% of the way there. If you have been stopping short — try full end range for 24 hours before moving to the next step.',
+    flagLevel: 'yellow',
+    options: [
+      { label: '🟢 Green light — improving with true end range', nextId: 'lb_post_mdt_check' },
+      { label: '🟡 Yellow — no change at true end range', nextId: 'lb_troubleshoot_sustained' },
+      { label: '🔴 Red — still remaining worse', nextId: 'lb_troubleshoot_sustained' },
+      { label: '🔴 Red — peripheralizing', nextId: 'lb_troubleshoot_peripheralizing' },
+    ],
+  },
+
+  lb_troubleshoot_sustained: {
+    id: 'lb_troubleshoot_sustained',
+    type: 'result',
+    text: 'Sustained Hold vs Repeated Movement',
+    description: 'Instead of doing repetitions, try holding end range extension for 30-60 seconds. Some presentations respond to sustained loading rather than repeated movement. Do 3-5 holds per session, every 2 hours. Give this 24 hours before moving on.',
+    flagLevel: 'yellow',
+    options: [
+      { label: '🟢 Green light — improving with sustained hold', nextId: 'lb_post_mdt_check' },
+      { label: '🟡 Yellow — no change', nextId: 'vid_mdt_supine_knees_side' },
+      { label: '🔴 Red — remaining worse', nextId: 'vid_mdt_supine_knees_side' },
+      { label: '🔴 Red — peripheralizing', nextId: 'lb_troubleshoot_peripheralizing' },
+    ],
+  },
+
+  vid_mdt_supine_knees_side: {
+    id: 'vid_mdt_supine_knees_side',
+    type: 'video',
+    text: 'Supine Knees to the Side',
+    description: 'Lying on your back, knees bent, let both knees fall toward the symptomatic side. This position is often a back-door route into extension for people who are not yet responding to direct extension loading. Hold for 30-60 seconds or do slow repetitions. If this helps, we will progress back to extension.',
+    videoId: 'PLACEHOLDER',
+    libraryCategory: 'MDT',
+    flagLevel: 'yellow',
+    options: [
+      { label: '🟢 Green light — improving or centralizing', nextId: 'lb_post_mdt_check' },
+      { label: '🟡 Yellow — no change', nextId: 'lb_troubleshoot_crooked' },
+      { label: '🔴 Red — remaining worse', nextId: 'lb_troubleshoot_crooked' },
+      { label: '🔴 Red — peripheralizing', nextId: 'lb_troubleshoot_peripheralizing' },
+    ],
+  },
+
+  lb_troubleshoot_crooked: {
+    id: 'lb_troubleshoot_crooked',
+    type: 'video',
+    text: 'Crooked Press-Up and Overpressure Options',
+    description: 'When standard press-ups are not working, two adjustments often help: (1) Crooked press-up — shift your hips away from the painful side before pressing up, creating a lateral bias in the extension. (2) Overpressure — use your hands to gently push your lower back further into extension at end range. Try each for 24 hours.',
+    videoId: 'PLACEHOLDER',
+    libraryCategory: 'MDT',
+    flagLevel: 'yellow',
+    options: [
+      { label: '🟢 Green light — improving or centralizing', nextId: 'lb_post_mdt_check' },
+      { label: '🟡 Yellow — no change', nextId: 'lb_troubleshoot_side_glide_fallback' },
+      { label: '🔴 Red — remaining worse', nextId: 'lb_troubleshoot_side_glide_fallback' },
+      { label: '🔴 Red — peripheralizing', nextId: 'lb_troubleshoot_peripheralizing' },
+    ],
+  },
+
+  lb_troubleshoot_side_glide_fallback: {
+    id: 'lb_troubleshoot_side_glide_fallback',
+    type: 'result',
+    text: 'Side Glides as Troubleshooting',
+    description: 'Even without a visible lateral shift, side glides can sometimes unlock a stuck extension response. Try side glides toward the non-painful side for 24 hours, then retest extension.',
+    flagLevel: 'yellow',
+    options: [
+      { label: '🟢 Green light — extension now working', nextId: 'lb_post_mdt_check' },
+      { label: '🟡 Yellow — no change', nextId: 'lb_troubleshoot_flexion_last' },
+      { label: '🔴 Red — remaining worse or peripheralizing', nextId: 'lb_troubleshoot_peripheralizing' },
+    ],
+  },
+
+  lb_troubleshoot_flexion_last: {
+    id: 'lb_troubleshoot_flexion_last',
+    type: 'result',
+    text: 'Flexion — Last Resort',
+    description: 'Flexion as a directional preference is rare — seen in less than 1% of cases in clinical practice. We are trying it here only because all extension-based options have been exhausted. If flexion clearly and consistently helps while extension clearly worsens, this may be your direction. Proceed cautiously and monitor closely.',
+    flagLevel: 'yellow',
+    flagText: 'Rare exception — all extension options exhausted',
+    options: [
+      { label: '🟢 Green light — flexion clearly helping', nextId: 'vid_dns_3mo' },
+      { label: '🟡 Yellow — no clear direction found', nextId: 'refer_out' },
+      { label: '🔴 Red — worse with everything', nextId: 'refer_out' },
+    ],
+  },
+
+  lb_troubleshoot_peripheralizing: {
+    id: 'lb_troubleshoot_peripheralizing',
+    type: 'question',
+    text: 'Peripheralization — Shorter Leash Protocol',
+    description: 'Symptoms are spreading further from the spine. This requires a more cautious approach. We will try up to 3 adjustments. If symptoms are not returning toward baseline — or if you develop any new weakness — stop immediately and seek in-person evaluation.',
+    flagLevel: 'red',
+    flagText: 'Peripheralization — monitor closely',
+    options: [
+      { label: 'Try supine knees to the side (toward symptomatic side)', nextId: 'lb_peripheralizing_attempt_1' },
+      { label: 'I have increasing weakness or cannot bear weight', nextId: 'refer_out_urgent' },
+    ],
+  },
+
+  lb_peripheralizing_attempt_1: {
+    id: 'lb_peripheralizing_attempt_1',
+    type: 'video',
+    text: 'Peripheralizing — Attempt 1: Supine Knees to Side',
+    description: 'Try supine knees to the symptomatic side. After each attempt, the key question is: are symptoms returning toward baseline, staying the same further out, or continuing to spread? Any new or increasing weakness is an immediate stop sign.',
+    videoId: 'PLACEHOLDER',
+    flagLevel: 'red',
+    options: [
+      { label: '🟢 Symptoms returning toward baseline / centralizing', nextId: 'lb_post_mdt_check' },
+      { label: '🟡 Stayed peripheral but not spreading further', nextId: 'lb_peripheralizing_attempt_2' },
+      { label: '🔴 Continuing to spread / worsening', nextId: 'refer_out' },
+      { label: '🔴 New or increasing weakness', nextId: 'refer_out_urgent' },
+    ],
+  },
+
+  lb_peripheralizing_attempt_2: {
+    id: 'lb_peripheralizing_attempt_2',
+    type: 'result',
+    text: 'Peripheralizing — Attempt 2: Sustained Positioning',
+    description: 'Find the position that is least provocative — often prone lying without extension — and hold it for 5-10 minutes. The goal is to get symptoms back toward baseline before trying any directional loading. Do not push into pain.',
+    flagLevel: 'red',
+    options: [
+      { label: '🟢 Symptoms returning toward baseline', nextId: 'lb_troubleshoot_remaining_worse' },
+      { label: '🟡 Stayed peripheral but stable', nextId: 'lb_peripheralizing_attempt_3' },
+      { label: '🔴 Continuing to spread', nextId: 'refer_out' },
+      { label: '🔴 New or increasing weakness', nextId: 'refer_out_urgent' },
+    ],
+  },
+
+  lb_peripheralizing_attempt_3: {
+    id: 'lb_peripheralizing_attempt_3',
+    type: 'result',
+    text: 'Peripheralizing — Attempt 3: Final Check',
+    description: 'This is the third attempt to bring symptoms back toward baseline. If symptoms are still peripheral after this, in-person evaluation is recommended. You have done everything right — some presentations need hands-on assessment that this program cannot provide.',
+    flagLevel: 'red',
+    options: [
+      { label: '🟢 Symptoms finally returning toward baseline', nextId: 'lb_troubleshoot_remaining_worse' },
+      { label: 'No improvement — symptoms still peripheral', nextId: 'refer_out' },
+      { label: '🔴 New or increasing weakness at any point', nextId: 'refer_out_urgent' },
     ],
   },
 };
