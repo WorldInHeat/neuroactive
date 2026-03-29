@@ -1072,8 +1072,12 @@ export default function App() {
     }
 
 
-    // Show session summary when user reaches a result node that has active prescriptions
-    if (currentNode.type === 'result' && activePrescriptions.length > 0) {
+    // Show session summary when user reaches a terminal result node that has active prescriptions.
+    // Exclude waypoint result nodes (e.g. explainers) whose options lead onward to video nodes.
+    const nodeLeadsToVideo = currentNode.options?.some(
+      (opt) => DECISION_TREE[opt.nextId]?.type === 'video'
+    );
+    if (currentNode.type === 'result' && activePrescriptions.length > 0 && !nodeLeadsToVideo) {
       return (
         <SessionSummary
           nodeId={currentNodeId}
