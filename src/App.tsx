@@ -1254,9 +1254,12 @@ export default function App() {
               <ArrowLeft size={20} /> Back
             </button>
             <div className="font-semibold text-[#f0f4f8]">Assessment</div>
-            <div className="text-sm font-medium text-[#6b849e] w-16 text-right">
-              {depth === 0 ? 'Start' : `Step ${depth + 1}`}
-            </div>
+            <button
+              onClick={() => setCurrentView('dashboard')}
+              className="text-sm font-medium text-[#6b849e] hover:text-[#f0f4f8] transition-colors w-16 text-right"
+            >
+              Dashboard
+            </button>
           </div>
           {/* Progress bar */}
           <div className="h-0.5 bg-[#1a2a42]">
