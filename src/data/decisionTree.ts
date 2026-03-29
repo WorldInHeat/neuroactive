@@ -3,6 +3,44 @@ import type { DecisionNode } from '../state/types';
 
 export const DECISION_TREE: Record<string, DecisionNode> = {
   // =========================
+  // ONBOARDING
+  // =========================
+  onboarding_welcome: {
+    id: 'onboarding_welcome',
+    type: 'video',
+    text: 'Welcome to NeuroActive',
+    description: 'A quick orientation before you begin. Dr. Bruene explains what to expect, how to get the most out of the app, and what makes this approach different.',
+    videoId: 'PLACEHOLDER_WELCOME',
+    libraryCategory: 'Orientation',
+    options: [
+      { label: 'Continue to Assessment', nextId: 'start' },
+    ],
+  },
+
+  onboarding_assessment_intro: {
+    id: 'onboarding_assessment_intro',
+    type: 'video',
+    text: 'How This Assessment Works',
+    description: 'Before your first question, understand what we are looking for — your directional preference — and how to use the green, yellow, and red light system to track your response.',
+    videoId: 'PLACEHOLDER_ASSESSMENT_INTRO',
+    libraryCategory: 'Orientation',
+    options: [
+      { label: 'Start Assessment', nextId: 'start' },
+    ],
+  },
+
+  onboarding_paywall_hero: {
+    id: 'onboarding_paywall_hero',
+    type: 'video',
+    text: 'Why NeuroActive is Different',
+    description: 'Dr. Adam Bruene, D.C., Cert. MDT, DNSP explains the clinical methodology behind the app and why MDT + DNS together produce better outcomes than either approach alone.',
+    videoId: 'PLACEHOLDER_PAYWALL_HERO',
+    options: [
+      { label: 'Start My Subscription', nextId: 'start' },
+    ],
+  },
+
+  // =========================
   // START
   // =========================
   start: {

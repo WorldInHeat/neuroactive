@@ -17,7 +17,7 @@ export type DecisionNode = {
   replaces?: string[];
   prescribes?: string[]; // node IDs to add to activePrescriptions when this node is reached
 
-  libraryCategory?: 'All' | 'Supine' | 'Prone' | 'Side Lying' | 'Quadruped' | 'Standing' | 'MDT';
+  libraryCategory?: 'All' | 'Supine' | 'Prone' | 'Side Lying' | 'Quadruped' | 'Standing' | 'MDT' | 'Orientation';
 
   // tiering
   journeyTier?: 'A' | 'B' | 'C'; // A=pain triage, B=performance, C=returning/graduate path
@@ -49,4 +49,6 @@ export type UserData = {
   lastCheckInAt?: string; // YYYY-MM-DD
 
   troubleshootingAttempts?: number;
+  hasWatchedWelcome?: boolean;
+  hasWatchedAssessmentIntro?: boolean;
 };

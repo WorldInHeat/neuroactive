@@ -226,6 +226,44 @@ const SettingsView = ({
   );
 };
 
+// --- Welcome Video Screen ---
+const WelcomeVideoScreen = ({
+  onContinue,
+}: {
+  onContinue: () => void;
+}) => (
+  <div className="min-h-screen bg-[#080d1a] flex flex-col">
+    <div className="bg-[#0f1829] border-b border-[#1a2a42] px-6 py-4 flex items-center justify-between">
+      <span className="font-semibold text-[#f0f4f8]">Welcome to NeuroActive</span>
+      <button
+        onClick={onContinue}
+        className="text-sm text-[#6b849e] hover:text-[#f0f4f8] transition-colors"
+      >
+        Skip
+      </button>
+    </div>
+    <div className="flex-1 flex flex-col max-w-2xl mx-auto w-full px-6 py-8 gap-6">
+      <VideoPlayer
+        nodeId="onboarding_welcome"
+        title="Welcome to NeuroActive"
+        videoId="PLACEHOLDER_WELCOME"
+        autoplayToken={null}
+        onConsumeAutoplay={() => {}}
+      />
+      <p className="text-sm text-[#6b849e] leading-relaxed text-center">
+        A quick orientation before you begin. Dr. Bruene explains what to expect, how to get the most out of the app, and what makes this approach different.
+      </p>
+      <button
+        onClick={onContinue}
+        className="w-full py-4 rounded-xl font-bold text-[#080d1a] text-base hover:opacity-90 transition-all"
+        style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+      >
+        Continue to Dashboard
+      </button>
+    </div>
+  </div>
+);
+
 // --- Baseline Pain Capture Screen ---
 const BaselineCaptureScreen = ({
   onSave,
@@ -454,7 +492,7 @@ const PainGraph = ({ logs }: { logs: PainLogEntry[] }) => {
 };
 
 const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUnlock: () => void; onPlay: (id: string) => void }) => {
-  const [filter, setFilter] = useState<'All' | 'Supine' | 'Prone' | 'Side Lying' | 'Quadruped' | 'MDT'>('All');
+  const [filter, setFilter] = useState<'All' | 'Supine' | 'Prone' | 'Side Lying' | 'Quadruped' | 'MDT' | 'Orientation'>('All');
 
   const libraryItems = Object.values(DECISION_TREE).filter((node) => node.type === 'video' && node.libraryCategory);
   const filteredItems = filter === 'All' ? libraryItems : libraryItems.filter((item) => item.libraryCategory === filter);
@@ -466,7 +504,7 @@ const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUn
           <Library className="text-[#00d4c8]" /> Movement Library
         </h2>
         <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
-          {['All', 'Supine', 'Prone', 'Side Lying', 'Quadruped', 'MDT'].map((cat) => (
+          {['All', 'Orientation', 'Supine', 'Prone', 'Side Lying', 'Quadruped', 'MDT'].map((cat) => (
             <button
               key={cat}
               onClick={() => setFilter(cat as any)}
@@ -565,6 +603,8 @@ export default function App() {
   const [troubleshootingAttempts, setTroubleshootingAttempts] = useState(0);
   const [checkInBannerDismissed, setCheckInBannerDismissed] = useState(false);
   const painTrackerRef = useRef<HTMLDivElement>(null);
+  const [hasWatchedWelcome, setHasWatchedWelcome] = useState(false);
+  const [hasWatchedAssessmentIntro, setHasWatchedAssessmentIntro] = useState(false);
 
   // NOTE: These are unused in this build but kept for future phases
   // const [phaseLocks, setPhaseLocks] = useState<Record<string, number>>({});
@@ -648,6 +688,8 @@ export default function App() {
           // if (typeof data.lastCheckInAt === 'string') setLastCheckInAt(data.lastCheckInAt);
           if (typeof data.hasAgreedToTerms === 'boolean') setHasAgreedToTerms(data.hasAgreedToTerms);
           setTroubleshootingAttempts(data.troubleshootingAttempts ?? 0);
+          setHasWatchedWelcome(data.hasWatchedWelcome ?? false);
+          setHasWatchedAssessmentIntro(data.hasWatchedAssessmentIntro ?? false);
         });
       } else {
         signInAnonymously(auth).catch(console.error);
@@ -785,6 +827,12 @@ export default function App() {
 
     const updates: Partial<UserData> = { currentNodeId: nextId };
 
+    // Mark assessment intro as watched when navigating away from it
+    if (currentNodeId === 'onboarding_assessment_intro' && !hasWatchedAssessmentIntro) {
+      setHasWatchedAssessmentIntro(true);
+      updates.hasWatchedAssessmentIntro = true;
+    }
+
     if (nextId.includes('troubleshoot')) {
       const newCount = troubleshootingAttempts + 1;
       setTroubleshootingAttempts(newCount);
@@ -911,6 +959,15 @@ export default function App() {
         <button onClick={() => setCurrentView('dashboard')} className="text-[#6b849e] hover:text-[#f0f4f8] flex items-center gap-1 transition-colors text-sm">
           <ArrowLeft size={16} /> Back
         </button>
+
+        {/* Paywall hero video */}
+        <VideoPlayer
+          nodeId="onboarding_paywall_hero"
+          title="Why NeuroActive is Different"
+          videoId="PLACEHOLDER_PAYWALL_HERO"
+          autoplayToken={null}
+          onConsumeAutoplay={() => {}}
+        />
 
         {/* Doctor header */}
         <div className="text-center">
@@ -1082,7 +1139,7 @@ export default function App() {
                   <button
                     onClick={() => {
                       setHistory([]);
-                      setCurrentNodeId('start');
+                      setCurrentNodeId(!hasWatchedAssessmentIntro ? 'onboarding_assessment_intro' : 'start');
                       attemptNavigation('assessment');
                     }}
                     className="px-6 py-3 rounded-lg font-semibold text-[#080d1a] hover:opacity-90 active:scale-95 transition-all"
@@ -1113,7 +1170,7 @@ export default function App() {
                     <button
                       onClick={() => {
                         setHistory([]);
-                        setCurrentNodeId('start');
+                        setCurrentNodeId(!hasWatchedAssessmentIntro ? 'onboarding_assessment_intro' : 'start');
                         attemptNavigation('assessment');
                       }}
                       className="px-6 py-3 rounded-lg font-semibold text-[#080d1a] hover:opacity-90 active:scale-95 transition-all"
@@ -1438,6 +1495,8 @@ export default function App() {
       {currentView === 'assessment' && <AssessmentView />}
       {currentView === 'dashboard' && hasAgreedToTerms && painLog.length === 0
         ? <BaselineCaptureScreen onSave={handleSavePainLog} todayISO={todayISO} />
+        : currentView === 'dashboard' && !hasWatchedWelcome
+        ? <WelcomeVideoScreen onContinue={() => { setHasWatchedWelcome(true); saveUserData({ hasWatchedWelcome: true }); }} />
         : currentView === 'dashboard' && <Dashboard />}
       {currentView === 'settings' && (
         <SettingsView
