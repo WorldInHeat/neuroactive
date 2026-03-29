@@ -226,6 +226,64 @@ const SettingsView = ({
   );
 };
 
+// --- Baseline Pain Capture Screen ---
+const BaselineCaptureScreen = ({
+  onSave,
+  todayISO,
+}: {
+  onSave: (entry: PainLogEntry) => Promise<void>;
+  todayISO: () => string;
+}) => {
+  const [score, setScore] = useState(5);
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    await onSave({ date: todayISO(), score, status: 'Same' });
+    // painLog.length becomes > 0 after save — parent re-render switches to Dashboard automatically
+  };
+
+  return (
+    <div className="min-h-screen bg-[#080d1a] flex flex-col">
+      <div className="bg-[#0f1829] border-b border-[#1a2a42] px-6 py-4 flex items-center">
+        <span className="font-semibold text-[#f0f4f8]">Before we begin</span>
+      </div>
+      <div className="flex-1 flex flex-col max-w-md mx-auto w-full px-6 py-12 gap-8">
+        <div>
+          <h1 className="text-2xl font-bold text-[#f0f4f8] mb-3">Before we begin</h1>
+          <p className="text-[#6b849e] leading-relaxed">
+            Rate your current pain level so we have a baseline to measure your progress against. You will log this daily going forward.
+          </p>
+        </div>
+        <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42]">
+          <label className="block text-sm font-medium text-[#6b849e] mb-4">Pain Level (0–10)</label>
+          <input
+            type="range"
+            min="0"
+            max="10"
+            value={score}
+            onChange={(e) => setScore(parseInt(e.target.value))}
+            className="w-full h-2 bg-[#1a2a42] rounded-lg appearance-none cursor-pointer accent-[#00d4c8]"
+          />
+          <div className="flex justify-between items-center text-xs text-[#6b849e] mt-3">
+            <span>No Pain</span>
+            <span className="font-bold text-[#f0f4f8] text-3xl">{score}</span>
+            <span>Worst Possible</span>
+          </div>
+        </div>
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="w-full py-4 rounded-xl font-bold text-[#080d1a] text-base disabled:opacity-50 hover:opacity-90 transition-all"
+          style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+        >
+          {saving ? 'Saving…' : 'Save & Continue'}
+        </button>
+      </div>
+    </div>
+  );
+};
+
 // --- Pain Tracker Component ---
 const PainTracker = ({
   onSaveLog,
@@ -977,63 +1035,97 @@ export default function App() {
         </div>
 
         <div className="max-w-5xl mx-auto p-6 space-y-8">
-          {!todayLog && !checkInBannerDismissed && (
-            <div
-              className="flex items-center gap-3 px-4 py-3 rounded-xl"
-              style={{ background: 'rgba(0,212,200,0.08)', border: '1px solid rgba(0,212,200,0.25)' }}
-            >
-              <Bell size={18} className="flex-shrink-0" style={{ color: '#00d4c8' }} />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-[#f0f4f8]">You haven't logged your pain today</p>
-                <p className="text-xs text-[#6b849e]">Daily tracking helps us spot your progress</p>
-              </div>
-              <button
-                onClick={() => painTrackerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
-                className="flex-shrink-0 text-xs font-bold px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
-                style={{ background: 'rgba(0,212,200,0.15)', color: '#00d4c8', border: '1px solid rgba(0,212,200,0.3)' }}
-              >
-                Log Now
-              </button>
-              <button
-                onClick={() => setCheckInBannerDismissed(true)}
-                className="flex-shrink-0 text-[#6b849e] hover:text-[#f0f4f8] transition-colors"
-                aria-label="Dismiss"
-              >
-                <X size={16} />
-              </button>
-            </div>
-          )}
+          {(() => {
+            const hasStartedAssessment = activeJourney !== null || history.length > 0;
+            return (
+              <>
+                {hasStartedAssessment && !todayLog && !checkInBannerDismissed && (
+                  <div
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl"
+                    style={{ background: 'rgba(0,212,200,0.08)', border: '1px solid rgba(0,212,200,0.25)' }}
+                  >
+                    <Bell size={18} className="flex-shrink-0" style={{ color: '#00d4c8' }} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-[#f0f4f8]">You haven't logged your pain today</p>
+                      <p className="text-xs text-[#6b849e]">Daily tracking helps us spot your progress</p>
+                    </div>
+                    <button
+                      onClick={() => painTrackerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                      className="flex-shrink-0 text-xs font-bold px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
+                      style={{ background: 'rgba(0,212,200,0.15)', color: '#00d4c8', border: '1px solid rgba(0,212,200,0.3)' }}
+                    >
+                      Log Now
+                    </button>
+                    <button
+                      onClick={() => setCheckInBannerDismissed(true)}
+                      className="flex-shrink-0 text-[#6b849e] hover:text-[#f0f4f8] transition-colors"
+                      aria-label="Dismiss"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                )}
 
-          <div className="bg-[#0f1829] p-8 rounded-2xl border border-[#1a2a42] flex flex-col md:flex-row items-center justify-between gap-6">
-            <div>
-              <h1 className="text-2xl font-bold text-[#f0f4f8] mb-2">Welcome back.</h1>
-              <p className="text-[#6b849e]">
-                You are currently on the <span className="font-bold text-[#00d4c8]">{activeJourney || 'General'}</span> track.
-              </p>
-              {streak > 0 && (
-                <div className="flex items-center gap-1.5 mt-3 text-sm font-bold" style={{ color: '#ffcc00' }}>
-                  <Activity size={14} />
-                  {streak}-day check-in streak
+                <div className="bg-[#0f1829] p-8 rounded-2xl border border-[#1a2a42] flex flex-col md:flex-row items-center justify-between gap-6">
+                  <div>
+                    <h1 className="text-2xl font-bold text-[#f0f4f8] mb-2">Welcome back.</h1>
+                    <p className="text-[#6b849e]">
+                      You are currently on the <span className="font-bold text-[#00d4c8]">{activeJourney || 'General'}</span> track.
+                    </p>
+                    {streak > 0 && (
+                      <div className="flex items-center gap-1.5 mt-3 text-sm font-bold" style={{ color: '#ffcc00' }}>
+                        <Activity size={14} />
+                        {streak}-day check-in streak
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => {
+                      setHistory([]);
+                      setCurrentNodeId('start');
+                      attemptNavigation('assessment');
+                    }}
+                    className="px-6 py-3 rounded-lg font-semibold text-[#080d1a] hover:opacity-90 active:scale-95 transition-all"
+                    style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+                  >
+                    {hasStartedAssessment ? 'New Assessment' : 'Start Assessment'}
+                  </button>
                 </div>
-              )}
-            </div>
-            <button
-              onClick={() => {
-                setHistory([]);
-                setCurrentNodeId('start');
-                attemptNavigation('assessment');
-              }}
-              className="px-6 py-3 rounded-lg font-semibold text-[#080d1a] hover:opacity-90 active:scale-95 transition-all"
-              style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
-            >
-              New Assessment
-            </button>
-          </div>
 
-          <div ref={painTrackerRef} className="grid md:grid-cols-2 gap-6">
-            <PainTracker onSaveLog={handleSavePainLog} existingLog={todayLog} todayISO={todayISO} />
-            <PainGraph logs={painLog} />
-          </div>
+                {hasStartedAssessment ? (
+                  <div ref={painTrackerRef} className="grid md:grid-cols-2 gap-6">
+                    <PainTracker onSaveLog={handleSavePainLog} existingLog={todayLog} todayISO={todayISO} />
+                    <PainGraph logs={painLog} />
+                  </div>
+                ) : (
+                  <div
+                    className="rounded-2xl p-8 text-center"
+                    style={{ background: 'rgba(0,212,200,0.05)', border: '1px solid rgba(0,212,200,0.2)' }}
+                  >
+                    <div
+                      className="inline-flex items-center justify-center w-14 h-14 rounded-full mb-4"
+                      style={{ background: 'rgba(0,212,200,0.1)', border: '1px solid rgba(0,212,200,0.3)' }}
+                    >
+                      <ClipboardList size={24} style={{ color: '#00d4c8' }} />
+                    </div>
+                    <h3 className="text-lg font-bold text-[#f0f4f8] mb-2">Start your assessment to unlock your personalized plan</h3>
+                    <p className="text-sm text-[#6b849e] mb-6">Answer a few questions about your symptoms. We'll build your rehab protocol based on your individual presentation.</p>
+                    <button
+                      onClick={() => {
+                        setHistory([]);
+                        setCurrentNodeId('start');
+                        attemptNavigation('assessment');
+                      }}
+                      className="px-6 py-3 rounded-lg font-semibold text-[#080d1a] hover:opacity-90 active:scale-95 transition-all"
+                      style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+                    >
+                      Begin Assessment
+                    </button>
+                  </div>
+                )}
+              </>
+            );
+          })()}
 
           <div className="bg-[#0f1829] rounded-2xl border border-[#1a2a42] p-6 flex items-center justify-between">
             <div className="flex items-center gap-4">
@@ -1340,7 +1432,9 @@ export default function App() {
       {currentView === 'landing' && <LandingPage />}
       {currentView === 'paywall' && <Paywall />}
       {currentView === 'assessment' && <AssessmentView />}
-      {currentView === 'dashboard' && <Dashboard />}
+      {currentView === 'dashboard' && hasAgreedToTerms && painLog.length === 0
+        ? <BaselineCaptureScreen onSave={handleSavePainLog} todayISO={todayISO} />
+        : currentView === 'dashboard' && <Dashboard />}
       {currentView === 'settings' && (
         <SettingsView
           isPremium={isPremium}
