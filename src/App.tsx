@@ -1297,9 +1297,10 @@ export default function App() {
                 <button
                   key={rx.title}
                   onClick={() => {
+                    console.log('[lb_mdt_prescription] navigating to:', rx.nodeId);
                     const newHistory = [...history, currentNodeId];
                     setHistory(newHistory);
-                    saveUserData({ history: newHistory });
+                    saveUserData({ history: newHistory, currentNodeId: rx.nodeId });
                     attemptNavigation('assessment', rx.nodeId, true);
                   }}
                   className="w-full flex items-center gap-4 p-4 rounded-xl transition-all group"
@@ -1451,7 +1452,7 @@ export default function App() {
           onPlay={(id) => {
             const newHistory = [...history, currentNodeId];
             setHistory(newHistory);
-            saveUserData({ history: newHistory });
+            saveUserData({ history: newHistory, currentNodeId: id });
             attemptNavigation('assessment', id, true);
           }}
         />
