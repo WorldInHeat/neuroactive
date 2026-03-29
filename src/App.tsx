@@ -1199,13 +1199,21 @@ export default function App() {
           {currentNodeId === 'lb_mdt_prescription' && (
             <div className="space-y-3 mb-6">
               {[
-                { title: 'Standing Extension (EIS)', detail: '10 repetitions every waking hour' },
-                { title: 'Prone Press-Up (EIL)',     detail: '10 repetitions every waking hour' },
+                { title: 'Standing Extension (EIS)', detail: '10 repetitions every waking hour', nodeId: 'vid_mdt_standing_ext' },
+                { title: 'Prone Press-Up (EIL)',     detail: '10 repetitions every waking hour', nodeId: 'vid_mdt_pressup' },
               ].map((rx) => (
-                <div
+                <button
                   key={rx.title}
-                  className="flex items-center gap-4 p-4 rounded-xl"
-                  style={{ background: '#0f1829', border: '1px solid rgba(0,212,200,0.3)' }}
+                  onClick={() => {
+                    const newHistory = [...history, currentNodeId];
+                    setHistory(newHistory);
+                    saveUserData({ history: newHistory });
+                    attemptNavigation('assessment', rx.nodeId, true);
+                  }}
+                  className="w-full flex items-center gap-4 p-4 rounded-xl transition-all group"
+                  style={{ background: '#0f1829', border: '1px solid rgba(0,212,200,0.3)', cursor: 'pointer' }}
+                  onMouseEnter={(e) => (e.currentTarget.style.boxShadow = '0 0 0 1px rgba(0,212,200,0.5), 0 0 12px rgba(0,212,200,0.12)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.boxShadow = 'none')}
                 >
                   <div
                     className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center"
@@ -1213,11 +1221,14 @@ export default function App() {
                   >
                     <CheckCircle size={16} style={{ color: '#00d4c8' }} />
                   </div>
-                  <div>
+                  <div className="flex-1 text-left">
                     <p className="font-semibold text-[#f0f4f8] text-sm">{rx.title}</p>
                     <p className="text-xs text-[#00d4c8] font-medium mt-0.5">{rx.detail}</p>
                   </div>
-                </div>
+                  <span className="flex-shrink-0 text-xs font-bold text-[#00d4c8] flex items-center gap-1 opacity-70 group-hover:opacity-100 transition-opacity">
+                    <Play size={10} fill="#00d4c8" /> Watch
+                  </span>
+                </button>
               ))}
               <p className="text-xs text-[#6b849e] leading-relaxed px-1 pt-1">
                 Use whichever is available at any given hour — think of it like having both a flathead and Phillips screwdriver. You always want the right tool for the job. The goal is extension, every hour, consistently.
