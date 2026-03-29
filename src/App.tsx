@@ -1,5 +1,5 @@
 // src/App.tsx
-import { useEffect, useState } from 'react'; // Removed 'React' default import
+import { useEffect, useRef, useState } from 'react'; // Removed 'React' default import
 import {
   Activity,
   Play,
@@ -23,6 +23,8 @@ import {
   Trash2,
   Mail,
   FileText,
+  Bell,
+  X,
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
@@ -503,6 +505,8 @@ export default function App() {
   const [activeJourney, setActiveJourney] = useState<string | null>(null);
   const [painLog, setPainLog] = useState<PainLogEntry[]>([]);
   const [troubleshootingAttempts, setTroubleshootingAttempts] = useState(0);
+  const [checkInBannerDismissed, setCheckInBannerDismissed] = useState(false);
+  const painTrackerRef = useRef<HTMLDivElement>(null);
 
   // NOTE: These are unused in this build but kept for future phases
   // const [phaseLocks, setPhaseLocks] = useState<Record<string, number>>({});
@@ -962,6 +966,33 @@ export default function App() {
         </div>
 
         <div className="max-w-5xl mx-auto p-6 space-y-8">
+          {!todayLog && !checkInBannerDismissed && (
+            <div
+              className="flex items-center gap-3 px-4 py-3 rounded-xl"
+              style={{ background: 'rgba(0,212,200,0.08)', border: '1px solid rgba(0,212,200,0.25)' }}
+            >
+              <Bell size={18} className="flex-shrink-0" style={{ color: '#00d4c8' }} />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-[#f0f4f8]">You haven't logged your pain today</p>
+                <p className="text-xs text-[#6b849e]">Daily tracking helps us spot your progress</p>
+              </div>
+              <button
+                onClick={() => painTrackerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                className="flex-shrink-0 text-xs font-bold px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
+                style={{ background: 'rgba(0,212,200,0.15)', color: '#00d4c8', border: '1px solid rgba(0,212,200,0.3)' }}
+              >
+                Log Now
+              </button>
+              <button
+                onClick={() => setCheckInBannerDismissed(true)}
+                className="flex-shrink-0 text-[#6b849e] hover:text-[#f0f4f8] transition-colors"
+                aria-label="Dismiss"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          )}
+
           <div className="bg-[#0f1829] p-8 rounded-2xl border border-[#1a2a42] flex flex-col md:flex-row items-center justify-between gap-6">
             <div>
               <h1 className="text-2xl font-bold text-[#f0f4f8] mb-2">Welcome back.</h1>
@@ -988,7 +1019,7 @@ export default function App() {
             </button>
           </div>
 
-          <div className="grid md:grid-cols-2 gap-6">
+          <div ref={painTrackerRef} className="grid md:grid-cols-2 gap-6">
             <PainTracker onSaveLog={handleSavePainLog} existingLog={todayLog} todayISO={todayISO} />
             <PainGraph logs={painLog} />
           </div>
