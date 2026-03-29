@@ -81,7 +81,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
       'For the next week, your job is to do ONLY your MDT directional work + DNS 3-month supine consistently. After 7 days, we unlock progression.',
     flagLevel: 'green',
     options: [
-      { label: 'Continue to DNS Foundation', nextId: 'vid_dns_3mo' },
+      { label: 'Continue to DNS Foundation', nextId: 'lb_mdt_prescription' },
       { label: 'I feel worse / symptoms spreading', nextId: 'refer_out' },
     ],
   },
@@ -738,7 +738,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
       'If you are improving even without perfect centralization, that is still a green / yellow light. Stay consistent. Do NOT half-dose. Re-check tomorrow.',
     flagLevel: 'green',
     options: [
-      { label: 'Continue extension only for now', nextId: 'lb_post_mdt_check' },
+      { label: 'Continue extension only for now', nextId: 'lb_mdt_prescription' },
       { label: 'Making steady progress — hold another day', nextId: 'lb_hold_24_48h' },
       { label: 'I am worse / spreading', nextId: 'refer_out' },
     ],
@@ -751,7 +751,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     description: 'Centralization means symptoms are moving toward the spine, the painful area is getting smaller, or peripheral symptoms are retreating. This is the goal — even partial centralization is a green light.',
     flagLevel: 'green',
     options: [
-      { label: 'Centralized — pain moved toward spine / area got smaller', nextId: 'vid_dns_3mo' },
+      { label: 'Centralized — pain moved toward spine / area got smaller', nextId: 'lb_mdt_prescription' },
       { label: 'Partial — somewhat better but not fully centralized yet', nextId: 'lb_extension_dose_hold_24h' },
       { label: 'No change after consistent dosing', nextId: 'lb_troubleshoot_intro' },
       { label: 'Worse — symptoms spreading outward or further down', nextId: 'lb_troubleshoot_intro' },
@@ -768,6 +768,19 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     options: [
       { label: 'Yes — still some nerve tightness down the leg', nextId: 'vid_sciatic_slider' },
       { label: 'No — all symptoms are now local / resolved', nextId: 'vid_dns_3mo' },
+    ],
+  },
+
+  lb_mdt_prescription: {
+    id: 'lb_mdt_prescription',
+    type: 'result',
+    text: 'Phase 1 Complete — Your Extension Prescription',
+    description: 'You have identified your directional preference: EXTENSION. This is great news — it means we have a clear direction to work with.',
+    flagLevel: 'green',
+    flagText: 'Extension Responder',
+    prescribes: ['vid_mdt_standing_ext', 'vid_mdt_pressup'],
+    options: [
+      { label: 'Continue to Phase 2 — Stabilization', nextId: 'vid_dns_3mo' },
     ],
   },
 

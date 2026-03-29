@@ -15,6 +15,7 @@ export type DecisionNode = {
   prescriptionFrequency?: string;
   prescriptionDuration?: number;
   replaces?: string[];
+  prescribes?: string[]; // node IDs to add to activePrescriptions when this node is reached
 
   libraryCategory?: 'All' | 'Supine' | 'Prone' | 'Side Lying' | 'Quadruped' | 'Standing' | 'MDT';
 

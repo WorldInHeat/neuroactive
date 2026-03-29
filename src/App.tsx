@@ -748,6 +748,17 @@ export default function App() {
       updates.activePrescriptions = newPrescriptions;
     }
 
+    if (nextNode.prescribes && nextNode.prescribes.length > 0) {
+      const toAdd = nextNode.prescribes;
+      const existing = new Set(activePrescriptions);
+      const newPrescriptions = [
+        ...activePrescriptions,
+        ...toAdd.filter((id) => !existing.has(id)),
+      ];
+      setActivePrescriptions(newPrescriptions);
+      updates.activePrescriptions = newPrescriptions;
+    }
+
     const newHistory = [...history, currentNodeId];
     setHistory(newHistory);
     updates.history = newHistory;
@@ -1183,6 +1194,39 @@ export default function App() {
             <h2 className="text-2xl font-bold text-[#f0f4f8] mb-4">{currentNode.text}</h2>
             <p className="text-[#6b849e]">{currentNode.description}</p>
           </div>
+
+          {/* Phase prescription display — lb_mdt_prescription */}
+          {currentNodeId === 'lb_mdt_prescription' && (
+            <div className="space-y-3 mb-6">
+              {[
+                { title: 'Standing Extension (EIS)', detail: '10 repetitions every waking hour' },
+                { title: 'Prone Press-Up (EIL)',     detail: '10 repetitions every waking hour' },
+              ].map((rx) => (
+                <div
+                  key={rx.title}
+                  className="flex items-center gap-4 p-4 rounded-xl"
+                  style={{ background: '#0f1829', border: '1px solid rgba(0,212,200,0.3)' }}
+                >
+                  <div
+                    className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center"
+                    style={{ background: 'rgba(0,212,200,0.12)' }}
+                  >
+                    <CheckCircle size={16} style={{ color: '#00d4c8' }} />
+                  </div>
+                  <div>
+                    <p className="font-semibold text-[#f0f4f8] text-sm">{rx.title}</p>
+                    <p className="text-xs text-[#00d4c8] font-medium mt-0.5">{rx.detail}</p>
+                  </div>
+                </div>
+              ))}
+              <p className="text-xs text-[#6b849e] leading-relaxed px-1 pt-1">
+                Use whichever is available at any given hour — think of it like having both a flathead and Phillips screwdriver. You always want the right tool for the job. The goal is extension, every hour, consistently.
+              </p>
+              <p className="text-xs text-[#6b849e] leading-relaxed px-1">
+                Both exercises are now saved to your dashboard. Return to them anytime.
+              </p>
+            </div>
+          )}
 
           {/* Video player */}
           {currentNode.type === 'video' && currentNode.videoId && (
