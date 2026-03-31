@@ -676,6 +676,7 @@ export default function App() {
   const [hasWatchedAssessmentIntro, setHasWatchedAssessmentIntro] = useState(false);
   const [authUser, setAuthUser] = useState<{ displayName: string | null; photoURL: string | null; isAnonymous: boolean } | null>(null);
   const [signInLoading, setSignInLoading] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
 
   // NOTE: These are unused in this build but kept for future phases
   // const [phaseLocks, setPhaseLocks] = useState<Record<string, number>>({});
@@ -769,6 +770,7 @@ export default function App() {
         setAuthUser(null);
         setCurrentView('signin');
       }
+      setAuthLoading(false);
     });
 
     return () => {
@@ -1626,6 +1628,14 @@ export default function App() {
       </button>
     </div>
   );
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#080d1a] flex items-center justify-center">
+        <span className="text-2xl font-extrabold text-[#f0f4f8] tracking-tight">NeuroActive</span>
+      </div>
+    );
+  }
 
   return (
     <>
