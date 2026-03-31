@@ -492,7 +492,7 @@ const PainGraph = ({ logs }: { logs: PainLogEntry[] }) => {
 };
 
 const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUnlock: () => void; onPlay: (id: string) => void }) => {
-  const [filter, setFilter] = useState<'All' | 'Supine' | 'Prone' | 'Side Lying' | 'Quadruped' | 'MDT' | 'Orientation'>('All');
+  const [filter, setFilter] = useState<'All' | 'Supine' | 'Prone' | 'Side Lying' | 'Quadruped' | 'MDT' | 'Orientation' | 'DNS'>('All');
 
   const libraryItems = Object.values(DECISION_TREE).filter((node) => node.type === 'video' && node.libraryCategory);
   const filteredItems = filter === 'All' ? libraryItems : libraryItems.filter((item) => item.libraryCategory === filter);
@@ -504,7 +504,7 @@ const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUn
           <Library className="text-[#00d4c8]" /> Movement Library
         </h2>
         <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
-          {['All', 'Orientation', 'Supine', 'Prone', 'Side Lying', 'Quadruped', 'MDT'].map((cat) => (
+          {['All', 'Orientation', 'DNS', 'Supine', 'Prone', 'Side Lying', 'Quadruped', 'MDT'].map((cat) => (
             <button
               key={cat}
               onClick={() => setFilter(cat as any)}

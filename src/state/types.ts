@@ -17,7 +17,7 @@ export type DecisionNode = {
   replaces?: string[];
   prescribes?: string[]; // node IDs to add to activePrescriptions when this node is reached
 
-  libraryCategory?: 'All' | 'Supine' | 'Prone' | 'Side Lying' | 'Quadruped' | 'Standing' | 'MDT' | 'Orientation';
+  libraryCategory?: 'All' | 'Supine' | 'Prone' | 'Side Lying' | 'Quadruped' | 'Standing' | 'MDT' | 'Orientation' | 'DNS';
 
   // tiering
   journeyTier?: 'A' | 'B' | 'C'; // A=pain triage, B=performance, C=returning/graduate path
