@@ -51,4 +51,8 @@ export type UserData = {
   troubleshootingAttempts?: number;
   hasWatchedWelcome?: boolean;
   hasWatchedAssessmentIntro?: boolean;
+
+  authProvider?: 'google' | 'anonymous';
+  displayName?: string;
+  photoURL?: string;
 };

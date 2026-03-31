@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, linkWithPopup, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot, type Firestore } from 'firebase/firestore';
 
 import { DECISION_TREE } from './data/decisionTree';
@@ -62,7 +62,62 @@ try {
   console.error('Firebase Initialization Error:', error);
 }
 
+const googleProvider = new GoogleAuthProvider();
+
 // --- Helper Components ---
+
+// --- Sign-In Screen ---
+const SignInScreen = ({
+  onGoogleSignIn,
+  onGuestSignIn,
+  isLoading,
+}: {
+  onGoogleSignIn: () => void;
+  onGuestSignIn: () => void;
+  isLoading: boolean;
+}) => (
+  <div className="min-h-screen bg-[#080d1a] flex flex-col items-center justify-center px-6">
+    <div className="w-full max-w-sm space-y-8">
+      <div className="text-center space-y-3">
+        <img
+          src="/logo.png"
+          alt="NeuroActive"
+          className="h-16 w-auto mx-auto object-contain"
+          onError={(e) => { (e.currentTarget as HTMLImageElement).src = '/logo.png'; }}
+        />
+        <h1 className="text-3xl font-extrabold text-[#f0f4f8]">NeuroActive</h1>
+        <p className="text-[#6b849e]">Evidence-based spine rehabilitation</p>
+      </div>
+
+      <div className="bg-[#0f1829] rounded-2xl border border-[#1a2a42] p-8 space-y-5">
+        <button
+          onClick={onGoogleSignIn}
+          disabled={isLoading}
+          className="w-full flex items-center justify-center gap-3 bg-white text-gray-800 font-semibold py-3 px-4 rounded-xl hover:bg-gray-50 active:scale-95 transition-all disabled:opacity-60 shadow"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+            <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+            <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+            <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+          </svg>
+          {isLoading ? 'Signing in…' : 'Sign in with Google'}
+        </button>
+
+        <div className="text-center space-y-1">
+          <button
+            onClick={onGuestSignIn}
+            disabled={isLoading}
+            className="text-sm text-[#6b849e] hover:text-[#f0f4f8] transition-colors disabled:opacity-60"
+          >
+            Continue as Guest
+          </button>
+          <p className="text-xs text-[#3a4a5e]">Guest sessions are not saved across devices</p>
+        </div>
+      </div>
+    </div>
+  </div>
+);
 
 const LegalDisclaimer = ({ onAgree, onCancel }: { onAgree: () => void; onCancel: () => void }) => (
   <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
@@ -128,12 +183,14 @@ const SettingsView = ({
   onLogout,
   onReset,
   onUpgrade,
+  userInfo,
 }: {
   isPremium: boolean;
   onBack: () => void;
   onLogout: () => void;
   onReset: () => void;
   onUpgrade: () => void;
+  userInfo?: { displayName: string | null; photoURL: string | null; isAnonymous: boolean };
 }) => {
   return (
     <div className="min-h-screen bg-[#080d1a] pb-20">
@@ -148,12 +205,24 @@ const SettingsView = ({
       <div className="max-w-xl mx-auto p-6 space-y-6">
         {/* User card */}
         <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] flex items-center gap-4">
-          <div className="bg-[#00d4c8]/15 p-4 rounded-full border border-[#00d4c8]/30">
-            <User size={32} className="text-[#00d4c8]" />
-          </div>
+          {userInfo?.photoURL ? (
+            <img
+              src={userInfo.photoURL}
+              alt="Profile"
+              className="w-16 h-16 rounded-full object-cover border-2 border-[#00d4c8]/30 flex-shrink-0"
+            />
+          ) : (
+            <div className="bg-[#00d4c8]/15 p-4 rounded-full border border-[#00d4c8]/30 flex-shrink-0">
+              <User size={32} className="text-[#00d4c8]" />
+            </div>
+          )}
           <div>
-            <h2 className="text-xl font-bold text-[#f0f4f8]">Guest User</h2>
-            <p className="text-sm text-[#6b849e]">NeuroActive Member</p>
+            <h2 className="text-xl font-bold text-[#f0f4f8]">
+              {userInfo?.displayName ?? 'Guest User'}
+            </h2>
+            <p className="text-sm text-[#6b849e]">
+              {userInfo?.isAnonymous ? 'Guest — not saved across devices' : 'NeuroActive Member'}
+            </p>
           </div>
         </div>
 
@@ -593,7 +662,7 @@ const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUn
 
 // --- Main App Component ---
 export default function App() {
-  const [currentView, setCurrentView] = useState<'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings'>('landing');
+  const [currentView, setCurrentView] = useState<'signin' | 'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings'>('signin');
   const [currentNodeId, setCurrentNodeId] = useState<string>('start');
   const [history, setHistory] = useState<string[]>([]);
   const [isPremium, setIsPremium] = useState(false);
@@ -605,6 +674,8 @@ export default function App() {
   const painTrackerRef = useRef<HTMLDivElement>(null);
   const [hasWatchedWelcome, setHasWatchedWelcome] = useState(false);
   const [hasWatchedAssessmentIntro, setHasWatchedAssessmentIntro] = useState(false);
+  const [authUser, setAuthUser] = useState<{ displayName: string | null; photoURL: string | null; isAnonymous: boolean } | null>(null);
+  const [signInLoading, setSignInLoading] = useState(false);
 
   // NOTE: These are unused in this build but kept for future phases
   // const [phaseLocks, setPhaseLocks] = useState<Record<string, number>>({});
@@ -615,7 +686,7 @@ export default function App() {
   
   // Pending state for terms agreement flow + Autoplay Intent
   const [pendingNodeId, setPendingNodeId] = useState<string | null>(null);
-  const [pendingView, setPendingView] = useState<'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings' | null>(null);
+  const [pendingView, setPendingView] = useState<'signin' | 'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings' | null>(null);
   
   // CHANGED: Token pattern "nodeId:timestamp" prevents stale autoplay across nodes
   const [autoplayToken, setAutoplayToken] = useState<string | null>(null);
@@ -671,6 +742,9 @@ export default function App() {
       }
 
       if (user) {
+        setAuthUser({ displayName: user.displayName, photoURL: user.photoURL, isAnonymous: user.isAnonymous });
+        setCurrentView((prev) => (prev === 'signin' ? 'landing' : prev));
+
         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'userData', 'main');
 
         unsubscribeSnapshot = onSnapshot(docRef, (docSnap) => {
@@ -692,7 +766,8 @@ export default function App() {
           setHasWatchedAssessmentIntro(data.hasWatchedAssessmentIntro ?? false);
         });
       } else {
-        signInAnonymously(auth).catch(console.error);
+        setAuthUser(null);
+        setCurrentView('signin');
       }
     });
 
@@ -742,8 +817,53 @@ export default function App() {
     // setPhaseLocks({});
     // setLastCheckInAt(null);
     setHasAgreedToTerms(false);
-    setCurrentView('landing');
+    setAuthUser(null);
+    setCurrentView('signin');
     setAutoplayToken(null);
+  };
+
+  const handleGoogleSignIn = async () => {
+    if (!auth) return;
+    setSignInLoading(true);
+    try {
+      const currentUser = auth.currentUser;
+      if (currentUser && currentUser.isAnonymous) {
+        // Try to link existing anonymous session to Google account
+        try {
+          await linkWithPopup(currentUser, googleProvider);
+          await saveUserData({ authProvider: 'google' });
+        } catch (linkError: any) {
+          if (linkError.code === 'auth/credential-already-in-use') {
+            // Google account already exists — sign in with it, load its existing data
+            await signInWithPopup(auth, googleProvider);
+          } else {
+            throw linkError;
+          }
+        }
+      } else {
+        await signInWithPopup(auth, googleProvider);
+      }
+      // onAuthStateChanged will fire and move view from 'signin' → 'landing'
+    } catch (error: any) {
+      if (error.code !== 'auth/popup-closed-by-user') {
+        console.error('Google sign-in error:', error);
+      }
+    } finally {
+      setSignInLoading(false);
+    }
+  };
+
+  const handleGuestSignIn = async () => {
+    if (!auth) return;
+    setSignInLoading(true);
+    try {
+      await signInAnonymously(auth);
+      // onAuthStateChanged will fire and move view from 'signin' → 'landing'
+    } catch (error) {
+      console.error('Guest sign-in error:', error);
+    } finally {
+      setSignInLoading(false);
+    }
   };
 
   // UPDATED: Honest navigation intent handler (Strict Mode)
@@ -1510,6 +1630,13 @@ export default function App() {
   return (
     <>
       {showTerms && <LegalDisclaimer onAgree={handleTermsAgree} onCancel={handleTermsDecline} />}
+      {currentView === 'signin' && (
+        <SignInScreen
+          onGoogleSignIn={handleGoogleSignIn}
+          onGuestSignIn={handleGuestSignIn}
+          isLoading={signInLoading}
+        />
+      )}
       {currentView === 'landing' && <LandingPage />}
       {currentView === 'paywall' && <Paywall />}
       {currentView === 'assessment' && <AssessmentView />}
@@ -1525,6 +1652,7 @@ export default function App() {
           onLogout={handleLogout}
           onReset={handleResetJourney}
           onUpgrade={handleUpgrade}
+          userInfo={authUser ?? undefined}
         />
       )}
       {currentView === 'library' && (
