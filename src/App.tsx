@@ -742,9 +742,18 @@ export default function App() {
         unsubscribeSnapshot = null;
       }
 
+      console.log('[Auth]', user ? `uid=${user.uid} isAnonymous=${user.isAnonymous}` : 'no user');
+
       if (user) {
         setAuthUser({ displayName: user.displayName, photoURL: user.photoURL, isAnonymous: user.isAnonymous });
-        setCurrentView((prev) => (prev === 'signin' ? 'landing' : prev));
+
+        // Only skip the sign-in screen for Google (non-anonymous) users.
+        // Anonymous users always see the sign-in screen so they can choose to upgrade
+        // or explicitly continue as guest. This prevents old auto-anon sessions from
+        // bypassing the sign-in screen entirely.
+        if (!user.isAnonymous) {
+          setCurrentView((prev) => (prev === 'signin' ? 'landing' : prev));
+        }
 
         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'userData', 'main');
 
@@ -859,8 +868,11 @@ export default function App() {
     if (!auth) return;
     setSignInLoading(true);
     try {
-      await signInAnonymously(auth);
-      // onAuthStateChanged will fire and move view from 'signin' → 'landing'
+      if (!auth.currentUser) {
+        await signInAnonymously(auth);
+      }
+      // onAuthStateChanged won't advance the view for anonymous users, so do it here
+      setCurrentView('landing');
     } catch (error) {
       console.error('Guest sign-in error:', error);
     } finally {
