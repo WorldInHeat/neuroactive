@@ -742,7 +742,9 @@ export default function App() {
         unsubscribeSnapshot = null;
       }
 
-      console.log('[Auth]', user ? `uid=${user.uid} isAnonymous=${user.isAnonymous}` : 'no user');
+      console.log('[Auth]', user
+        ? `uid=${user.uid} isAnonymous=${user.isAnonymous} provider=${user.providerData[0]?.providerId ?? 'anonymous'}`
+        : 'no user — showing sign-in screen');
 
       if (user) {
         setAuthUser({ displayName: user.displayName, photoURL: user.photoURL, isAnonymous: user.isAnonymous });
