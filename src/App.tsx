@@ -1405,6 +1405,26 @@ export default function App() {
             />
           )}
 
+          {/* IAP explainer link — shown on DNS video nodes only */}
+          {currentNode.type === 'video' && currentNodeId.startsWith('vid_dns_') && currentNodeId !== 'explainer_iap' && (
+            <button
+              onClick={() => {
+                const newHistory = [...history, currentNodeId];
+                setHistory(newHistory);
+                saveUserData({ history: newHistory, currentNodeId: 'explainer_iap' });
+                attemptNavigation('assessment', 'explainer_iap', true);
+              }}
+              className="flex items-center gap-2 text-sm text-[#6b849e] hover:text-[#00d4c8] transition-colors"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+                <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5" />
+                <path d="M8 7v5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                <circle cx="8" cy="4.5" r="0.75" fill="currentColor" />
+              </svg>
+              What is IAP?
+            </button>
+          )}
+
           {/* Question options */}
           {currentNode.type !== 'video' && (() => {
             const isInTroubleshootContext = currentNodeId.includes('troubleshoot') || currentNodeId.includes('peripheralizing');

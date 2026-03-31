@@ -29,6 +29,18 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     ],
   },
 
+  explainer_iap: {
+    id: 'explainer_iap',
+    type: 'video',
+    text: 'What is IAP?',
+    description: 'Intra-abdominal pressure — IAP — is the internal pressurization system that stabilizes your spine from the inside. Think of your trunk as a cylinder: your diaphragm is the top, your pelvic floor is the bottom, your deep abdominal muscles are the front and sides, and your deep spinal muscles are the back. When you breathe and pressurize correctly, this cylinder stiffens and protects your spine before any movement happens. This is not the same as sucking in your stomach or bracing hard — it is a coordinated 360-degree expansion that happens automatically when the system is working correctly. Every DNS exercise in this program is built on this foundation.',
+    videoId: 'PLACEHOLDER_IAP_EXPLAINER',
+    libraryCategory: 'Orientation',
+    options: [
+      { label: 'Back to my exercise', nextId: 'vid_dns_3mo' },
+    ],
+  },
+
   onboarding_paywall_hero: {
     id: 'onboarding_paywall_hero',
     type: 'video',
