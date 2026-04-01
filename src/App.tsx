@@ -735,15 +735,23 @@ export default function App() {
     if (!auth || !db) return;
 
     // Catch the result when Google redirects back after signInWithRedirect / linkWithRedirect
+    console.log('[Redirect] calling getRedirectResult...');
     getRedirectResult(auth).then((result) => {
-      console.log('[Redirect]', result ? `user=${result.user.uid} provider=${result.providerId}` : 'no pending redirect');
+      console.log('[Redirect] result:', JSON.stringify(result));
+      if (result?.user) {
+        console.log('[Redirect] success — uid:', result.user.uid, 'provider:', result.providerId, 'isAnonymous:', result.user.isAnonymous);
+      } else {
+        console.log('[Redirect] no pending redirect result');
+      }
       // onAuthStateChanged fires automatically with the signed-in user — nothing else needed
     }).catch(async (error: any) => {
       console.error('[Redirect] error:', error.code, error.message);
+      console.error('[Redirect] full error:', error);
       if (error.code === 'auth/credential-already-in-use') {
         // linkWithRedirect failed because the Google account already exists as its own Firebase user.
         // Fall back: sign in directly with the credential embedded in the error — no second redirect needed.
         const credential = GoogleAuthProvider.credentialFromError(error);
+        console.log('[Redirect] credential from error:', JSON.stringify(credential));
         if (credential && auth) {
           console.log('[Redirect] credential-already-in-use — signing in directly with credential');
           await signInWithCredential(auth, credential);
@@ -760,9 +768,7 @@ export default function App() {
         unsubscribeSnapshot = null;
       }
 
-      console.log('[Auth]', user
-        ? `uid=${user.uid} isAnonymous=${user.isAnonymous} provider=${user.providerData[0]?.providerId ?? 'anonymous'}`
-        : 'no user — showing sign-in screen');
+      console.log('[Auth] state change:', user?.uid, user?.isAnonymous, user?.providerData);
 
       if (user) {
         setAuthUser({ displayName: user.displayName, photoURL: user.photoURL, isAnonymous: user.isAnonymous });
