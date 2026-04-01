@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithRedirect, linkWithRedirect, getRedirectResult, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithRedirect, linkWithRedirect, getRedirectResult, signInWithCredential, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot, type Firestore } from 'firebase/firestore';
 
 import { DECISION_TREE } from './data/decisionTree';
@@ -734,14 +734,22 @@ export default function App() {
   useEffect(() => {
     if (!auth || !db) return;
 
-    // Catch the result when Google redirects back after signInWithRedirect
+    // Catch the result when Google redirects back after signInWithRedirect / linkWithRedirect
     getRedirectResult(auth).then((result) => {
-      if (result?.user) {
-        console.log('[Auth] redirect result:', result.user.uid);
-        // onAuthStateChanged will fire immediately after with this user — no extra action needed
+      console.log('[Redirect]', result ? `user=${result.user.uid} provider=${result.providerId}` : 'no pending redirect');
+      // onAuthStateChanged fires automatically with the signed-in user — nothing else needed
+    }).catch(async (error: any) => {
+      console.error('[Redirect] error:', error.code, error.message);
+      if (error.code === 'auth/credential-already-in-use') {
+        // linkWithRedirect failed because the Google account already exists as its own Firebase user.
+        // Fall back: sign in directly with the credential embedded in the error — no second redirect needed.
+        const credential = GoogleAuthProvider.credentialFromError(error);
+        if (credential && auth) {
+          console.log('[Redirect] credential-already-in-use — signing in directly with credential');
+          await signInWithCredential(auth, credential);
+          // onAuthStateChanged will fire with the Google user
+        }
       }
-    }).catch((error) => {
-      console.error('[Auth] redirect result error:', error);
     });
 
     let unsubscribeSnapshot: (() => void) | null = null;
