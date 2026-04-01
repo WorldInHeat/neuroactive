@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, linkWithPopup, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithRedirect, linkWithRedirect, getRedirectResult, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot, type Firestore } from 'firebase/firestore';
 
 import { DECISION_TREE } from './data/decisionTree';
@@ -734,6 +734,16 @@ export default function App() {
   useEffect(() => {
     if (!auth || !db) return;
 
+    // Catch the result when Google redirects back after signInWithRedirect
+    getRedirectResult(auth).then((result) => {
+      if (result?.user) {
+        console.log('[Auth] redirect result:', result.user.uid);
+        // onAuthStateChanged will fire immediately after with this user — no extra action needed
+      }
+    }).catch((error) => {
+      console.error('[Auth] redirect result error:', error);
+    });
+
     let unsubscribeSnapshot: (() => void) | null = null;
 
     const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
@@ -841,29 +851,18 @@ export default function App() {
     try {
       const currentUser = auth.currentUser;
       if (currentUser && currentUser.isAnonymous) {
-        // Try to link existing anonymous session to Google account
-        try {
-          await linkWithPopup(currentUser, googleProvider);
-          await saveUserData({ authProvider: 'google' });
-        } catch (linkError: any) {
-          if (linkError.code === 'auth/credential-already-in-use') {
-            // Google account already exists — sign in with it, load its existing data
-            await signInWithPopup(auth, googleProvider);
-          } else {
-            throw linkError;
-          }
-        }
+        // Try to link existing anonymous session to Google account via redirect
+        await linkWithRedirect(currentUser, googleProvider);
       } else {
-        await signInWithPopup(auth, googleProvider);
+        await signInWithRedirect(auth, googleProvider);
       }
-      // onAuthStateChanged will fire and move view from 'signin' → 'landing'
+      // Page will redirect to Google — execution stops here.
+      // getRedirectResult() on the next load catches the result.
     } catch (error: any) {
-      if (error.code !== 'auth/popup-closed-by-user') {
-        console.error('Google sign-in error:', error);
-      }
-    } finally {
+      console.error('Google sign-in error:', error);
       setSignInLoading(false);
     }
+    // Note: don't call setSignInLoading(false) in finally — the redirect navigates away
   };
 
   const handleGuestSignIn = async () => {
