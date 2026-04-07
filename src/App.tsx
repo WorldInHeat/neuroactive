@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithRedirect, linkWithRedirect, getRedirectResult, signInWithCredential, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, linkWithPopup, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot, type Firestore } from 'firebase/firestore';
 
 import { DECISION_TREE } from './data/decisionTree';
@@ -71,10 +71,12 @@ const SignInScreen = ({
   onGoogleSignIn,
   onGuestSignIn,
   isLoading,
+  error,
 }: {
   onGoogleSignIn: () => void;
   onGuestSignIn: () => void;
   isLoading: boolean;
+  error: string | null;
 }) => (
   <div className="min-h-screen bg-[#080d1a] flex flex-col items-center justify-center px-6">
     <div className="w-full max-w-sm space-y-8">
@@ -103,6 +105,10 @@ const SignInScreen = ({
           </svg>
           {isLoading ? 'Signing in…' : 'Sign in with Google'}
         </button>
+
+        {error && (
+          <p className="text-xs text-red-400 text-center leading-relaxed">{error}</p>
+        )}
 
         <div className="text-center space-y-1">
           <button
@@ -676,6 +682,7 @@ export default function App() {
   const [hasWatchedAssessmentIntro, setHasWatchedAssessmentIntro] = useState(false);
   const [authUser, setAuthUser] = useState<{ displayName: string | null; photoURL: string | null; isAnonymous: boolean } | null>(null);
   const [signInLoading, setSignInLoading] = useState(false);
+  const [signInError, setSignInError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
 
   // NOTE: These are unused in this build but kept for future phases
@@ -733,32 +740,6 @@ export default function App() {
   // Firebase Auth & Data Sync
   useEffect(() => {
     if (!auth || !db) return;
-
-    // Catch the result when Google redirects back after signInWithRedirect / linkWithRedirect
-    console.log('[Redirect] calling getRedirectResult...');
-    getRedirectResult(auth).then((result) => {
-      console.log('[Redirect] result:', JSON.stringify(result));
-      if (result?.user) {
-        console.log('[Redirect] success — uid:', result.user.uid, 'provider:', result.providerId, 'isAnonymous:', result.user.isAnonymous);
-      } else {
-        console.log('[Redirect] no pending redirect result');
-      }
-      // onAuthStateChanged fires automatically with the signed-in user — nothing else needed
-    }).catch(async (error: any) => {
-      console.error('[Redirect] error:', error.code, error.message);
-      console.error('[Redirect] full error:', error);
-      if (error.code === 'auth/credential-already-in-use') {
-        // linkWithRedirect failed because the Google account already exists as its own Firebase user.
-        // Fall back: sign in directly with the credential embedded in the error — no second redirect needed.
-        const credential = GoogleAuthProvider.credentialFromError(error);
-        console.log('[Redirect] credential from error:', JSON.stringify(credential));
-        if (credential && auth) {
-          console.log('[Redirect] credential-already-in-use — signing in directly with credential');
-          await signInWithCredential(auth, credential);
-          // onAuthStateChanged will fire with the Google user
-        }
-      }
-    });
 
     let unsubscribeSnapshot: (() => void) | null = null;
 
@@ -862,21 +843,36 @@ export default function App() {
   const handleGoogleSignIn = async () => {
     if (!auth) return;
     setSignInLoading(true);
+    setSignInError(null);
     try {
       const currentUser = auth.currentUser;
       if (currentUser && currentUser.isAnonymous) {
-        // Try to link existing anonymous session to Google account via redirect
-        await linkWithRedirect(currentUser, googleProvider);
+        // Try to link existing anonymous session to Google account
+        try {
+          await linkWithPopup(currentUser, googleProvider);
+          await saveUserData({ authProvider: 'google' });
+        } catch (linkError: any) {
+          if (linkError.code === 'auth/credential-already-in-use') {
+            // Google account already exists — sign in with it directly
+            await signInWithPopup(auth, googleProvider);
+          } else {
+            throw linkError;
+          }
+        }
       } else {
-        await signInWithRedirect(auth, googleProvider);
+        await signInWithPopup(auth, googleProvider);
       }
-      // Page will redirect to Google — execution stops here.
-      // getRedirectResult() on the next load catches the result.
+      // onAuthStateChanged fires with the Google user — view advances automatically
     } catch (error: any) {
-      console.error('Google sign-in error:', error);
+      if (error.code === 'auth/popup-blocked') {
+        setSignInError('Popup was blocked by your browser. Please allow popups for this site and try again.');
+      } else if (error.code !== 'auth/popup-closed-by-user') {
+        console.error('Google sign-in error:', error);
+        setSignInError('Sign-in failed. Please try again.');
+      }
+    } finally {
       setSignInLoading(false);
     }
-    // Note: don't call setSignInLoading(false) in finally — the redirect navigates away
   };
 
   const handleGuestSignIn = async () => {
@@ -1672,6 +1668,7 @@ export default function App() {
           onGoogleSignIn={handleGoogleSignIn}
           onGuestSignIn={handleGuestSignIn}
           isLoading={signInLoading}
+          error={signInError}
         />
       )}
       {currentView === 'landing' && <LandingPage />}
