@@ -1044,12 +1044,35 @@ export default function App() {
           />
           <span className="text-xl font-bold text-[#f0f4f8]">NeuroActive</span>
         </div>
-        <button
-          onClick={() => attemptNavigation('dashboard')}
-          className="text-sm font-semibold text-[#00d4c8] hover:opacity-80 transition-opacity"
-        >
-          Login
-        </button>
+        {authUser && !authUser.isAnonymous ? (
+          <button
+            onClick={() => setCurrentView('settings')}
+            className="flex-shrink-0 hover:opacity-80 transition-opacity"
+            aria-label="Settings"
+          >
+            {authUser.photoURL ? (
+              <img
+                src={authUser.photoURL}
+                alt="Profile"
+                className="w-8 h-8 rounded-full object-cover border-2 border-[#00d4c8]/40"
+              />
+            ) : (
+              <div
+                className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-[#080d1a]"
+                style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+              >
+                {(authUser.displayName ?? 'U').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
+              </div>
+            )}
+          </button>
+        ) : (
+          <button
+            onClick={() => attemptNavigation('dashboard')}
+            className="text-sm font-semibold text-[#00d4c8] hover:opacity-80 transition-opacity"
+          >
+            Login
+          </button>
+        )}
       </header>
 
       <main className="flex-1 flex flex-col items-center justify-center text-center px-8 py-16 relative overflow-hidden">
