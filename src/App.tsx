@@ -196,7 +196,7 @@ const SettingsView = ({
   onLogout: () => void;
   onReset: () => void;
   onUpgrade: () => void;
-  userInfo?: { displayName: string | null; photoURL: string | null; isAnonymous: boolean };
+  userInfo?: { displayName: string | null; photoURL: string | null; email: string | null; isAnonymous: boolean };
 }) => {
   return (
     <div className="min-h-screen bg-[#080d1a] pb-20">
@@ -222,12 +222,15 @@ const SettingsView = ({
               <User size={32} className="text-[#00d4c8]" />
             </div>
           )}
-          <div>
-            <h2 className="text-xl font-bold text-[#f0f4f8]">
-              {userInfo?.displayName ?? 'Guest User'}
+          <div className="min-w-0">
+            <h2 className="text-xl font-bold text-[#f0f4f8] truncate">
+              {userInfo?.isAnonymous ? 'Guest User' : (userInfo?.displayName ?? 'NeuroActive User')}
             </h2>
-            <p className="text-sm text-[#6b849e]">
-              {userInfo?.isAnonymous ? 'Guest — not saved across devices' : 'NeuroActive Member'}
+            {!userInfo?.isAnonymous && userInfo?.email && (
+              <p className="text-sm text-[#6b849e] truncate">{userInfo.email}</p>
+            )}
+            <p className="text-xs text-[#3a4a5e] mt-0.5">
+              {userInfo?.isAnonymous ? 'Session not saved across devices' : 'Signed in with Google'}
             </p>
           </div>
         </div>
@@ -680,7 +683,7 @@ export default function App() {
   const painTrackerRef = useRef<HTMLDivElement>(null);
   const [hasWatchedWelcome, setHasWatchedWelcome] = useState(false);
   const [hasWatchedAssessmentIntro, setHasWatchedAssessmentIntro] = useState(false);
-  const [authUser, setAuthUser] = useState<{ displayName: string | null; photoURL: string | null; isAnonymous: boolean } | null>(null);
+  const [authUser, setAuthUser] = useState<{ displayName: string | null; photoURL: string | null; email: string | null; isAnonymous: boolean } | null>(null);
   const [signInLoading, setSignInLoading] = useState(false);
   const [signInError, setSignInError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -752,7 +755,7 @@ export default function App() {
       console.log('[Auth] state change:', user?.uid, user?.isAnonymous, user?.providerData);
 
       if (user) {
-        setAuthUser({ displayName: user.displayName, photoURL: user.photoURL, isAnonymous: user.isAnonymous });
+        setAuthUser({ displayName: user.displayName, photoURL: user.photoURL, email: user.email, isAnonymous: user.isAnonymous });
 
         // Only skip the sign-in screen for Google (non-anonymous) users.
         // Anonymous users always see the sign-in screen so they can choose to upgrade
