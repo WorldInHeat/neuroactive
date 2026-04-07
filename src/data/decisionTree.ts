@@ -967,6 +967,32 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
       { label: 'Sitting or bending forward', nextId: 'lb_extension_tolerance_check' },
       { label: 'Standing or walking', nextId: 'lb_extension_caution' },
       { label: 'Load — lifting or carrying weight', nextId: 'lb_extension_caution' },
+      { label: 'Both sitting AND standing bother me', nextId: 'lb_both_sitting_standing' },
+    ],
+  },
+
+  lb_both_sitting_standing: {
+    id: 'lb_both_sitting_standing',
+    type: 'question',
+    text: 'Both sitting and standing — which is driving things most right now?',
+    description: 'Having both sitting and standing sensitivity is common and clinically useful information. The next question helps us sort out the primary driver so we can sequence your program correctly.',
+    flagLevel: 'yellow',
+    options: [
+      { label: 'Sitting is clearly worse overall', nextId: 'lb_extension_tolerance_check' },
+      { label: 'Standing is clearly worse overall', nextId: 'lb_extension_caution' },
+      { label: 'Truly equal — no position gives significant relief', nextId: 'lb_both_equal' },
+    ],
+  },
+
+  lb_both_equal: {
+    id: 'lb_both_equal',
+    type: 'result',
+    text: 'Irritable presentation — proceeding carefully',
+    description: 'When no position gives significant relief, we are dealing with a more irritable presentation. We will still test extension, but starting with prone lying only — no end range initially. Important: when both sitting and standing bother you, there is often a stabilization deficit running alongside the directional issue. The DNS exercises that follow MDT are specifically designed to address standing and loading sensitivity. For you they are not optional — they are addressing a second problem that MDT alone will not fix.',
+    flagLevel: 'yellow',
+    flagText: 'Irritable — start gentle, DNS critical',
+    options: [
+      { label: 'Start gentle prone extension', nextId: 'vid_mdt_prone_gradual' },
     ],
   },
 
@@ -975,7 +1001,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     type: 'result',
     text: 'Proceeding with caution — gentle extension first',
     description:
-      'We are still going to test extension — but we will start gently, in a supported position, without pushing to end range initially. Here is the rule that guides everything from this point forward: pain during a movement is acceptable and does not mean stop. What matters is whether you remain worse after the movement than you were before. If symptoms settle back to baseline within a few minutes of finishing, we continue. If you are consistently worse afterwards, we change direction.',
+      'We are still going to test extension — but we will start gently, in a supported position, without pushing to end range initially. Here is the rule that guides everything from this point forward: pain during a movement is acceptable and does not mean stop. What matters is whether you remain worse after the movement than you were before. If symptoms settle back to baseline within a few minutes of finishing, we continue. If you are consistently worse afterwards, we change direction. Note: if standing and loading also bother you, the DNS stabilization work that follows MDT is addressing a second problem — a stabilization deficit that makes your spine vulnerable to load. Do not skip it.',
     flagLevel: 'yellow',
     options: [
       { label: 'Start gentle prone extension', nextId: 'vid_mdt_prone_gradual' },
