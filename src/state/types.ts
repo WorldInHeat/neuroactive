@@ -55,4 +55,8 @@ export type UserData = {
   authProvider?: 'google' | 'anonymous';
   displayName?: string;
   photoURL?: string;
+
+  subscriptionTier?: 'monthly' | 'annual' | 'program' | 'elite' | null;
+  stripeCustomerId?: string;
+  subscriptionStatus?: 'active' | 'canceled' | 'past_due' | 'trialing' | null;
 };

@@ -29,12 +29,13 @@ import {
 
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, linkWithPopup, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
-import { getFirestore, doc, setDoc, onSnapshot, type Firestore } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, onSnapshot, collection, type Firestore } from 'firebase/firestore';
 
 import { DECISION_TREE } from './data/decisionTree';
 import type { PainLogEntry, UserData } from './state/types';
 import VideoPlayer from './components/VideoPlayer';
 import SessionSummary from './components/SessionSummary';
+import { createCheckoutSession, createPortalLink, type PriceKey } from './services/stripe';
 
 // --- Firebase Configuration ---
 const firebaseConfig = {
@@ -189,6 +190,7 @@ const SettingsView = ({
   onLogout,
   onReset,
   onUpgrade,
+  onManageSubscription,
   userInfo,
 }: {
   isPremium: boolean;
@@ -196,6 +198,7 @@ const SettingsView = ({
   onLogout: () => void;
   onReset: () => void;
   onUpgrade: () => void;
+  onManageSubscription?: () => void;
   userInfo?: { displayName: string | null; photoURL: string | null; email: string | null; isAnonymous: boolean };
 }) => {
   return (
@@ -246,7 +249,17 @@ const SettingsView = ({
               <div className="text-lg font-bold text-[#f0f4f8]">{isPremium ? 'God Mode (Pro)' : 'Free Tier'}</div>
             </div>
             {isPremium ? (
-              <span className="bg-[#00e096]/15 text-[#00e096] border border-[#00e096]/30 px-3 py-1 rounded-full text-xs font-bold">Active</span>
+              <div className="flex flex-col items-end gap-2">
+                <span className="bg-[#00e096]/15 text-[#00e096] border border-[#00e096]/30 px-3 py-1 rounded-full text-xs font-bold">Active</span>
+                {onManageSubscription && (
+                  <button
+                    onClick={onManageSubscription}
+                    className="text-xs text-[#6b849e] hover:text-[#f0f4f8] transition-colors underline"
+                  >
+                    Manage Subscription
+                  </button>
+                )}
+              </div>
             ) : (
               <button
                 onClick={onUpgrade}
@@ -686,6 +699,8 @@ export default function App() {
   const [authUser, setAuthUser] = useState<{ displayName: string | null; photoURL: string | null; email: string | null; isAnonymous: boolean } | null>(null);
   const [signInLoading, setSignInLoading] = useState(false);
   const [signInError, setSignInError] = useState<string | null>(null);
+  const [checkoutLoading, setCheckoutLoading] = useState<PriceKey | null>(null);
+  const [paymentMessage, setPaymentMessage] = useState<{ type: 'success' | 'canceled'; text: string } | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
 
   // NOTE: These are unused in this build but kept for future phases
@@ -740,11 +755,30 @@ export default function App() {
   };
   */
 
+  // Check for payment success/canceled URL params on load
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const payment = params.get('payment');
+    if (payment === 'success') {
+      setPaymentMessage({ type: 'success', text: 'Payment successful — welcome to NeuroActive!' });
+      setIsPremium(true);
+    } else if (payment === 'canceled') {
+      setPaymentMessage({ type: 'canceled', text: 'Payment canceled — no charge was made.' });
+    }
+    if (payment) {
+      const clean = new URL(window.location.href);
+      clean.searchParams.delete('payment');
+      window.history.replaceState({}, '', clean.toString());
+      setTimeout(() => setPaymentMessage(null), 5000);
+    }
+  }, []);
+
   // Firebase Auth & Data Sync
   useEffect(() => {
     if (!auth || !db) return;
 
     let unsubscribeSnapshot: (() => void) | null = null;
+    let unsubscribeSubscriptions: (() => void) | null = null;
 
     const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
       if (unsubscribeSnapshot) {
@@ -785,15 +819,31 @@ export default function App() {
           setHasWatchedWelcome(data.hasWatchedWelcome ?? false);
           setHasWatchedAssessmentIntro(data.hasWatchedAssessmentIntro ?? false);
         });
+
+        // Stripe subscription sync — keep isPremium in sync with active subscriptions
+        if (unsubscribeSubscriptions) unsubscribeSubscriptions();
+        unsubscribeSubscriptions = onSnapshot(
+          collection(db, 'customers', user.uid, 'subscriptions'),
+          (snap) => {
+            const active = snap.docs.find(
+              (d) => d.data().status === 'active' || d.data().status === 'trialing'
+            );
+            if (active) {
+              setIsPremium(true);
+            }
+          }
+        );
       } else {
         setAuthUser(null);
         setCurrentView('signin');
+        if (unsubscribeSubscriptions) { unsubscribeSubscriptions(); unsubscribeSubscriptions = null; }
       }
       setAuthLoading(false);
     });
 
     return () => {
       if (unsubscribeSnapshot) unsubscribeSnapshot();
+      if (unsubscribeSubscriptions) unsubscribeSubscriptions();
       unsubscribeAuth();
     };
   }, []);
@@ -1024,12 +1074,6 @@ export default function App() {
     saveUserData(updates);
   };
 
-  const handleUpgrade = () => {
-    setIsPremium(true);
-    setCurrentView('dashboard');
-    saveUserData({ isPremium: true });
-  };
-
   const LandingPage = () => (
     <div className="flex flex-col min-h-screen bg-[#080d1a]">
       <header
@@ -1197,13 +1241,41 @@ export default function App() {
 
         {/* CTA */}
         <div className="space-y-3 pb-8">
-          <button
-            onClick={handleUpgrade}
-            className="w-full py-4 rounded-xl font-bold text-lg text-[#080d1a] hover:opacity-90 active:scale-95 transition-all flex justify-center items-center gap-2"
-            style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
-          >
-            <CreditCard size={20} /> Start 7-Day Free Trial
-          </button>
+          {(
+            [
+              { key: 'monthly' as PriceKey, label: 'Monthly', sublabel: 'Billed monthly, cancel anytime' },
+              { key: 'annual'  as PriceKey, label: 'Annual',  sublabel: 'Best value — save vs monthly' },
+              { key: 'program' as PriceKey, label: '12-Week Program', sublabel: 'One-time guided program access' },
+              { key: 'elite'   as PriceKey, label: 'Elite',   sublabel: 'Full access + priority support' },
+            ] as const
+          ).map(({ key, label, sublabel }) => {
+            const uid = auth?.currentUser?.uid;
+            const loading = checkoutLoading === key;
+            return (
+              <button
+                key={key}
+                disabled={checkoutLoading !== null || !uid}
+                onClick={async () => {
+                  if (!uid) return;
+                  setCheckoutLoading(key);
+                  try {
+                    await createCheckoutSession(uid, key);
+                  } catch (err) {
+                    console.error('Checkout error:', err);
+                    setCheckoutLoading(null);
+                  }
+                }}
+                className="w-full py-4 rounded-xl font-bold text-base hover:opacity-90 active:scale-95 transition-all flex flex-col items-center gap-0.5 disabled:opacity-50"
+                style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)', color: '#080d1a' }}
+              >
+                <span className="flex items-center gap-2">
+                  <CreditCard size={18} />
+                  {loading ? 'Loading…' : label}
+                </span>
+                {!loading && <span className="text-xs font-normal opacity-70">{sublabel}</span>}
+              </button>
+            );
+          })}
           <button onClick={() => setCurrentView('dashboard')} className="w-full text-[#6b849e] text-sm hover:text-[#f0f4f8] transition-colors py-2">
             No thanks, take me back
           </button>
@@ -1688,6 +1760,18 @@ export default function App() {
 
   return (
     <>
+      {paymentMessage && (
+        <div
+          className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-xl text-sm font-semibold shadow-lg flex items-center gap-2 ${
+            paymentMessage.type === 'success'
+              ? 'bg-[#00e096]/20 text-[#00e096] border border-[#00e096]/40'
+              : 'bg-[#ffcc00]/15 text-[#ffcc00] border border-[#ffcc00]/40'
+          }`}
+        >
+          {paymentMessage.type === 'success' ? <CheckCircle size={16} /> : <X size={16} />}
+          {paymentMessage.text}
+        </div>
+      )}
       {showTerms && <LegalDisclaimer onAgree={handleTermsAgree} onCancel={handleTermsDecline} />}
       {currentView === 'signin' && (
         <SignInScreen
@@ -1711,7 +1795,16 @@ export default function App() {
           onBack={() => setCurrentView('dashboard')}
           onLogout={handleLogout}
           onReset={handleResetJourney}
-          onUpgrade={handleUpgrade}
+          onUpgrade={() => setCurrentView('paywall')}
+          onManageSubscription={async () => {
+            const uid = auth?.currentUser?.uid;
+            if (!uid) return;
+            try {
+              await createPortalLink(uid);
+            } catch (err) {
+              console.error('Portal link error:', err);
+            }
+          }}
           userInfo={authUser ?? undefined}
         />
       )}
