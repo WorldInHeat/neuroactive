@@ -797,6 +797,15 @@ export default function App() {
         // bypassing the sign-in screen entirely.
         if (!user.isAnonymous) {
           setCurrentView((prev) => (prev === 'signin' ? 'landing' : prev));
+
+          // Ensure a customers/{uid} document exists so the Stripe extension
+          // createCustomer function fires (required when extension sync is off).
+          // merge:true is safe — it will not overwrite stripeId once written back.
+          setDoc(
+            doc(db, 'customers', user.uid),
+            { email: user.email ?? '', name: user.displayName ?? '' },
+            { merge: true }
+          ).catch((err) => console.warn('[Stripe] customer doc upsert failed:', err));
         }
 
         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'userData', 'main');
