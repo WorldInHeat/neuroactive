@@ -29,7 +29,7 @@ import {
 
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, linkWithPopup, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
-import { getFirestore, doc, setDoc, onSnapshot, collection, type Firestore } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, type Firestore } from 'firebase/firestore';
 
 import { DECISION_TREE } from './data/decisionTree';
 import type { PainLogEntry, UserData } from './state/types';
@@ -799,13 +799,15 @@ export default function App() {
           setCurrentView((prev) => (prev === 'signin' ? 'landing' : prev));
 
           // Ensure a customers/{uid} document exists so the Stripe extension
-          // createCustomer function fires (required when extension sync is off).
-          // merge:true is safe — it will not overwrite stripeId once written back.
-          setDoc(
-            doc(db, 'customers', user.uid),
-            { email: user.email ?? '', name: user.displayName ?? '' },
-            { merge: true }
-          ).catch((err) => console.warn('[Stripe] customer doc upsert failed:', err));
+          // createCustomer function fires. Must be a CREATE (not UPDATE) to trigger
+          // the extension's onDocumentCreated listener.
+          const customerRef = doc(db, 'customers', user.uid);
+          getDoc(customerRef).then((snap) => {
+            if (!snap.exists()) {
+              setDoc(customerRef, { email: user.email ?? '', name: user.displayName ?? '' })
+                .catch((err) => console.warn('[Stripe] customer doc create failed:', err));
+            }
+          }).catch((err) => console.warn('[Stripe] customer doc check failed:', err));
         }
 
         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'userData', 'main');
