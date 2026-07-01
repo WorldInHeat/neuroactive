@@ -837,9 +837,12 @@ export default function App() {
             const active = snap.docs.find(
               (d) => d.data().status === 'active' || d.data().status === 'trialing'
             );
-            if (active) {
-              setIsPremium(true);
-            }
+            const premium = !!active;
+            setIsPremium(premium);
+            const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'userData', 'main');
+            setDoc(userDocRef, { isPremium: premium }, { merge: true }).catch((err) =>
+              console.warn('[Stripe] isPremium write failed:', err)
+            );
           }
         );
       } else {
