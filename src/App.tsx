@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, linkWithPopup, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, linkWithPopup, linkWithRedirect, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, type Firestore } from 'firebase/firestore';
 
 import { DECISION_TREE } from './data/decisionTree';
@@ -64,6 +64,7 @@ try {
 }
 
 const googleProvider = new GoogleAuthProvider();
+const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
 // --- Helper Components ---
 
@@ -761,6 +762,25 @@ export default function App() {
     setCheckoutLoading(null);
   }, [currentView]);
 
+  // Handle redirect result after mobile Google sign-in returns to the page
+  useEffect(() => {
+    if (!auth) return;
+    getRedirectResult(auth).then(async (result) => {
+      if (!result) return;
+      // Redirect succeeded — onAuthStateChanged handles the view transition.
+      // Save provider info if this was a link-from-anonymous flow.
+      await saveUserData({ authProvider: 'google' });
+    }).catch(async (error: any) => {
+      if (error.code === 'auth/credential-already-in-use') {
+        // Link failed (account exists) — fall back to direct redirect sign-in
+        await signInWithRedirect(auth, googleProvider);
+      } else if (error.code !== 'auth/user-cancelled' && error.code !== 'auth/popup-closed-by-user') {
+        console.error('Redirect sign-in error:', error);
+        setSignInError('Sign-in failed. Please try again.');
+      }
+    });
+  }, []);
+
   // Check for payment success/canceled URL params on load
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -919,6 +939,16 @@ export default function App() {
     setSignInError(null);
     try {
       const currentUser = auth.currentUser;
+      if (isMobile) {
+        // Redirect flow — page will reload; result handled by getRedirectResult on mount
+        if (currentUser && currentUser.isAnonymous) {
+          await linkWithRedirect(currentUser, googleProvider);
+        } else {
+          await signInWithRedirect(auth, googleProvider);
+        }
+        return;
+      }
+      // Desktop: popup flow
       if (currentUser && currentUser.isAnonymous) {
         // Try to link existing anonymous session to Google account
         try {
