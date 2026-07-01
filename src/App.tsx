@@ -1188,7 +1188,7 @@ export default function App() {
         <VideoPlayer
           nodeId="onboarding_paywall_hero"
           title="Why NeuroActive is Different"
-          videoId="user252607296/landing"
+          videoId="1206005431"
           autoplayToken={null}
           onConsumeAutoplay={() => {}}
         />
