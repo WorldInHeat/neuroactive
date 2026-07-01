@@ -46,7 +46,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     type: 'video',
     text: 'Why NeuroActive is Different',
     description: 'Dr. Adam Bruene, D.C., Cert. MDT, DNSP explains the clinical methodology behind the app and why MDT + DNS together produce better outcomes than either approach alone.',
-    videoId: 'PLACEHOLDER_PAYWALL_HERO',
+    videoId: 'user252607296/landing',
     options: [
       { label: 'Start My Subscription', nextId: 'start' },
     ],
