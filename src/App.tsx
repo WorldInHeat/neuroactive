@@ -755,6 +755,12 @@ export default function App() {
   };
   */
 
+  // Reset checkout loading state whenever the view changes so stale loading
+  // state from a previous paywall visit never bleeds into the next one.
+  useEffect(() => {
+    setCheckoutLoading(null);
+  }, [currentView]);
+
   // Check for payment success/canceled URL params on load
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
