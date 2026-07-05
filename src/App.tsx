@@ -40,7 +40,7 @@ import { createCheckoutSession, createPortalLink, type PriceKey } from './servic
 // --- Firebase Configuration ---
 const firebaseConfig = {
   apiKey: 'AIzaSyBlNWkezjbXlOZ7SQCuN9FWO0ScV4zuTc8',
-  authDomain: 'neuroactive.firebaseapp.com',
+  authDomain: 'neuroactivehealth.com',
   projectId: 'neuroactive',
   storageBucket: 'neuroactive.firebasestorage.app',
   messagingSenderId: '1010503840940',
