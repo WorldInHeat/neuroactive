@@ -737,15 +737,26 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
   // =========================
   low_back_1: {
     id: 'low_back_1',
+    type: 'question',
+    text: 'How severe is your pain right now?',
+    description:
+      'Before we begin, we need to know where you are starting from. Your pain level right now determines which path we take first.',
+    journeyName: 'Lumbar Rehab',
+    options: [
+      { label: 'I am in very acute pain (8–10/10), can barely move', nextId: 'lb_phase0a_entry' },
+      { label: 'It is annoying/nagging (0–7/10), I can move around', nextId: 'lb_phase0b_entry' },
+    ],
+  },
+
+  lb_assessment_video: {
+    id: 'lb_assessment_video',
     type: 'video',
     text: 'Lumbar Assessment',
     description:
       'Before anything else, we need to understand how your symptoms behave. What makes them worse? What makes them better? Your answers to these questions — not just where it hurts — are what guide your self-management. Watch this video, then answer a few questions about your pain behavior.',
     videoId: '1207218101',
-    journeyName: 'Lumbar Rehab',
     options: [
-      { label: 'I am in very acute pain (8–10/10), can barely move', nextId: 'lb_phase0a_entry' },
-      { label: 'It is annoying/nagging (0–7/10), I can move around', nextId: 'lb_phase0b_entry' },
+      { label: 'Continue', nextId: 'lb_leg_symptom_check' },
     ],
   },
 
@@ -772,7 +783,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
       'Good — the fact that you can move around means we have room to work. The goal right now is simple: find a movement direction that makes your symptoms better. Most people with back pain have one, even if they have not found it yet. Here is the key principle we work from: if we can change it, we can fix it. If your symptoms respond to movement or position — getting better or worse — we can exploit that. More of what helps, less of what does not, and give your body the conditions it needs to heal.',
     flagLevel: 'green',
     options: [
-      { label: 'Continue', nextId: 'lb_leg_symptom_check' },
+      { label: 'Continue', nextId: 'lb_assessment_video' },
     ],
   },
 
@@ -1384,7 +1395,8 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
   // =========================
   lb_traffic_light_explainer: {
     id: 'lb_traffic_light_explainer',
-    type: 'result',
+    type: 'video',
+    videoId: '1207224591',
     text: 'How to read your symptoms',
     description: `🟢 GREEN LIGHT — three patterns all count:
 - Improving — symptoms are in the same place but less intense, fading, or easier to ignore
