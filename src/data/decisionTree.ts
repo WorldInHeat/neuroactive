@@ -22,7 +22,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     type: 'video',
     text: 'How This Assessment Works',
     description: 'Before your first question, understand what we are looking for — your directional preference — and how to use the green, yellow, and red light system to track your response.',
-    videoId: 'PLACEHOLDER_ASSESSMENT_INTRO',
+    videoId: '1207220674',
     libraryCategory: 'Orientation',
     options: [
       { label: 'Start Assessment', nextId: 'start' },
