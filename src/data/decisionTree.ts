@@ -754,7 +754,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     text: 'Lumbar Assessment',
     description:
       'Before anything else, we need to understand how your symptoms behave. What makes them worse? What makes them better? Your answers to these questions — not just where it hurts — are what guide your self-management. Watch this video, then answer a few questions about your pain behavior.',
-    videoId: '1207218101',
+    videoId: 'PLACEHOLDER_LUMBAR_BEHAVIOR',
     options: [
       { label: 'Continue', nextId: 'lb_leg_symptom_check' },
     ],
@@ -926,7 +926,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     text: 'Soft Shift (Correctable)',
     description: 'Good news — it\'s correctable. Next: test your extension response.',
     flagLevel: 'green',
-    options: [{ label: 'Test extension response', nextId: 'lb_extension_tolerance_check' }],
+    options: [{ label: 'Test extension response', nextId: 'lb_directional_test_video' }],
   },
 
   lb_hard_shift_plan: {
@@ -963,7 +963,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
       'Do a small set of side glides, then test gentle extension. Goal: regain midline + centralization. If pain moves further down the leg, stop.',
     flagLevel: 'yellow',
     options: [
-      { label: 'Test extension tolerance now', nextId: 'lb_extension_tolerance_check' },
+      { label: 'Test extension tolerance now', nextId: 'lb_directional_test_video' },
       { label: 'Stop and refer out', nextId: 'refer_out' },
     ],
   },
@@ -975,7 +975,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     text: 'What makes it worse?',
     description: 'What consistently aggravates your symptoms most? This helps us decide where to start and how aggressively to load. There are no wrong answers.',
     options: [
-      { label: 'Sitting or bending forward', nextId: 'lb_extension_tolerance_check' },
+      { label: 'Sitting or bending forward', nextId: 'lb_directional_test_video' },
       { label: 'Standing or walking', nextId: 'lb_extension_caution' },
       { label: 'Load — lifting or carrying weight', nextId: 'lb_extension_caution' },
       { label: 'Both sitting AND standing bother me', nextId: 'lb_both_sitting_standing' },
@@ -989,7 +989,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     description: 'Having both sitting and standing sensitivity is common and clinically useful information. The next question helps us sort out the primary driver so we can sequence your program correctly.',
     flagLevel: 'yellow',
     options: [
-      { label: 'Sitting is clearly worse overall', nextId: 'lb_extension_tolerance_check' },
+      { label: 'Sitting is clearly worse overall', nextId: 'lb_directional_test_video' },
       { label: 'Standing is clearly worse overall', nextId: 'lb_extension_caution' },
       { label: 'Truly equal — no position gives significant relief', nextId: 'lb_both_equal' },
     ],
@@ -1016,6 +1016,18 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     flagLevel: 'yellow',
     options: [
       { label: 'Start gentle prone extension', nextId: 'vid_mdt_prone_gradual' },
+    ],
+  },
+
+  lb_directional_test_video: {
+    id: 'lb_directional_test_video',
+    type: 'video',
+    text: 'Directional Testing',
+    description:
+      'Now we test how your spine responds to specific movement directions — flexion, extension, side glides, and slump. These are not exercises yet; they are diagnostic tests. Move slowly and pay attention to what happens to your symptoms during and after each direction. This is how we find your directional preference — the movement that centralizes your pain and becomes the basis of your program.',
+    videoId: '1207218101',
+    options: [
+      { label: 'Continue', nextId: 'lb_extension_tolerance_check' },
     ],
   },
 
