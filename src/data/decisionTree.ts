@@ -741,7 +741,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     text: 'Lumbar Assessment',
     description:
       'Before anything else, we need to understand how your symptoms behave. What makes them worse? What makes them better? Your answers to these questions — not just where it hurts — are what guide your self-management. Watch this video, then answer a few questions about your pain behavior.',
-    videoId: '1151049975',
+    videoId: '1207218101',
     journeyName: 'Lumbar Rehab',
     options: [
       { label: 'I am in very acute pain (8–10/10), can barely move', nextId: 'lb_phase0a_entry' },
