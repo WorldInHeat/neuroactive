@@ -1426,8 +1426,7 @@ Important: If you had leg symptoms and now have more back pain but less leg pain
 - Peripheralization — symptoms spreading further from the spine. Pain or numbness moving further down the leg or arm, or appearing in a new area below where it was before. This is the opposite of what we want and means we need to reassess immediately`,
     flagLevel: 'green',
     options: [
-      { label: 'I understand — start my first exercise', nextId: 'vid_mdt_standing_ext' },
-      { label: 'I need to start prone (more acute / blocked)', nextId: 'vid_mdt_prone_gradual' },
+      { label: 'Got it — back to where I was', nextId: '__RETURN__' },
     ],
   },
 

@@ -1090,6 +1090,15 @@ export default function App() {
   };
 
   const handleOptionClick = (nextId: string) => {
+    if (nextId === '__RETURN__') {
+      if (history.length > 0) {
+        const prevId = history[history.length - 1];
+        setCurrentNodeId(prevId);
+        setHistory((prev) => prev.slice(0, -1));
+      }
+      return;
+    }
+
     const nextNode = DECISION_TREE[nextId];
 
     if (!nextNode) {
