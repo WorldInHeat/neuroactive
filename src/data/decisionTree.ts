@@ -1033,7 +1033,8 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
 
   lb_extension_tolerance_check: {
     id: 'lb_extension_tolerance_check',
-    type: 'question',
+    type: 'video',
+    videoId: '1207929649',
     text: 'Extension tolerance check',
     description:
       'If very acute, start micro-dosing or static prone. If tolerable, start standing extension or press-ups.',
