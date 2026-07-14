@@ -1528,7 +1528,12 @@ export default function App() {
             </button>
           </div>
 
-          {activePrescriptions.length > 0 && (
+          {(() => {
+            // Hard rule, independent of user status: never surface a premium node's
+            // title/frequency here, same defense-in-depth as SessionSummary.
+            const visiblePrescriptions = activePrescriptions.filter((id) => !DECISION_TREE[id]?.isPremium);
+            if (visiblePrescriptions.length === 0) return null;
+            return (
             <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42]">
               <div className="flex items-center gap-2 mb-4">
                 <ClipboardList className="text-[#7c5cfc]" />
@@ -1536,7 +1541,7 @@ export default function App() {
               </div>
 
               <div className="space-y-3">
-                {activePrescriptions.map((id) => {
+                {visiblePrescriptions.map((id) => {
                   const node = DECISION_TREE[id];
                   if (!node) return null;
                   const accentColor = node.flagLevel ? flagAccent[node.flagLevel] : undefined;
@@ -1559,7 +1564,8 @@ export default function App() {
                 })}
               </div>
             </div>
-          )}
+            );
+          })()}
         </div>
       </div>
     );
@@ -1589,12 +1595,33 @@ export default function App() {
     }
 
 
+    // Gate any premium node (reveal/prescription nodes and premium videos alike) behind the paywall,
+    // regardless of which path in the tree led here.
+    if (currentNode.isPremium && !isPremium) {
+      return <Paywall />;
+    }
+
     // Show session summary when user reaches a terminal result node that has active prescriptions.
     // Exclude waypoint result nodes (e.g. explainers) whose options lead onward to video nodes.
     const nodeLeadsToVideo = currentNode.options?.some(
       (opt) => DECISION_TREE[opt.nextId]?.type === 'video'
     );
-    if (currentNode.type === 'result' && activePrescriptions.length > 0 && !nodeLeadsToVideo) {
+    // Red-flag nodes (refer_out, refer_out_urgent, peripheralization checkpoints) must always
+    // render their own safety content — never let stale accumulated prescriptions from earlier
+    // in the session hijack their render into a "your plan is ready" summary.
+    if (
+      currentNode.type === 'result' &&
+      currentNode.flagLevel !== 'red' &&
+      activePrescriptions.length > 0 &&
+      !nodeLeadsToVideo
+    ) {
+      // A premium exercise anywhere in the accumulated prescriptions means this summary
+      // would reveal that a personalized premium plan was generated — gate the whole
+      // screen rather than show a plan with premium items missing.
+      const hasPremiumPrescription = activePrescriptions.some((id) => DECISION_TREE[id]?.isPremium);
+      if (hasPremiumPrescription && !isPremium) {
+        return <Paywall />;
+      }
       return (
         <SessionSummary
           nodeId={currentNodeId}

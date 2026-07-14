@@ -1091,6 +1091,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     type: 'result',
     text: 'Phase 1 Complete — Your Extension Prescription',
     description: 'You have identified your directional preference: EXTENSION. This is great news — it means we have a clear direction to work with.',
+    isPremium: true,
     flagLevel: 'green',
     flagText: 'Extension Responder',
     prescribes: ['vid_mdt_standing_ext', 'vid_mdt_pressup'],
@@ -1163,6 +1164,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     type: 'result',
     text: 'Flexion as Directional Preference (Rare)',
     description: 'Flexion as a true directional preference is extremely rare in the cervical spine. Before proceeding, confirm: (1) retraction/extension was genuinely tried at true end range for at least 48 hours, (2) symptoms clearly and consistently worsen with extension and improve with flexion. If both are true, proceed cautiously with chin-to-chest end range loading.',
+    isPremium: true,
     flagLevel: 'yellow',
     flagText: 'Rare exception — confirm extension was truly trialed first',
     options: [
@@ -1177,6 +1179,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     text: 'Extension intolerance',
     description:
       'If looking up is clearly provocative, we start with neutral stabilization and gentle control instead of forcing extension.',
+    isPremium: true,
     flagLevel: 'yellow',
     options: [{ label: 'Start Stabilization', nextId: 'vid_dns_dnf' }],
   },
@@ -1291,6 +1294,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     text: 'Good response',
     description:
       'Keep your directional preference wins while building stability so symptoms don\'t return.',
+    isPremium: true,
     flagLevel: 'green',
     options: [{ label: 'Start Stabilization (DNS)', nextId: 'vid_dns_dnf' }],
   },
@@ -1525,6 +1529,7 @@ Important: If you had leg symptoms and now have more back pain but less leg pain
     type: 'result',
     text: 'Flexion — Last Resort',
     description: 'Flexion as a directional preference is rare — seen in less than 1% of cases in clinical practice. We are trying it here only because all extension-based options have been exhausted. If flexion clearly and consistently helps while extension clearly worsens, this may be your direction. Proceed cautiously and monitor closely.',
+    isPremium: true,
     flagLevel: 'yellow',
     flagText: 'Rare exception — all extension options exhausted',
     options: [

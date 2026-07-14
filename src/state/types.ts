@@ -9,7 +9,7 @@ export type DecisionNode = {
 
   // video / library metadata
   videoId?: string;
-  isPremium?: boolean; // keep for Library-only gating
+  isPremium?: boolean; // gates content in both Library and the assessment flow — shows paywall instead when the user isn't premium
   journeyName?: string;
 
   prescriptionFrequency?: string;

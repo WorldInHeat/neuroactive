@@ -19,9 +19,11 @@ function classify(prescriptions: string[]): string {
 
 export default function SessionSummary({ prescriptions, painDrawingData, onDone, decisionTree }: Props) {
   const classification = classify(prescriptions);
+  // Hard rule, independent of any caller's premium check: this component must never
+  // print the full text/description/frequency of a premium node, under any circumstance.
   const prescriptionNodes = prescriptions
     .map(id => decisionTree[id])
-    .filter((n): n is DecisionNode => !!n);
+    .filter((n): n is DecisionNode => !!n && !n.isPremium);
 
   const painRegions = painDrawingData ? Object.keys(painDrawingData) : [];
 
