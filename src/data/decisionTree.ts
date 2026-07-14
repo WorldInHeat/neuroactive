@@ -149,6 +149,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     description:
       'If extension work causes peripheralization or stalls, try these two adjustments before you stop: (1) sustained positioning + lateral bias options, then (2) traction if needed.',
     videoId: '1151049975',
+    isPremium: true,
     journeyTier: 'A',
     flagLevel: 'yellow',
     options: [
@@ -164,6 +165,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     description:
       'Traction can help when symptoms will not respond to spinal movement testing. If symptoms worsen or travel further down the leg, stop.',
     videoId: '1151049975',
+    isPremium: true,
     journeyTier: 'A',
     flagLevel: 'yellow',
     options: [
@@ -191,6 +193,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     type: 'result',
     text: 'End Range Check',
     description: 'True retraction means your chin moves straight back — not tucked down, not tilted. Your neck should feel compressed at the back. If you have been stopping short of this, full end range often changes the response completely. Dose: 10 reps every 2 hours for 24 hours at true end range.',
+    isPremium: true,
     flagLevel: 'yellow',
     options: [
       { label: 'Tried true end range — centralizing / improving', nextId: 'neck_post_mdt_check' },
@@ -204,6 +207,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     type: 'result',
     text: 'Sustained End Range Hold',
     description: 'Instead of repetitions, hold retraction+extension at end range for 30–60 seconds. Some derangements respond to sustained loading rather than repeated movement. Do 3–5 holds per session, every 2 hours.',
+    isPremium: true,
     flagLevel: 'yellow',
     options: [
       { label: 'Improving / centralizing', nextId: 'neck_post_mdt_check' },
@@ -219,6 +223,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     description:
       'If movement testing fails, traction can sometimes reduce peripheral symptoms. If weakness is worsening or symptoms escalate, stop and seek in-person evaluation.',
     videoId: '1151051123',
+    isPremium: true,
     journeyTier: 'A',
     flagLevel: 'yellow',
     options: [
@@ -657,7 +662,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     text: 'MDT Prone Press-Up (EIL)',
     description: 'Lumbar extension in lying mobilization.',
     videoId: '1159492220',
-    isPremium: false,
+    isPremium: true,
     prescriptionDuration: 48,
     prescriptionFrequency: '10 reps every waking hour',
     libraryCategory: 'MDT',
@@ -677,6 +682,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     text: 'Side Glide Correction',
     description: 'Shift correction drill. Do sets until you can cross midline.',
     videoId: '1151049975',
+    isPremium: true,
     libraryCategory: 'MDT',
     options: [
       { label: '🟢 Green light — shift correcting, can cross midline, symptoms improving', nextId: 'lb_soft_shift_confirmed' },
@@ -691,6 +697,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     text: 'Standing Extension (EIS)',
     description: 'Lumbar extension in standing.',
     videoId: '1151050042',
+    isPremium: true,
     libraryCategory: 'MDT',
     flagLevel: 'green',
     options: [
@@ -708,6 +715,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     text: 'Prone Lying → Gradual Extension',
     description: 'Start with prone lying, then progress slowly toward press-ups.',
     videoId: '1159492220',
+    isPremium: true,
     libraryCategory: 'MDT',
     options: [
       { label: '🟢 Green light — improving, centralizing, or abolishing', nextId: 'vid_mdt_pressup' },
@@ -724,6 +732,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     text: 'Sciatic Slider',
     description: 'Gentle nerve mobilization to reduce residual nerve tension after centralization.',
     videoId: '1159492220',
+    isPremium: true,
     libraryCategory: 'MDT',
     options: [
       { label: 'Better', nextId: 'vid_dns_3mo' },
@@ -961,6 +970,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     text: 'Shift + Extension Blend',
     description:
       'Do a small set of side glides, then test gentle extension. Goal: regain midline + centralization. If pain moves further down the leg, stop.',
+    isPremium: true,
     flagLevel: 'yellow',
     options: [
       { label: 'Test extension tolerance now', nextId: 'lb_directional_test_video' },
@@ -1203,6 +1213,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     description:
       'Start here only if you are very acute or blocked. As soon as tolerated, progress to retraction + extension.',
     videoId: '1151050180',
+    isPremium: true,
     prescriptionFrequency: '10 reps every 2 hours',
     libraryCategory: 'MDT',
     flagLevel: 'yellow',
@@ -1222,6 +1233,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     description:
       'Add gentle hand pressure to the end range of retraction. If this helps, re-test retraction + extension.',
     videoId: '1151050180',
+    isPremium: true,
     libraryCategory: 'MDT',
     options: [
       { label: 'Better', nextId: 'vid_mdt_ret_ext_standard' },
@@ -1237,6 +1249,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     description:
       'The primary test when tolerated. Aim for end-range without peripheralizing symptoms.',
     videoId: '1151050180',
+    isPremium: true,
     libraryCategory: 'MDT',
     flagLevel: 'green',
     options: [
@@ -1306,6 +1319,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     description:
       'Use this if seated/standing feels too intense. Gentle exposure to end-range in a supported position.',
     videoId: '1151050108',
+    isPremium: true,
     prescriptionFrequency: '10 gentle reps every 2 hours',
     prescriptionDuration: 24,
     options: [
@@ -1321,6 +1335,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     text: 'Continue: Gentle Retraction + Extension (Day 2)',
     description: 'Continue another 24 hours, then re-test upright end-range.',
     videoId: '1151050108',
+    isPremium: true,
     prescriptionFrequency: '10 gentle reps every 2 hours',
     prescriptionDuration: 24,
     replaces: ['vid_mdt_ret_ext_gentle'],
@@ -1338,6 +1353,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     description:
       'If progress stalls, try traction/static extension patterns. Stop if symptoms spread further down the arm.',
     videoId: '1151050180',
+    isPremium: true,
     options: [
       { label: 'Improved / more centralized', nextId: 'neck_hold_then_stabilize' },
       { label: 'No change', nextId: 'refer_out' },
@@ -1383,6 +1399,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     description:
       'Gentle upper limb nerve mobilization to reduce residual arm and hand tension after cervical centralization.',
     videoId: '1151050180',
+    isPremium: true,
     libraryCategory: 'MDT',
     prescriptionFrequency: '10 slow reps per side, 2x per day',
     options: [
@@ -1456,6 +1473,7 @@ Important: If you had leg symptoms and now have more back pain but less leg pain
     type: 'result',
     text: 'End Range Technique Check',
     description: 'True end range extension means your elbows are fully straight, your hips stay on the surface, and you are holding the top position for a full breath before lowering. Most people stop 80% of the way there. If you have been stopping short — try full end range for 24 hours before moving to the next step.',
+    isPremium: true,
     flagLevel: 'yellow',
     options: [
       { label: '🟢 Green light — improving with true end range', nextId: 'lb_post_mdt_check' },
@@ -1470,6 +1488,7 @@ Important: If you had leg symptoms and now have more back pain but less leg pain
     type: 'result',
     text: 'Sustained Hold vs Repeated Movement',
     description: 'Instead of doing repetitions, try holding end range extension for 30-60 seconds. Some presentations respond to sustained loading rather than repeated movement. Do 3-5 holds per session, every 2 hours. Give this 24 hours before moving on.',
+    isPremium: true,
     flagLevel: 'yellow',
     options: [
       { label: '🟢 Green light — improving with sustained hold', nextId: 'lb_post_mdt_check' },
@@ -1485,6 +1504,7 @@ Important: If you had leg symptoms and now have more back pain but less leg pain
     text: 'Supine Knees to the Side',
     description: 'Lying on your back, knees bent, let both knees fall toward the symptomatic side. This position is often a back-door route into extension for people who are not yet responding to direct extension loading. Hold for 30-60 seconds or do slow repetitions. If this helps, we will progress back to extension.',
     videoId: 'PLACEHOLDER',
+    isPremium: true,
     libraryCategory: 'MDT',
     flagLevel: 'yellow',
     options: [
@@ -1501,6 +1521,7 @@ Important: If you had leg symptoms and now have more back pain but less leg pain
     text: 'Crooked Press-Up and Overpressure Options',
     description: 'When standard press-ups are not working, two adjustments often help: (1) Crooked press-up — shift your hips away from the painful side before pressing up, creating a lateral bias in the extension. (2) Overpressure — use your hands to gently push your lower back further into extension at end range. Try each for 24 hours.',
     videoId: 'PLACEHOLDER',
+    isPremium: true,
     libraryCategory: 'MDT',
     flagLevel: 'yellow',
     options: [
@@ -1516,6 +1537,7 @@ Important: If you had leg symptoms and now have more back pain but less leg pain
     type: 'result',
     text: 'Side Glides as Troubleshooting',
     description: 'Even without a visible lateral shift, side glides can sometimes unlock a stuck extension response. Try side glides toward the non-painful side for 24 hours, then retest extension.',
+    isPremium: true,
     flagLevel: 'yellow',
     options: [
       { label: '🟢 Green light — extension now working', nextId: 'lb_post_mdt_check' },
