@@ -742,6 +742,10 @@ export default function App() {
   // Pending state for terms agreement flow + Autoplay Intent
   const [pendingNodeId, setPendingNodeId] = useState<string | null>(null);
   const [pendingView, setPendingView] = useState<'signin' | 'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings' | 'dns-course' | null>(null);
+
+  // Pending intent for the baseline pain-log gate — set when "Start Assessment" is
+  // clicked but no baseline exists yet; replayed once the baseline is captured.
+  const [pendingBaselineNodeId, setPendingBaselineNodeId] = useState<string | null>(null);
   
   // CHANGED: Token pattern "nodeId:timestamp" prevents stale autoplay across nodes
   const [autoplayToken, setAutoplayToken] = useState<string | null>(null);
@@ -940,6 +944,19 @@ export default function App() {
     await saveUserData({ painLog: next, lastCheckInAt: entry.date });
   };
 
+  // Saves the baseline entry, then replays the assessment entry that was queued
+  // when the baseline gate intercepted "Start Assessment".
+  const handleBaselineSaveAndContinue = async (entry: PainLogEntry) => {
+    await handleSavePainLog(entry);
+    const nodeId = pendingBaselineNodeId;
+    setPendingBaselineNodeId(null);
+    if (nodeId) {
+      setHistory([]);
+      setCurrentNodeId(nodeId);
+      attemptNavigation('assessment');
+    }
+  };
+
   const handleResetJourney = async () => {
     const updates: Partial<UserData> = {
       activeJourney: null,
@@ -1066,6 +1083,21 @@ export default function App() {
       setPendingAutoplay(autoplay); // Store intent
       setShowTerms(true);
     }
+  };
+
+  // Shared entry point for "Start/New/Begin Assessment" — the only callers that
+  // enter the assessment flow fresh (no specific nodeId). Deep links (Library
+  // playback, prescription follow-up, etc.) always pass a nodeId and skip this
+  // gate entirely, since reaching those already implies a prior fresh entry.
+  const startFreshAssessment = () => {
+    const initialNodeId = !hasWatchedAssessmentIntro ? 'onboarding_assessment_intro' : 'start';
+    if (hasAgreedToTerms && painLog.length === 0) {
+      setPendingBaselineNodeId(initialNodeId);
+      return;
+    }
+    setHistory([]);
+    setCurrentNodeId(initialNodeId);
+    attemptNavigation('assessment');
   };
 
   const handleTermsAgree = () => {
@@ -1380,11 +1412,7 @@ export default function App() {
                     )}
                   </div>
                   <button
-                    onClick={() => {
-                      setHistory([]);
-                      setCurrentNodeId(!hasWatchedAssessmentIntro ? 'onboarding_assessment_intro' : 'start');
-                      attemptNavigation('assessment');
-                    }}
+                    onClick={startFreshAssessment}
                     className="px-6 py-3 rounded-lg font-semibold text-[#080d1a] hover:opacity-90 active:scale-95 transition-all"
                     style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
                   >
@@ -1411,11 +1439,7 @@ export default function App() {
                     <h3 className="text-lg font-bold text-[#f0f4f8] mb-2">Start your assessment to unlock your personalized plan</h3>
                     <p className="text-sm text-[#6b849e] mb-6">Answer a few questions about your symptoms. We'll build your rehab protocol based on your individual presentation.</p>
                     <button
-                      onClick={() => {
-                        setHistory([]);
-                        setCurrentNodeId(!hasWatchedAssessmentIntro ? 'onboarding_assessment_intro' : 'start');
-                        attemptNavigation('assessment');
-                      }}
+                      onClick={startFreshAssessment}
                       className="px-6 py-3 rounded-lg font-semibold text-[#080d1a] hover:opacity-90 active:scale-95 transition-all"
                       style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
                     >
@@ -1866,8 +1890,8 @@ export default function App() {
           setCheckoutLoading={setCheckoutLoading}
         />
       )}
-      {currentView === 'dashboard' && hasAgreedToTerms && painLog.length === 0
-        ? <BaselineCaptureScreen onSave={handleSavePainLog} todayISO={todayISO} />
+      {currentView === 'dashboard' && pendingBaselineNodeId
+        ? <BaselineCaptureScreen onSave={handleBaselineSaveAndContinue} todayISO={todayISO} />
         : currentView === 'dashboard' && !hasWatchedWelcome
         ? <WelcomeVideoScreen onContinue={() => { setHasWatchedWelcome(true); saveUserData({ hasWatchedWelcome: true }); }} />
         : currentView === 'dashboard' && <Dashboard />}
