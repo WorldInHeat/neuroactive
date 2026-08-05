@@ -833,8 +833,10 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const payment = params.get('payment');
     if (payment === 'success') {
+      // Real premium status comes from the subscriptions/payments listeners below, which
+      // reflect the actual Firestore-persisted state — not set optimistically here, since
+      // that raced with and got silently overwritten by the real (still-false) data.
       setPaymentMessage({ type: 'success', text: 'Payment successful — welcome to NeuroActive!' });
-      setIsPremium(true);
     } else if (payment === 'canceled') {
       setPaymentMessage({ type: 'canceled', text: 'Payment canceled — no charge was made.' });
     }
@@ -852,6 +854,7 @@ export default function App() {
 
     let unsubscribeSnapshot: (() => void) | null = null;
     let unsubscribeSubscriptions: (() => void) | null = null;
+    let unsubscribePayments: (() => void) | null = null;
 
     const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
       if (unsubscribeSnapshot) {
@@ -905,7 +908,25 @@ export default function App() {
           if (data.dnsCourse) setDnsCourse(data.dnsCourse);
         });
 
-        // Stripe subscription sync — keep isPremium in sync with active subscriptions
+        // Stripe sync — isPremium is the OR of two independent signals: an active/trialing
+        // subscription, or a succeeded one-time payment (e.g. the 12-Week Program). Each
+        // listener only knows about its own collection, so neither may write isPremium
+        // unilaterally — that would let one listener's snapshot stomp the other's
+        // contribution. Both funnel through recomputeIsPremium so the combined truth is
+        // always what gets persisted, regardless of which listener fired most recently.
+        let hasActiveSubscription = false;
+        let hasSucceededPayment = false;
+        const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'userData', 'main');
+        const recomputeIsPremium = () => {
+          const premium = hasActiveSubscription || hasSucceededPayment;
+          setIsPremium(premium);
+          const updates: Partial<UserData> = { isPremium: premium };
+          if (hasSucceededPayment) updates.subscriptionTier = 'program';
+          setDoc(userDocRef, updates, { merge: true }).catch((err) =>
+            console.warn('[Stripe] isPremium write failed:', err)
+          );
+        };
+
         if (unsubscribeSubscriptions) unsubscribeSubscriptions();
         unsubscribeSubscriptions = onSnapshot(
           collection(db, 'customers', user.uid, 'subscriptions'),
@@ -913,18 +934,27 @@ export default function App() {
             const active = snap.docs.find(
               (d) => d.data().status === 'active' || d.data().status === 'trialing'
             );
-            const premium = !!active;
-            setIsPremium(premium);
-            const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'userData', 'main');
-            setDoc(userDocRef, { isPremium: premium }, { merge: true }).catch((err) =>
-              console.warn('[Stripe] isPremium write failed:', err)
-            );
+            hasActiveSubscription = !!active;
+            recomputeIsPremium();
+          }
+        );
+
+        // One-time purchases (e.g. 'program') land in customers/{uid}/payments rather than
+        // /subscriptions — without this, a one-time purchase never durably grants access.
+        if (unsubscribePayments) unsubscribePayments();
+        unsubscribePayments = onSnapshot(
+          collection(db, 'customers', user.uid, 'payments'),
+          (snap) => {
+            const succeeded = snap.docs.find((d) => d.data().status === 'succeeded');
+            hasSucceededPayment = !!succeeded;
+            recomputeIsPremium();
           }
         );
       } else {
         setAuthUser(null);
         setCurrentView('signin');
         if (unsubscribeSubscriptions) { unsubscribeSubscriptions(); unsubscribeSubscriptions = null; }
+        if (unsubscribePayments) { unsubscribePayments(); unsubscribePayments = null; }
       }
       setAuthLoading(false);
     });
@@ -932,6 +962,7 @@ export default function App() {
     return () => {
       if (unsubscribeSnapshot) unsubscribeSnapshot();
       if (unsubscribeSubscriptions) unsubscribeSubscriptions();
+      if (unsubscribePayments) unsubscribePayments();
       unsubscribeAuth();
     };
   }, []);
