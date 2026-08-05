@@ -819,8 +819,14 @@ export default function App() {
       await saveUserData({ authProvider: 'google' });
     }).catch(async (error: any) => {
       if (error.code === 'auth/credential-already-in-use') {
-        // Link failed (account exists) — fall back to direct redirect sign-in
-        await signInWithRedirect(auth, googleProvider);
+        // Same confirm as the desktop popup path — switching accounts here abandons
+        // the current anonymous session's data.
+        const proceed = window.confirm(
+          'This Google account is already linked to a different NeuroActive account. Signing in will switch you to that account, and any progress from this session will not transfer. Continue?'
+        );
+        if (proceed) {
+          await signInWithRedirect(auth, googleProvider);
+        }
       } else if (error.code !== 'auth/user-cancelled' && error.code !== 'auth/popup-closed-by-user') {
         console.error('Redirect sign-in error:', error);
         setSignInError('Sign-in failed. Please try again.');
@@ -1048,7 +1054,12 @@ export default function App() {
           await saveUserData({ authProvider: 'google' });
         } catch (linkError: any) {
           if (linkError.code === 'auth/credential-already-in-use') {
-            // Google account already exists — sign in with it directly
+            // This Google account already has a separate Firebase account — switching to
+            // it abandons the current anonymous session's data, so confirm first.
+            const proceed = window.confirm(
+              'This Google account is already linked to a different NeuroActive account. Signing in will switch you to that account, and any progress from this session will not transfer. Continue?'
+            );
+            if (!proceed) return;
             await signInWithPopup(auth, googleProvider);
           } else {
             throw linkError;
