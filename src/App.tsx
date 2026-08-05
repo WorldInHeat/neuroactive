@@ -1331,13 +1331,33 @@ export default function App() {
           Clinical-grade self-assessment and rehabilitation, built to guide you step by step.
         </p>
 
-        <button
-          onClick={() => attemptNavigation('dashboard')}
-          className="relative z-10 px-8 py-4 rounded-full font-bold text-lg shadow-lg flex items-center gap-2 hover:opacity-90 active:scale-95 transition-all text-[#080d1a]"
-          style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
-        >
-          Start Your Recovery <ChevronRight />
-        </button>
+        <p className="text-base md:text-lg font-semibold text-[#f0f4f8] mb-5 relative z-10">
+          Are you dealing with pain right now?
+        </p>
+
+        <div className="flex flex-col md:flex-row gap-4 relative z-10 w-full max-w-2xl">
+          <button
+            onClick={() => attemptNavigation('dashboard')}
+            className="flex-1 px-8 py-4 rounded-xl font-bold text-lg shadow-lg hover:opacity-90 active:scale-95 transition-all text-[#080d1a] flex flex-col items-center gap-1"
+            style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+          >
+            <span className="flex items-center gap-2">
+              Yes — Start Your Recovery <ChevronRight size={20} />
+            </span>
+            <span className="text-xs font-normal opacity-70">Get a clear direction of relief in minutes.</span>
+          </button>
+
+          <button
+            onClick={() => setCurrentView('dns-course')}
+            className="flex-1 px-8 py-4 rounded-xl font-bold text-lg shadow-lg hover:opacity-90 active:scale-95 transition-all text-[#080d1a] flex flex-col items-center gap-1"
+            style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+          >
+            <span className="flex items-center gap-2">
+              No — I want to build strength and prevent injury <ChevronRight size={20} />
+            </span>
+            <span className="text-xs font-normal opacity-70">Build lasting stability, one position at a time.</span>
+          </button>
+        </div>
       </main>
     </div>
   );
