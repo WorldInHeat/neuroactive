@@ -25,6 +25,7 @@ import {
   FileText,
   Bell,
   X,
+  Dumbbell,
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
@@ -32,10 +33,11 @@ import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRe
 import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, type Firestore } from 'firebase/firestore';
 
 import { DECISION_TREE } from './data/decisionTree';
-import type { PainLogEntry, UserData } from './state/types';
+import type { PainLogEntry, UserData, DnsCourseProgress } from './state/types';
 import VideoPlayer from './components/VideoPlayer';
 import SessionSummary from './components/SessionSummary';
 import Paywall from './components/Paywall';
+import DNSCourseView from './components/DNSCourseView';
 import { createPortalLink, type PriceKey } from './services/stripe';
 
 // --- Firebase Configuration ---
@@ -728,6 +730,7 @@ export default function App() {
   const [checkoutLoading, setCheckoutLoading] = useState<PriceKey | null>(null);
   const [paymentMessage, setPaymentMessage] = useState<{ type: 'success' | 'canceled'; text: string } | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [dnsCourse, setDnsCourse] = useState<DnsCourseProgress>({ currentDay: 1, lastCompletedDate: '', startedAt: '' });
 
   // NOTE: These are unused in this build but kept for future phases
   // const [phaseLocks, setPhaseLocks] = useState<Record<string, number>>({});
@@ -748,6 +751,12 @@ export default function App() {
 
   // --- time helpers (single source of truth)
   const todayISO = () => new Date(simulatedTime).toISOString().split('T')[0];
+  // Local calendar date (not UTC like todayISO) — the DNS course's "complete once per
+  // calendar day" rule needs the user's actual local date, not a UTC-shifted one.
+  const todayLocalISO = () => {
+    const d = new Date(simulatedTime);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
 
   // NOTE: Unused, kept for future logic
   /*
@@ -769,6 +778,15 @@ export default function App() {
     const uid = auth.currentUser.uid;
     const docRef = doc(db, 'artifacts', appId, 'users', uid, 'userData', 'main');
     await setDoc(docRef, updates, { merge: true });
+  };
+
+  // setDoc with merge:true replaces the whole dnsCourse map rather than merging it key
+  // by key, so always spread the current value first — a partial update (e.g. just
+  // currentDay) must never silently drop startedAt.
+  const updateDnsCourse = (updates: Partial<DnsCourseProgress>) => {
+    const merged = { ...dnsCourse, ...updates };
+    setDnsCourse(merged);
+    saveUserData({ dnsCourse: merged });
   };
 
   // NOTE: Unused in this build
@@ -880,6 +898,7 @@ export default function App() {
           setTroubleshootingAttempts(data.troubleshootingAttempts ?? 0);
           setHasWatchedWelcome(data.hasWatchedWelcome ?? false);
           setHasWatchedAssessmentIntro(data.hasWatchedAssessmentIntro ?? false);
+          if (data.dnsCourse) setDnsCourse(data.dnsCourse);
         });
 
         // Stripe subscription sync — keep isPremium in sync with active subscriptions
@@ -1255,6 +1274,20 @@ export default function App() {
     const today = todayISO();
     const todayLog = painLog.find((log) => log.date === today);
 
+    // "Completed their MDT prescription" = actually reached one of the reveal nodes
+    // where a directional preference was confirmed and a prescription was generated —
+    // not just "has watched a video," which activePrescriptions alone can't distinguish
+    // (a video watched during diagnostic testing pushes into activePrescriptions too).
+    const mdtRevealNodeIds = [
+      'lb_mdt_prescription',
+      'cs_flexion_exception',
+      'neck_extension_intolerant',
+      'neck_hold_then_stabilize',
+      'lb_troubleshoot_flexion_last',
+    ];
+    const hasCompletedMdtPrescription =
+      mdtRevealNodeIds.includes(currentNodeId) || history.some((id) => mdtRevealNodeIds.includes(id));
+
     const streak = (() => {
       if (painLog.length === 0) return 0;
       const logDates = new Set(painLog.map((l) => l.date));
@@ -1411,6 +1444,48 @@ export default function App() {
               Browse
             </button>
           </div>
+
+          <div className="bg-[#0f1829] rounded-2xl border border-[#1a2a42] p-6 flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="bg-[#1a2a42] p-3 rounded-full">
+                <Dumbbell size={24} className="text-[#00d4c8]" />
+              </div>
+              <div>
+                <h3 className="font-bold text-lg text-[#f0f4f8]">12-Week DNS Foundations</h3>
+                <p className="text-[#6b849e] text-sm">A guided developmental progression, one day at a time.</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setCurrentView('dns-course')}
+              className="border border-[#00d4c8] text-[#00d4c8] px-4 py-2 rounded-lg font-bold text-sm hover:bg-[#00d4c8]/10 transition-colors"
+            >
+              Open
+            </button>
+          </div>
+
+          {hasCompletedMdtPrescription && (
+            <div
+              className="rounded-2xl p-6 flex items-center justify-between"
+              style={{ background: 'linear-gradient(135deg, rgba(0,212,200,0.08), rgba(124,92,252,0.08))', border: '1px solid rgba(0,212,200,0.25)' }}
+            >
+              <div className="flex items-center gap-4">
+                <div className="bg-[#1a2a42] p-3 rounded-full">
+                  <TrendingUp size={24} className="text-[#00d4c8]" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg text-[#f0f4f8]">Ready to build lasting stability?</h3>
+                  <p className="text-[#6b849e] text-sm">You've got your directional preference — now build the foundation that keeps it.</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setCurrentView('dns-course')}
+                className="px-4 py-2 rounded-lg font-bold text-sm text-[#080d1a] hover:opacity-90 transition-all flex-shrink-0"
+                style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+              >
+                Start
+              </button>
+            </div>
+          )}
 
           {(() => {
             // Hard rule, independent of user status: never surface a premium node's
@@ -1779,6 +1854,18 @@ export default function App() {
       {currentView === 'landing' && <LandingPage />}
       {currentView === 'paywall' && <Paywall auth={auth} checkoutLoading={checkoutLoading} setCheckoutLoading={setCheckoutLoading} onBack={() => setCurrentView('dashboard')} />}
       {currentView === 'assessment' && <AssessmentView />}
+      {currentView === 'dns-course' && (
+        <DNSCourseView
+          dnsCourse={dnsCourse}
+          onUpdateDnsCourse={updateDnsCourse}
+          today={todayLocalISO()}
+          isPremium={isPremium}
+          onBack={() => setCurrentView('dashboard')}
+          auth={auth}
+          checkoutLoading={checkoutLoading}
+          setCheckoutLoading={setCheckoutLoading}
+        />
+      )}
       {currentView === 'dashboard' && hasAgreedToTerms && painLog.length === 0
         ? <BaselineCaptureScreen onSave={handleSavePainLog} todayISO={todayISO} />
         : currentView === 'dashboard' && !hasWatchedWelcome
