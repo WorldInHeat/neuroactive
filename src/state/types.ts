@@ -34,6 +34,12 @@ export type PainLogEntry = {
   status: 'Better' | 'Same' | 'Worse';
 };
 
+export type DnsCourseProgress = {
+  currentDay: number; // 1-84, only this day + earlier are unlocked
+  lastCompletedDate: string; // YYYY-MM-DD, local calendar date
+  startedAt: string; // ISO date, set once when the user first opens the course
+};
+
 export type UserData = {
   activeJourney: string | null;
   activePrescriptions: string[];
@@ -59,4 +65,7 @@ export type UserData = {
   subscriptionTier?: 'monthly' | 'annual' | 'program' | 'elite' | null;
   stripeCustomerId?: string;
   subscriptionStatus?: 'active' | 'canceled' | 'past_due' | 'trialing' | null;
+
+  // 12-Week DNS Foundations course — structurally separate from the assessment tree
+  dnsCourse?: DnsCourseProgress;
 };

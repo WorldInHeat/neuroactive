@@ -1,0 +1,131 @@
+// src/components/Paywall.tsx
+import type { Auth } from 'firebase/auth';
+import { ArrowLeft, User, CheckCircle, CreditCard } from 'lucide-react';
+import { createCheckoutSession, type PriceKey } from '../services/stripe';
+import VideoPlayer from './VideoPlayer';
+
+type Props = {
+  auth: Auth | null;
+  checkoutLoading: PriceKey | null;
+  setCheckoutLoading: (key: PriceKey | null) => void;
+  onBack: () => void;
+};
+
+export default function Paywall({ auth, checkoutLoading, setCheckoutLoading, onBack }: Props) {
+  return (
+    <div className="min-h-screen bg-[#080d1a] overflow-y-auto">
+      <div className="max-w-lg mx-auto px-6 py-12 space-y-8">
+        {/* Back */}
+        <button onClick={onBack} className="text-[#6b849e] hover:text-[#f0f4f8] flex items-center gap-1 transition-colors text-sm">
+          <ArrowLeft size={16} /> Back
+        </button>
+
+        {/* Paywall hero video */}
+        <VideoPlayer
+          nodeId="onboarding_paywall_hero"
+          title="Why NeuroActive is Different"
+          videoId="1206005431"
+          autoplayToken={null}
+          onConsumeAutoplay={() => {}}
+        />
+
+        {/* Doctor header */}
+        <div className="text-center">
+          <div
+            className="w-20 h-20 rounded-full mx-auto mb-5 flex items-center justify-center border-2 border-[#00d4c8]/40"
+            style={{ background: 'linear-gradient(135deg, rgba(0,212,200,0.15), rgba(124,92,252,0.15))' }}
+          >
+            <User size={36} className="text-[#00d4c8]" />
+          </div>
+          <h1 className="text-2xl font-extrabold text-[#f0f4f8] mb-2">Dr. Adam Bruene, D.C., Cert. MDT, DNSP</h1>
+          <p className="text-[#6b849e] text-sm leading-relaxed max-w-sm mx-auto">
+            The only app built on dual certification in McKenzie MDT and Dynamic Neuromuscular Stabilization
+          </p>
+        </div>
+
+        {/* Credential pills */}
+        <div className="flex flex-wrap justify-center gap-2">
+          {[
+            'Licensed Chiropractic Physician · Illinois',
+            'Certified McKenzie Practitioner (MDT)',
+            'DNS Certified Practitioner (DNSP)',
+          ].map((cred) => (
+            <span
+              key={cred}
+              className="text-xs font-semibold px-3 py-1.5 rounded-full text-[#00d4c8]"
+              style={{ border: '1px solid rgba(0,212,200,0.4)', backgroundColor: 'rgba(0,212,200,0.08)' }}
+            >
+              {cred}
+            </span>
+          ))}
+        </div>
+
+        {/* Bio */}
+        <div className="bg-[#0f1829] border border-[#1a2a42] rounded-2xl p-6">
+          <p className="text-[#6b849e] text-sm leading-relaxed">
+            "15+ years of clinical experience in spine rehabilitation and movement-based care. Treated patients across MLB, NHL, MLS, and international rugby. This app runs on the same clinical reasoning frameworks used in real practice — not generic exercise content."
+          </p>
+        </div>
+
+        {/* Feature list */}
+        <div className="bg-[#0f1829] border border-[#1a2a42] rounded-2xl p-6 space-y-3">
+          <h3 className="font-bold text-[#f0f4f8] mb-4">What you unlock</h3>
+          {[
+            'Full DNS Developmental Exercise Library',
+            'All MDT Assessment Protocols',
+            'Cervical & Lumbar clinical pathways',
+            'Premium video instruction for every drill',
+            'New clinical content added regularly',
+          ].map((feature) => (
+            <div key={feature} className="flex items-start gap-3">
+              <CheckCircle size={16} className="text-[#00d4c8] flex-shrink-0 mt-0.5" />
+              <span className="text-sm text-[#f0f4f8]">{feature}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* CTA */}
+        <div className="space-y-3 pb-8">
+          {(
+            [
+              { key: 'monthly' as PriceKey, label: 'Monthly', sublabel: 'Billed monthly, cancel anytime' },
+              { key: 'annual'  as PriceKey, label: 'Annual',  sublabel: 'Best value — save vs monthly' },
+              { key: 'program' as PriceKey, label: '12-Week Program', sublabel: 'One-time guided program access' },
+              { key: 'elite'   as PriceKey, label: 'Elite',   sublabel: 'Full access + priority support' },
+            ] as const
+          ).map(({ key, label, sublabel }) => {
+            const uid = auth?.currentUser?.uid;
+            const loading = checkoutLoading === key;
+            return (
+              <button
+                key={key}
+                disabled={checkoutLoading !== null || !uid}
+                onClick={async () => {
+                  if (!uid) return;
+                  setCheckoutLoading(key);
+                  try {
+                    await createCheckoutSession(uid, key);
+                  } catch (err) {
+                    console.error('Checkout error:', err);
+                    setCheckoutLoading(null);
+                  }
+                }}
+                className="w-full py-4 rounded-xl font-bold text-base hover:opacity-90 active:scale-95 transition-all flex flex-col items-center gap-0.5 disabled:opacity-50"
+                style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)', color: '#080d1a' }}
+              >
+                <span className="flex items-center gap-2">
+                  <CreditCard size={18} />
+                  {loading ? 'Loading…' : label}
+                </span>
+                {!loading && <span className="text-xs font-normal opacity-70">{sublabel}</span>}
+              </button>
+            );
+          })}
+          <button onClick={onBack} className="w-full text-[#6b849e] text-sm hover:text-[#f0f4f8] transition-colors py-2">
+            No thanks, take me back
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
