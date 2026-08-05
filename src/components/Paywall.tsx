@@ -1,6 +1,7 @@
 // src/components/Paywall.tsx
+import { useState } from 'react';
 import type { Auth } from 'firebase/auth';
-import { ArrowLeft, User, CheckCircle, CreditCard } from 'lucide-react';
+import { ArrowLeft, User, CheckCircle, CreditCard, AlertCircle } from 'lucide-react';
 import { createCheckoutSession, type PriceKey } from '../services/stripe';
 import VideoPlayer from './VideoPlayer';
 
@@ -12,6 +13,8 @@ type Props = {
 };
 
 export default function Paywall({ auth, checkoutLoading, setCheckoutLoading, onBack }: Props) {
+  const [checkoutError, setCheckoutError] = useState<PriceKey | null>(null);
+
   return (
     <div className="min-h-screen bg-[#080d1a] overflow-y-auto">
       <div className="max-w-lg mx-auto px-6 py-12 space-y-8">
@@ -97,28 +100,37 @@ export default function Paywall({ auth, checkoutLoading, setCheckoutLoading, onB
             const uid = auth?.currentUser?.uid;
             const loading = checkoutLoading === key;
             return (
-              <button
-                key={key}
-                disabled={checkoutLoading !== null || !uid}
-                onClick={async () => {
-                  if (!uid) return;
-                  setCheckoutLoading(key);
-                  try {
-                    await createCheckoutSession(uid, key);
-                  } catch (err) {
-                    console.error('Checkout error:', err);
-                    setCheckoutLoading(null);
-                  }
-                }}
-                className="w-full py-4 rounded-xl font-bold text-base hover:opacity-90 active:scale-95 transition-all flex flex-col items-center gap-0.5 disabled:opacity-50"
-                style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)', color: '#080d1a' }}
-              >
-                <span className="flex items-center gap-2">
-                  <CreditCard size={18} />
-                  {loading ? 'Loading…' : label}
-                </span>
-                {!loading && <span className="text-xs font-normal opacity-70">{sublabel}</span>}
-              </button>
+              <div key={key}>
+                <button
+                  disabled={checkoutLoading !== null || !uid}
+                  onClick={async () => {
+                    if (!uid) return;
+                    setCheckoutError(null);
+                    setCheckoutLoading(key);
+                    try {
+                      await createCheckoutSession(uid, key);
+                    } catch (err) {
+                      console.error('Checkout error:', err);
+                      setCheckoutLoading(null);
+                      setCheckoutError(key);
+                    }
+                  }}
+                  className="w-full py-4 rounded-xl font-bold text-base hover:opacity-90 active:scale-95 transition-all flex flex-col items-center gap-0.5 disabled:opacity-50"
+                  style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)', color: '#080d1a' }}
+                >
+                  <span className="flex items-center gap-2">
+                    <CreditCard size={18} />
+                    {loading ? 'Loading…' : label}
+                  </span>
+                  {!loading && <span className="text-xs font-normal opacity-70">{sublabel}</span>}
+                </button>
+                {checkoutError === key && (
+                  <div className="flex items-center gap-2 mt-2 px-1 text-sm text-[#ff4466]">
+                    <AlertCircle size={14} className="flex-shrink-0" />
+                    Something went wrong — please try again.
+                  </div>
+                )}
+              </div>
             );
           })}
           <button onClick={onBack} className="w-full text-[#6b849e] text-sm hover:text-[#f0f4f8] transition-colors py-2">

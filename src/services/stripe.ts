@@ -10,11 +10,22 @@ const PRICES: Record<string, string> = {
 
 export type PriceKey = keyof typeof PRICES;
 
+// 'program' is a one-time purchase — Stripe rejects a one-time price submitted
+// under the extension's default 'subscription' mode, so it needs 'payment' mode
+// explicitly. The other three are recurring prices and use 'subscription'.
+const CHECKOUT_MODE: Record<PriceKey, 'payment' | 'subscription'> = {
+  monthly: 'subscription',
+  annual: 'subscription',
+  program: 'payment',
+  elite: 'subscription',
+};
+
 export async function createCheckoutSession(userId: string, priceKey: PriceKey): Promise<void> {
   const checkoutSessionRef = await addDoc(
     collection(db, 'customers', userId, 'checkout_sessions'),
     {
       price: PRICES[priceKey],
+      mode: CHECKOUT_MODE[priceKey],
       success_url: `${window.location.origin}?payment=success`,
       cancel_url:  `${window.location.origin}?payment=canceled`,
       allow_promotion_codes: true,
