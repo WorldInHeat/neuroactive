@@ -72,86 +72,14 @@ const isInAppBrowser = /Instagram|FBAN|FBAV|TikTok/i.test(navigator.userAgent);
 
 // --- Helper Components ---
 
-// --- Sign-In Screen ---
-const SignInScreen = ({
-  onGoogleSignIn,
-  onGuestSignIn,
-  isLoading,
-  error,
-  inAppBrowser,
-}: {
-  onGoogleSignIn: () => void;
-  onGuestSignIn: () => void;
-  isLoading: boolean;
-  error: string | null;
-  inAppBrowser: boolean;
-}) => (
-  <div className="min-h-screen bg-[#080d1a] flex flex-col items-center justify-center px-6">
-    {inAppBrowser && (
-      <div className="fixed top-0 left-0 right-0 z-50 bg-amber-400 text-amber-950 px-4 py-3 text-center text-sm font-semibold shadow-lg">
-        <p className="leading-snug">
-          To sign in with Google, tap <span className="font-extrabold">•••</span> above and choose{' '}
-          <span className="font-extrabold">"Open in Browser"</span>
-        </p>
-        <p className="text-xs font-normal mt-0.5 opacity-80">Or continue below as a Guest — no browser needed</p>
-      </div>
-    )}
-    <div className={`w-full max-w-sm space-y-8${inAppBrowser ? ' mt-20' : ''}`}>
-      <div className="text-center space-y-3">
-        <img
-          src="/logo.png"
-          alt="NeuroActive"
-          className="h-16 w-auto mx-auto object-contain"
-          onError={(e) => { (e.currentTarget as HTMLImageElement).src = '/logo.png'; }}
-        />
-        <h1 className="text-3xl font-extrabold text-[#f0f4f8]">NeuroActive</h1>
-        <p className="text-[#6b849e]">Evidence-based spine rehabilitation</p>
-      </div>
-
-      <div className="bg-[#0f1829] rounded-2xl border border-[#1a2a42] p-8 space-y-5">
-        {inAppBrowser ? (
-          <div className="w-full flex items-center justify-center gap-3 bg-white/10 text-[#6b849e] font-semibold py-3 px-4 rounded-xl border border-white/10 cursor-not-allowed select-none">
-            <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" className="opacity-40">
-              <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-              <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-              <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-              <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-            </svg>
-            Open in Browser to Sign in with Google
-          </div>
-        ) : (
-          <button
-            onClick={onGoogleSignIn}
-            disabled={isLoading}
-            className="w-full flex items-center justify-center gap-3 bg-white text-gray-800 font-semibold py-3 px-4 rounded-xl hover:bg-gray-50 active:scale-95 transition-all disabled:opacity-60 shadow"
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-              <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-              <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-              <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-            </svg>
-            {isLoading ? 'Signing in…' : 'Sign in with Google'}
-          </button>
-        )}
-
-        {error && (
-          <p className="text-xs text-red-400 text-center leading-relaxed">{error}</p>
-        )}
-
-        <div className="text-center space-y-1">
-          <button
-            onClick={onGuestSignIn}
-            disabled={isLoading}
-            className="text-sm text-[#6b849e] hover:text-[#f0f4f8] transition-colors disabled:opacity-60"
-          >
-            Continue as Guest
-          </button>
-          <p className="text-xs text-[#3a4a5e]">Guest sessions are not saved across devices</p>
-        </div>
-      </div>
-    </div>
-  </div>
+// Reused by SettingsView's "Sign in with Google" button
+const GoogleLogoSvg = ({ dim = false }: { dim?: boolean }) => (
+  <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" className={dim ? 'opacity-40' : undefined}>
+    <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+    <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+    <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+    <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+  </svg>
 );
 
 const LegalDisclaimer = ({ onAgree, onCancel }: { onAgree: () => void; onCancel: () => void }) => (
@@ -220,6 +148,9 @@ const SettingsView = ({
   onUpgrade,
   onManageSubscription,
   userInfo,
+  onGoogleSignIn,
+  signInLoading,
+  signInError,
 }: {
   isPremium: boolean;
   onBack: () => void;
@@ -228,6 +159,9 @@ const SettingsView = ({
   onUpgrade: () => void;
   onManageSubscription?: () => void;
   userInfo?: { displayName: string | null; photoURL: string | null; email: string | null; isAnonymous: boolean };
+  onGoogleSignIn: () => void;
+  signInLoading: boolean;
+  signInError: string | null;
 }) => {
   return (
     <div className="min-h-screen bg-[#080d1a] pb-20">
@@ -265,6 +199,34 @@ const SettingsView = ({
             </p>
           </div>
         </div>
+
+        {/* Save progress — guests only */}
+        {userInfo?.isAnonymous && (
+          <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42]">
+            <h3 className="font-bold text-[#f0f4f8] mb-1">Save your progress</h3>
+            <p className="text-sm text-[#6b849e] mb-4">
+              Sign in with Google to keep your history and access this account on other devices.
+            </p>
+            {isInAppBrowser ? (
+              <div className="w-full flex items-center justify-center gap-3 bg-white/10 text-[#6b849e] font-semibold py-3 px-4 rounded-xl border border-white/10 cursor-not-allowed select-none">
+                <GoogleLogoSvg dim />
+                Open in Browser to Sign in with Google
+              </div>
+            ) : (
+              <button
+                onClick={onGoogleSignIn}
+                disabled={signInLoading}
+                className="w-full flex items-center justify-center gap-3 bg-white text-gray-800 font-semibold py-3 px-4 rounded-xl hover:bg-gray-50 active:scale-95 transition-all disabled:opacity-60 shadow"
+              >
+                <GoogleLogoSvg />
+                {signInLoading ? 'Signing in…' : 'Sign in with Google'}
+              </button>
+            )}
+            {signInError && (
+              <p className="text-xs text-red-400 mt-3 leading-relaxed">{signInError}</p>
+            )}
+          </div>
+        )}
 
         {/* Subscription */}
         <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42]">
@@ -712,7 +674,7 @@ const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUn
 
 // --- Main App Component ---
 export default function App() {
-  const [currentView, setCurrentView] = useState<'signin' | 'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings' | 'dns-course'>('landing');
+  const [currentView, setCurrentView] = useState<'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings' | 'dns-course'>('landing');
   const [currentNodeId, setCurrentNodeId] = useState<string>('start');
   const [history, setHistory] = useState<string[]>([]);
   const [isPremium, setIsPremium] = useState(false);
@@ -741,7 +703,7 @@ export default function App() {
   
   // Pending state for terms agreement flow + Autoplay Intent
   const [pendingNodeId, setPendingNodeId] = useState<string | null>(null);
-  const [pendingView, setPendingView] = useState<'signin' | 'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings' | 'dns-course' | null>(null);
+  const [pendingView, setPendingView] = useState<'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings' | 'dns-course' | null>(null);
 
   // Pending intent for the baseline pain-log gate — set when "Start Assessment" is
   // clicked but no baseline exists yet; replayed once the baseline is captured.
@@ -814,8 +776,9 @@ export default function App() {
     if (!auth) return;
     getRedirectResult(auth).then(async (result) => {
       if (!result) return;
-      // Redirect succeeded — onAuthStateChanged handles the view transition.
-      // Save provider info if this was a link-from-anonymous flow.
+      // Redirect succeeded — the user stays on whatever view they were on (e.g. Settings)
+      // since Google sign-in no longer forces a view change. Save provider info if this
+      // was a link-from-anonymous flow.
       await saveUserData({ authProvider: 'google' });
     }).catch(async (error: any) => {
       if (error.code === 'auth/credential-already-in-use') {
@@ -1075,22 +1038,6 @@ export default function App() {
         console.error('Google sign-in error:', error);
         setSignInError('Sign-in failed. Please try again.');
       }
-    } finally {
-      setSignInLoading(false);
-    }
-  };
-
-  const handleGuestSignIn = async () => {
-    if (!auth) return;
-    setSignInLoading(true);
-    try {
-      if (!auth.currentUser) {
-        await signInAnonymously(auth);
-      }
-      // onAuthStateChanged won't advance the view for anonymous users, so do it here
-      setCurrentView('landing');
-    } catch (error) {
-      console.error('Guest sign-in error:', error);
     } finally {
       setSignInLoading(false);
     }
@@ -1927,15 +1874,6 @@ export default function App() {
         </div>
       )}
       {showTerms && <LegalDisclaimer onAgree={handleTermsAgree} onCancel={handleTermsDecline} />}
-      {currentView === 'signin' && (
-        <SignInScreen
-          onGoogleSignIn={handleGoogleSignIn}
-          onGuestSignIn={handleGuestSignIn}
-          isLoading={signInLoading}
-          error={signInError}
-          inAppBrowser={isInAppBrowser}
-        />
-      )}
       {currentView === 'landing' && <LandingPage />}
       {currentView === 'paywall' && <Paywall auth={auth} checkoutLoading={checkoutLoading} setCheckoutLoading={setCheckoutLoading} onBack={() => setCurrentView('dashboard')} />}
       {currentView === 'assessment' && <AssessmentView />}
@@ -1973,6 +1911,9 @@ export default function App() {
             }
           }}
           userInfo={authUser ?? undefined}
+          onGoogleSignIn={handleGoogleSignIn}
+          signInLoading={signInLoading}
+          signInError={signInError}
         />
       )}
       {currentView === 'library' && (
