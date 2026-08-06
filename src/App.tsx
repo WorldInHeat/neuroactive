@@ -39,6 +39,7 @@ import SessionSummary from './components/SessionSummary';
 import Paywall from './components/Paywall';
 import DNSCourseView from './components/DNSCourseView';
 import { createPortalLink, type PriceKey } from './services/stripe';
+import { DNS_ONLY_LAUNCH } from './config/launchConfig';
 
 // --- Firebase Configuration ---
 const firebaseConfig = {
@@ -575,8 +576,17 @@ const PainGraph = ({ logs }: { logs: PainLogEntry[] }) => {
 const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUnlock: () => void; onPlay: (id: string) => void }) => {
   const [filter, setFilter] = useState<'All' | 'Supine' | 'Prone' | 'Side Lying' | 'Quadruped' | 'MDT' | 'Orientation' | 'DNS'>('All');
 
-  const libraryItems = Object.values(DECISION_TREE).filter((node) => node.type === 'video' && node.libraryCategory);
+  // DNS-only launch: ALL old-library content — DNS position videos included — is
+  // off-limits to DNS-course customers by hard rule, no exceptions. The Dashboard card
+  // that links here is hidden entirely for the same reason; this is defense-in-depth in
+  // case LibraryView is ever reached another way.
+  const libraryItems = DNS_ONLY_LAUNCH
+    ? []
+    : Object.values(DECISION_TREE).filter((node) => node.type === 'video' && node.libraryCategory);
   const filteredItems = filter === 'All' ? libraryItems : libraryItems.filter((item) => item.libraryCategory === filter);
+  const visibleCategories = DNS_ONLY_LAUNCH
+    ? ['All']
+    : ['All', 'Orientation', 'DNS', 'Supine', 'Prone', 'Side Lying', 'Quadruped', 'MDT'];
 
   return (
     <div className="min-h-screen bg-[#080d1a] pb-20">
@@ -585,7 +595,7 @@ const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUn
           <Library className="text-[#00d4c8]" /> Movement Library
         </h2>
         <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
-          {['All', 'Orientation', 'DNS', 'Supine', 'Prone', 'Side Lying', 'Quadruped', 'MDT'].map((cat) => (
+          {visibleCategories.map((cat) => (
             <button
               key={cat}
               onClick={() => setFilter(cat as any)}
@@ -607,7 +617,9 @@ const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUn
           <div className="col-span-full rounded-xl p-6 mb-2 border border-[#00d4c8]/20 flex justify-between items-center" style={{ background: 'linear-gradient(135deg, rgba(0,212,200,0.12), rgba(124,92,252,0.12))' }}>
             <div>
               <h3 className="font-bold text-lg text-[#f0f4f8] mb-1">Unlock God Mode</h3>
-              <p className="text-[#6b849e] text-sm">Access the full DNS & MDT exercise library.</p>
+              <p className="text-[#6b849e] text-sm">
+                {DNS_ONLY_LAUNCH ? 'Access the full DNS exercise library.' : 'Access the full DNS & MDT exercise library.'}
+              </p>
             </div>
             <button
               onClick={onUnlock}
@@ -1139,6 +1151,15 @@ export default function App() {
       return;
     }
 
+    // Cross-system navigation sentinel: escape hatches into the DNS course view rather
+    // than another DECISION_TREE node. True regardless of DNS_ONLY_LAUNCH — anyone who
+    // reaches an option using this sentinel got there via DNS course content, so
+    // returning to the course is correct in either launch mode.
+    if (nextId === '__DNS_COURSE__') {
+      setCurrentView('dns-course');
+      return;
+    }
+
     const nextNode = DECISION_TREE[nextId];
 
     if (!nextNode) {
@@ -1236,12 +1257,17 @@ export default function App() {
             )}
           </button>
         ) : (
-          <button
-            onClick={() => attemptNavigation('dashboard')}
-            className="text-sm font-semibold text-[#00d4c8] hover:opacity-80 transition-opacity"
-          >
-            Login
-          </button>
+          // Hidden for DNS-only launch (not deleted) — was a direct, unintended bypass
+          // straight to Dashboard. Anonymous auth is already silent/automatic, so this
+          // isn't needed for guest access; restore by flipping DNS_ONLY_LAUNCH.
+          !DNS_ONLY_LAUNCH && (
+            <button
+              onClick={() => attemptNavigation('dashboard')}
+              className="text-sm font-semibold text-[#00d4c8] hover:opacity-80 transition-opacity"
+            >
+              Login
+            </button>
+          )
         )}
       </header>
 
@@ -1260,50 +1286,90 @@ export default function App() {
         />
 
         <h1 className="text-4xl md:text-5xl font-extrabold text-[#f0f4f8] mb-6 max-w-3xl leading-tight relative z-10">
-          Choose your own adventure rehab with{' '}
-          <span
-            style={{
-              background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-              backgroundClip: 'text',
-            }}
-          >
-            DNS & MDT
-          </span>
+          {DNS_ONLY_LAUNCH ? (
+            <>
+              Rebuild your foundation with{' '}
+              <span
+                style={{
+                  background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)',
+                  WebkitBackgroundClip: 'text',
+                  WebkitTextFillColor: 'transparent',
+                  backgroundClip: 'text',
+                }}
+              >
+                DNS
+              </span>
+            </>
+          ) : (
+            <>
+              Choose your own adventure rehab with{' '}
+              <span
+                style={{
+                  background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)',
+                  WebkitBackgroundClip: 'text',
+                  WebkitTextFillColor: 'transparent',
+                  backgroundClip: 'text',
+                }}
+              >
+                DNS & MDT
+              </span>
+            </>
+          )}
         </h1>
 
         <p className="text-lg text-[#6b849e] max-w-xl mb-10 relative z-10">
-          Clinical-grade self-assessment and rehabilitation, built to guide you step by step.
+          {DNS_ONLY_LAUNCH
+            ? 'A guided 12-week developmental progression, built to rebuild your stabilization foundation one position at a time.'
+            : 'Clinical-grade self-assessment and rehabilitation, built to guide you step by step.'}
         </p>
 
-        <p className="text-base md:text-lg font-semibold text-[#f0f4f8] mb-5 relative z-10">
-          Are you dealing with pain right now?
-        </p>
+        {DNS_ONLY_LAUNCH ? (
+          // Single-path CTA for DNS-only launch. The two-path version below is kept
+          // intact (not deleted) — flip DNS_ONLY_LAUNCH in src/config/launchConfig.ts
+          // to restore it once the pain-recovery track is ready.
+          <div className="w-full max-w-md relative z-10">
+            <button
+              onClick={() => setCurrentView('dns-course')}
+              className="w-full px-8 py-4 rounded-xl font-bold text-lg shadow-lg hover:opacity-90 active:scale-95 transition-all text-[#080d1a] flex flex-col items-center gap-1"
+              style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+            >
+              <span className="flex items-center gap-2">
+                Start the 12-Week DNS Program <ChevronRight size={20} />
+              </span>
+              <span className="text-xs font-normal opacity-70">Build lasting stability, one position at a time.</span>
+            </button>
+          </div>
+        ) : (
+          <>
+            <p className="text-base md:text-lg font-semibold text-[#f0f4f8] mb-5 relative z-10">
+              Are you dealing with pain right now?
+            </p>
 
-        <div className="flex flex-col md:flex-row gap-4 relative z-10 w-full max-w-2xl">
-          <button
-            onClick={() => attemptNavigation('dashboard')}
-            className="flex-1 px-8 py-4 rounded-xl font-bold text-lg shadow-lg hover:opacity-90 active:scale-95 transition-all text-[#080d1a] flex flex-col items-center gap-1"
-            style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
-          >
-            <span className="flex items-center gap-2">
-              Yes — Start Your Recovery <ChevronRight size={20} />
-            </span>
-            <span className="text-xs font-normal opacity-70">Get a clear direction of relief in minutes.</span>
-          </button>
+            <div className="flex flex-col md:flex-row gap-4 relative z-10 w-full max-w-2xl">
+              <button
+                onClick={() => attemptNavigation('dashboard')}
+                className="flex-1 px-8 py-4 rounded-xl font-bold text-lg shadow-lg hover:opacity-90 active:scale-95 transition-all text-[#080d1a] flex flex-col items-center gap-1"
+                style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+              >
+                <span className="flex items-center gap-2">
+                  Yes — Start Your Recovery <ChevronRight size={20} />
+                </span>
+                <span className="text-xs font-normal opacity-70">Get a clear direction of relief in minutes.</span>
+              </button>
 
-          <button
-            onClick={() => setCurrentView('dns-course')}
-            className="flex-1 px-8 py-4 rounded-xl font-bold text-lg shadow-lg hover:opacity-90 active:scale-95 transition-all text-[#080d1a] flex flex-col items-center gap-1"
-            style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
-          >
-            <span className="flex items-center gap-2">
-              No — I want to build strength and prevent injury <ChevronRight size={20} />
-            </span>
-            <span className="text-xs font-normal opacity-70">Build lasting stability, one position at a time.</span>
-          </button>
-        </div>
+              <button
+                onClick={() => setCurrentView('dns-course')}
+                className="flex-1 px-8 py-4 rounded-xl font-bold text-lg shadow-lg hover:opacity-90 active:scale-95 transition-all text-[#080d1a] flex flex-col items-center gap-1"
+                style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+              >
+                <span className="flex items-center gap-2">
+                  No — I want to build strength and prevent injury <ChevronRight size={20} />
+                </span>
+                <span className="text-xs font-normal opacity-70">Build lasting stability, one position at a time.</span>
+              </button>
+            </div>
+          </>
+        )}
       </main>
     </div>
   );
@@ -1375,7 +1441,9 @@ export default function App() {
         </div>
 
         <div className="max-w-5xl mx-auto p-6 space-y-8">
-          {(() => {
+          {/* Pain-assessment entry hero — hidden for DNS-only launch, not deleted.
+              Flip DNS_ONLY_LAUNCH in src/config/launchConfig.ts to restore. */}
+          {!DNS_ONLY_LAUNCH && (() => {
             const hasStartedAssessment = activeJourney !== null || history.length > 0;
             return (
               <>
@@ -1459,23 +1527,30 @@ export default function App() {
             );
           })()}
 
-          <div className="bg-[#0f1829] rounded-2xl border border-[#1a2a42] p-6 flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className="bg-[#1a2a42] p-3 rounded-full">
-                <Library size={24} className="text-[#00d4c8]" />
+          {/* Hidden entirely for DNS-only launch (not deleted) — the old library's DNS/MDT
+              content is off-limits to DNS-course customers by hard rule, no exceptions,
+              so a category-filtered-but-still-visible card isn't appropriate here; there's
+              nothing left worth showing once both are excluded. Flip DNS_ONLY_LAUNCH to
+              restore. */}
+          {!DNS_ONLY_LAUNCH && (
+            <div className="bg-[#0f1829] rounded-2xl border border-[#1a2a42] p-6 flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="bg-[#1a2a42] p-3 rounded-full">
+                  <Library size={24} className="text-[#00d4c8]" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg text-[#f0f4f8]">Movement Library</h3>
+                  <p className="text-[#6b849e] text-sm">Browse DNS & MDT exercises by position.</p>
+                </div>
               </div>
-              <div>
-                <h3 className="font-bold text-lg text-[#f0f4f8]">Movement Library</h3>
-                <p className="text-[#6b849e] text-sm">Browse DNS & MDT exercises by position.</p>
-              </div>
+              <button
+                onClick={() => setCurrentView('library')}
+                className="border border-[#00d4c8] text-[#00d4c8] px-4 py-2 rounded-lg font-bold text-sm hover:bg-[#00d4c8]/10 transition-colors"
+              >
+                Browse
+              </button>
             </div>
-            <button
-              onClick={() => setCurrentView('library')}
-              className="border border-[#00d4c8] text-[#00d4c8] px-4 py-2 rounded-lg font-bold text-sm hover:bg-[#00d4c8]/10 transition-colors"
-            >
-              Browse
-            </button>
-          </div>
+          )}
 
           <div className="bg-[#0f1829] rounded-2xl border border-[#1a2a42] p-6 flex items-center justify-between">
             <div className="flex items-center gap-4">
@@ -1495,7 +1570,9 @@ export default function App() {
             </button>
           </div>
 
-          {hasCompletedMdtPrescription && (
+          {/* Hidden for DNS-only launch (not deleted) — this only makes sense as a
+              follow-up to completed pain treatment, which isn't reachable right now. */}
+          {!DNS_ONLY_LAUNCH && hasCompletedMdtPrescription && (
             <div
               className="rounded-2xl p-6 flex items-center justify-between"
               style={{ background: 'linear-gradient(135deg, rgba(0,212,200,0.08), rgba(124,92,252,0.08))', border: '1px solid rgba(0,212,200,0.25)' }}

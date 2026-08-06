@@ -589,7 +589,7 @@ export const DECISION_TREE: Record<string, DecisionNode> = {
     flagLevel: 'yellow',
     options: [
       { label: 'Try 3 month prone instead', nextId: 'vid_dns_prone_3mo' },
-      { label: 'Return to my MDT exercises for now', nextId: 'lb_mdt_prescription' },
+      { label: 'Return to my DNS Course day', nextId: '__DNS_COURSE__' },
     ],
   },
 
