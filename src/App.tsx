@@ -712,7 +712,7 @@ const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUn
 
 // --- Main App Component ---
 export default function App() {
-  const [currentView, setCurrentView] = useState<'signin' | 'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings' | 'dns-course'>('signin');
+  const [currentView, setCurrentView] = useState<'signin' | 'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings' | 'dns-course'>('landing');
   const [currentNodeId, setCurrentNodeId] = useState<string>('start');
   const [history, setHistory] = useState<string[]>([]);
   const [isPremium, setIsPremium] = useState(false);
@@ -873,13 +873,7 @@ export default function App() {
       if (user) {
         setAuthUser({ displayName: user.displayName, photoURL: user.photoURL, email: user.email, isAnonymous: user.isAnonymous });
 
-        // Only skip the sign-in screen for Google (non-anonymous) users.
-        // Anonymous users always see the sign-in screen so they can choose to upgrade
-        // or explicitly continue as guest. This prevents old auto-anon sessions from
-        // bypassing the sign-in screen entirely.
         if (!user.isAnonymous) {
-          setCurrentView((prev) => (prev === 'signin' ? 'landing' : prev));
-
           // Ensure a customers/{uid} document exists so the Stripe extension
           // createCustomer function fires. Must be a CREATE (not UPDATE) to trigger
           // the extension's onDocumentCreated listener.
@@ -958,9 +952,14 @@ export default function App() {
         );
       } else {
         setAuthUser(null);
-        setCurrentView('signin');
         if (unsubscribeSubscriptions) { unsubscribeSubscriptions(); unsubscribeSubscriptions = null; }
         if (unsubscribePayments) { unsubscribePayments(); unsubscribePayments = null; }
+        // No session at all — sign in anonymously in the background so guest access is
+        // frictionless. The user stays on whatever view they're on (default: landing);
+        // no separate sign-in screen or explicit "continue as guest" click required.
+        if (auth) {
+          signInAnonymously(auth).catch((err) => console.error('Anonymous sign-in failed:', err));
+        }
       }
       setAuthLoading(false);
     });
@@ -1027,7 +1026,7 @@ export default function App() {
     // setLastCheckInAt(null);
     setHasAgreedToTerms(false);
     setAuthUser(null);
-    setCurrentView('signin');
+    setCurrentView('landing');
     setAutoplayToken(null);
   };
 
