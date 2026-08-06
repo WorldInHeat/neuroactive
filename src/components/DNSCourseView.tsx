@@ -1,7 +1,6 @@
 // src/components/DNSCourseView.tsx
 // 12-Week DNS Foundations course. Structurally separate from DECISION_TREE —
 // does not touch activePrescriptions, history, or any assessment-flow state.
-import { useEffect } from 'react';
 import type { Auth } from 'firebase/auth';
 import { ArrowLeft, CheckCircle, Lock } from 'lucide-react';
 import { DNS_COURSE } from '../data/dnsCourse';
@@ -33,14 +32,6 @@ export default function DNSCourseView({
 }: Props) {
   const currentDayData = DNS_COURSE[dnsCourse.currentDay - 1];
 
-  // startedAt is set once, the first time the course is opened
-  useEffect(() => {
-    if (!dnsCourse.startedAt) {
-      onUpdateDnsCourse({ startedAt: today });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   if (!currentDayData) {
     return (
       <div className="min-h-screen bg-[#080d1a] p-6">
@@ -53,6 +44,62 @@ export default function DNSCourseView({
             style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
           >
             Back to Dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Shown once, before the user has ever started the course. Deliberately shown before
+  // the paywall check below — this is philosophy/context-setting, not program content,
+  // so non-premium users see it too (same reasoning as keeping pain-triage free).
+  if (!dnsCourse.startedAt) {
+    return (
+      <div className="min-h-screen bg-[#080d1a] pb-20">
+        <div className="max-w-2xl mx-auto p-6 pt-10">
+          <h1 className="text-2xl font-bold text-[#f0f4f8] mb-6 text-center">Before You Start</h1>
+
+          <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] mb-6">
+            <h2 className="text-lg font-bold text-[#f0f4f8] mb-2">What is DNS?</h2>
+            <p className="text-[#6b849e] text-sm leading-relaxed">
+              Dynamic Neuromuscular Stabilization is based on how a healthy infant learns to move — rolling, crawling, standing — before ever being taught. Those early patterns wire in a stabilization strategy your nervous system is supposed to use for life. Most adults have drifted from it, usually without knowing. This program rebuilds it, one developmental position at a time, in the same sequence a body learns it naturally.
+            </p>
+          </div>
+
+          <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] mb-6 space-y-5">
+            <div>
+              <h3 className="font-bold text-[#f0f4f8] mb-1">It's okay to repeat a day.</h3>
+              <p className="text-[#6b849e] text-sm leading-relaxed">
+                If Day 4 didn't feel right, do it again tomorrow. The calendar isn't the point — the movement is. Some weeks will click fast. Others will take longer. Both are normal.
+              </p>
+            </div>
+            <div>
+              <h3 className="font-bold text-[#f0f4f8] mb-1">Quality beats quantity, every time.</h3>
+              <p className="text-[#6b849e] text-sm leading-relaxed">
+                A position done with real control for 30 seconds is worth more than five minutes of gritting through it. If it feels like survival, it's not working yet — go back and find the version that feels effortless.
+              </p>
+            </div>
+            <div>
+              <h3 className="font-bold text-[#f0f4f8] mb-1">You can't cheat this.</h3>
+              <p className="text-[#6b849e] text-sm leading-relaxed">
+                Rushing to the next day before you're ready doesn't get you there faster. It just means you build the next position on a foundation that isn't set. Be honest with yourself about where you actually are.
+              </p>
+            </div>
+            <div>
+              <h3 className="font-bold text-[#f0f4f8] mb-1">Missing a day won't set you back.</h3>
+              <p className="text-[#6b849e] text-sm leading-relaxed">
+                Life happens. Come back whenever you're ready — your progress is exactly where you left it.
+              </p>
+            </div>
+            <p className="text-[#f0f4f8] text-sm font-semibold text-center pt-2">This isn't a race. It's practice.</p>
+          </div>
+
+          <button
+            onClick={() => onUpdateDnsCourse({ startedAt: today })}
+            className="w-full py-4 rounded-xl font-bold text-base text-[#080d1a] hover:opacity-90 active:scale-95 transition-all"
+            style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+          >
+            Start Week 1, Day 1
           </button>
         </div>
       </div>
