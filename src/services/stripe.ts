@@ -10,14 +10,14 @@ const PRICES: Record<string, string> = {
 
 export type PriceKey = keyof typeof PRICES;
 
-// 'program' is a one-time purchase — Stripe rejects a one-time price submitted
-// under the extension's default 'subscription' mode, so it needs 'payment' mode
-// explicitly. The other three are recurring prices and use 'subscription'.
+// 'program' and 'elite' are one-time purchases — Stripe rejects a one-time price
+// submitted under the extension's default 'subscription' mode, so they need
+// 'payment' mode explicitly. monthly/annual are recurring prices and use 'subscription'.
 const CHECKOUT_MODE: Record<PriceKey, 'payment' | 'subscription'> = {
   monthly: 'subscription',
   annual: 'subscription',
   program: 'payment',
-  elite: 'subscription',
+  elite: 'payment',
 };
 
 export async function createCheckoutSession(userId: string, priceKey: PriceKey): Promise<void> {
