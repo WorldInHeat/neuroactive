@@ -3,6 +3,7 @@ import { useState } from 'react';
 import type { Auth } from 'firebase/auth';
 import { ArrowLeft, User, CheckCircle, CreditCard, AlertCircle } from 'lucide-react';
 import { createCheckoutSession, type PriceKey } from '../services/stripe';
+import { DNS_ONLY_LAUNCH } from '../config/launchConfig';
 import VideoPlayer from './VideoPlayer';
 
 type Props = {
@@ -12,8 +13,34 @@ type Props = {
   onBack: () => void;
 };
 
+// Full four-tier lineup — kept intact (not deleted) so restoring is a one-line change
+// once DNS_ONLY_LAUNCH is flipped back. See visibleTiers below for what's actually shown.
+const ALL_TIERS = [
+  { key: 'monthly' as PriceKey, label: 'Monthly', sublabel: 'Billed monthly, cancel anytime' },
+  { key: 'annual'  as PriceKey, label: 'Annual',  sublabel: 'Best value — save vs monthly' },
+  { key: 'program' as PriceKey, label: '12-Week Program', sublabel: 'One-time guided program access' },
+  { key: 'elite'   as PriceKey, label: 'Elite',   sublabel: 'Full access + priority support' },
+] as const;
+
+const DNS_ONLY_FEATURES = [
+  'The complete 12-Week DNS Foundations course',
+  'One new video every day — a structured path, not a library to get lost in',
+  'Access to all 12 weeks and 84 days, no additional purchase required',
+  'Yours to keep once purchased — no recurring payments',
+];
+
+const FULL_FEATURES = [
+  'Full DNS Developmental Exercise Library',
+  'All MDT Assessment Protocols',
+  'Cervical & Lumbar clinical pathways',
+  'Premium video instruction for every drill',
+  'New clinical content added regularly',
+];
+
 export default function Paywall({ auth, checkoutLoading, setCheckoutLoading, onBack }: Props) {
   const [checkoutError, setCheckoutError] = useState<PriceKey | null>(null);
+  const visibleTiers = DNS_ONLY_LAUNCH ? ALL_TIERS.filter((t) => t.key === 'program') : ALL_TIERS;
+  const features = DNS_ONLY_LAUNCH ? DNS_ONLY_FEATURES : FULL_FEATURES;
 
   return (
     <div className="min-h-screen bg-[#080d1a] overflow-y-auto">
@@ -52,6 +79,7 @@ export default function Paywall({ auth, checkoutLoading, setCheckoutLoading, onB
             'Licensed Chiropractic Physician · Illinois',
             'Certified McKenzie Practitioner (MDT)',
             'DNS Certified Practitioner (DNSP)',
+            'DNS Exercise Trainer Certified (DNSET)',
           ].map((cred) => (
             <span
               key={cred}
@@ -73,13 +101,7 @@ export default function Paywall({ auth, checkoutLoading, setCheckoutLoading, onB
         {/* Feature list */}
         <div className="bg-[#0f1829] border border-[#1a2a42] rounded-2xl p-6 space-y-3">
           <h3 className="font-bold text-[#f0f4f8] mb-4">What you unlock</h3>
-          {[
-            'Full DNS Developmental Exercise Library',
-            'All MDT Assessment Protocols',
-            'Cervical & Lumbar clinical pathways',
-            'Premium video instruction for every drill',
-            'New clinical content added regularly',
-          ].map((feature) => (
+          {features.map((feature) => (
             <div key={feature} className="flex items-start gap-3">
               <CheckCircle size={16} className="text-[#00d4c8] flex-shrink-0 mt-0.5" />
               <span className="text-sm text-[#f0f4f8]">{feature}</span>
@@ -89,14 +111,7 @@ export default function Paywall({ auth, checkoutLoading, setCheckoutLoading, onB
 
         {/* CTA */}
         <div className="space-y-3 pb-8">
-          {(
-            [
-              { key: 'monthly' as PriceKey, label: 'Monthly', sublabel: 'Billed monthly, cancel anytime' },
-              { key: 'annual'  as PriceKey, label: 'Annual',  sublabel: 'Best value — save vs monthly' },
-              { key: 'program' as PriceKey, label: '12-Week Program', sublabel: 'One-time guided program access' },
-              { key: 'elite'   as PriceKey, label: 'Elite',   sublabel: 'Full access + priority support' },
-            ] as const
-          ).map(({ key, label, sublabel }) => {
+          {visibleTiers.map(({ key, label, sublabel }) => {
             const uid = auth?.currentUser?.uid;
             const loading = checkoutLoading === key;
             return (
