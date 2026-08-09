@@ -111,12 +111,25 @@ const LegalDisclaimer = ({ onAgree, onCancel }: { onAgree: () => void; onCancel:
           </p>
 
           <p className="mb-2">
-            <strong>3. Assumption of Risk:</strong> You acknowledge that participation in these exercises involves a
+            <strong>3. Consult Your Doctor First:</strong> This program involves physical movement and exercise. If
+            you have a pre-existing heart, lung, or neurological condition, are pregnant or postpartum, or have had a
+            recent injury or surgery you haven't been cleared for, consult a physician before beginning.
+          </p>
+
+          <p className="mb-2">
+            <strong>4. Listen to Your Body:</strong> Stop immediately if you experience chest pain, dizziness,
+            shortness of breath beyond normal exertion, or sharp or shooting pain. Discomfort from effort is normal;
+            pain that feels wrong is not. This program is not personalized medical advice — it's based on general
+            training principles, not an evaluation of your individual body or medical history.
+          </p>
+
+          <p className="mb-2">
+            <strong>5. Assumption of Risk:</strong> You acknowledge that participation in these exercises involves a
             risk of injury. By continuing, you voluntarily assume all risks associated with these activities.
           </p>
 
           <p>
-            <strong>4. Emergency:</strong> If you think you may have a medical emergency, call your doctor or 911
+            <strong>6. Emergency:</strong> If you think you may have a medical emergency, call your doctor or 911
             immediately. Do not disregard professional medical advice or delay in seeking it because of something you
             have read in this app.
           </p>
