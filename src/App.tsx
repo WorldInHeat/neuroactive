@@ -1057,7 +1057,7 @@ export default function App() {
 
   // UPDATED: Honest navigation intent handler (Strict Mode)
   const attemptNavigation = (
-    targetView: 'assessment' | 'dashboard' | 'library',
+    targetView: 'assessment' | 'dashboard' | 'library' | 'dns-course',
     nodeId?: string,
     autoplay: boolean = false
   ) => {
@@ -1329,7 +1329,7 @@ export default function App() {
           // to restore it once the pain-recovery track is ready.
           <div className="w-full max-w-md relative z-10">
             <button
-              onClick={() => setCurrentView('dns-course')}
+              onClick={() => attemptNavigation('dns-course')}
               className="w-full px-8 py-4 rounded-xl font-bold text-lg shadow-lg hover:opacity-90 active:scale-95 transition-all text-[#080d1a] flex flex-col items-center gap-1"
               style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
             >
@@ -1358,7 +1358,7 @@ export default function App() {
               </button>
 
               <button
-                onClick={() => setCurrentView('dns-course')}
+                onClick={() => attemptNavigation('dns-course')}
                 className="flex-1 px-8 py-4 rounded-xl font-bold text-lg shadow-lg hover:opacity-90 active:scale-95 transition-all text-[#080d1a] flex flex-col items-center gap-1"
                 style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
               >
@@ -1563,7 +1563,7 @@ export default function App() {
               </div>
             </div>
             <button
-              onClick={() => setCurrentView('dns-course')}
+              onClick={() => attemptNavigation('dns-course')}
               className="border border-[#00d4c8] text-[#00d4c8] px-4 py-2 rounded-lg font-bold text-sm hover:bg-[#00d4c8]/10 transition-colors"
             >
               Open
@@ -1587,7 +1587,7 @@ export default function App() {
                 </div>
               </div>
               <button
-                onClick={() => setCurrentView('dns-course')}
+                onClick={() => attemptNavigation('dns-course')}
                 className="px-4 py-2 rounded-lg font-bold text-sm text-[#080d1a] hover:opacity-90 transition-all flex-shrink-0"
                 style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
               >
