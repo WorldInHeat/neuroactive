@@ -70,6 +70,29 @@ try {
 const googleProvider = new GoogleAuthProvider();
 const isInAppBrowser = /Instagram|FBAN|FBAV|TikTok/i.test(navigator.userAgent);
 
+// Set right before signInWithRedirect/linkWithRedirect navigates away, cleared once
+// getRedirectResult settles on the page load that follows. Survives the full-page
+// navigation (React state doesn't), so on return we can tell "no redirect was in
+// flight" apart from "a redirect was in flight but getRedirectResult came back null" —
+// the latter means the redirect round-trip silently failed to resolve and should
+// surface as an error instead of being treated as a fresh anonymous session.
+const REDIRECT_PENDING_KEY = 'na_google_redirect_pending';
+
+// signInWithRedirect/linkWithRedirect navigate the page away on success, so normally
+// this promise's resolution is moot — execution just stops. But if the browser fails to
+// actually perform that navigation (observed as an indefinite hang with no throw and no
+// console output), the awaited call never settles and callers get stuck forever. Racing
+// it against a timeout turns that silent hang into a catchable error.
+const REDIRECT_TIMEOUT_MS = 10000;
+function withRedirectTimeout<T>(promise: Promise<T>): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error('redirect-timeout')), REDIRECT_TIMEOUT_MS)
+    ),
+  ]);
+}
+
 // --- Helper Components ---
 
 // Reused by SettingsView's "Sign in with Google" button
@@ -718,6 +741,15 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [dnsCourse, setDnsCourse] = useState<DnsCourseProgress>({ currentDay: 1, lastCompletedDate: '', startedAt: '' });
 
+  // Captured once at mount, before anything has a chance to clear the flag — tells us
+  // whether this page load is potentially the return leg of a redirect sign-in.
+  const wasRedirectPendingRef = useRef(sessionStorage.getItem(REDIRECT_PENDING_KEY) === '1');
+  // Set once onAuthStateChanged has fired for the first time this session.
+  const [authStateResolved, setAuthStateResolved] = useState(false);
+  // Set once getRedirectResult has settled (resolved or rejected). Only relevant when
+  // wasRedirectPendingRef is true — otherwise there's nothing to wait for.
+  const [redirectResultResolved, setRedirectResultResolved] = useState(false);
+
   // NOTE: These are unused in this build but kept for future phases
   // const [phaseLocks, setPhaseLocks] = useState<Record<string, number>>({});
   // const [lastCheckInAt, setLastCheckInAt] = useState<string | null>(null);
@@ -795,12 +827,23 @@ export default function App() {
     setCheckoutLoading(null);
   }, [currentView]);
 
-  // Hard fallback: authLoading should always resolve via onAuthStateChanged above, but
-  // if something unanticipated prevents that (root cause not yet identified — see the
-  // intermittent stuck-splash reports), force it false after 5s so the splash can never
-  // block the app permanently.
+  // authLoading only drops once onAuthStateChanged has fired for the first time AND,
+  // if this page load is potentially the return leg of a redirect sign-in, getRedirectResult
+  // has also settled. Without this second condition, onAuthStateChanged can fire first with
+  // a freshly-created anonymous user (see the anonymous-fallback branch below) before the
+  // real redirect result has had a chance to resolve and correct it — that race is what
+  // produced the "routes through onboarding as a brand-new user" reports on Android Chrome.
   useEffect(() => {
-    const timer = setTimeout(() => setAuthLoading(false), 5000);
+    if (authStateResolved && (!wasRedirectPendingRef.current || redirectResultResolved)) {
+      setAuthLoading(false);
+    }
+  }, [authStateResolved, redirectResultResolved]);
+
+  // Last-resort ceiling so a truly hung auth/redirect check can never block the app
+  // permanently. Long enough to cover a slow redirect round-trip; the effect above should
+  // almost always win first.
+  useEffect(() => {
+    const timer = setTimeout(() => setAuthLoading(false), 10000);
     return () => clearTimeout(timer);
   }, []);
 
@@ -810,12 +853,26 @@ export default function App() {
   useEffect(() => {
     if (!auth) return;
     getRedirectResult(auth).then(async (result) => {
-      if (!result) return;
+      sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+      if (!result) {
+        // A redirect was in flight (per the flag set before we navigated away) but
+        // Firebase couldn't resolve it on return — e.g. the pending-redirect state didn't
+        // survive the round-trip. Surface it instead of silently treating this session as
+        // a fresh anonymous user.
+        if (wasRedirectPendingRef.current) {
+          setSignInError("Sign-in didn't complete — please try again.");
+        }
+        setRedirectResultResolved(true);
+        return;
+      }
       // Redirect succeeded — the user stays on whatever view they were on (e.g. Settings)
       // since Google sign-in no longer forces a view change. Save provider info if this
       // was a link-from-anonymous flow.
       await saveUserData({ authProvider: 'google' });
+      setRedirectResultResolved(true);
     }).catch(async (error: any) => {
+      sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+      setRedirectResultResolved(true);
       if (error.code === 'auth/credential-already-in-use') {
         // Switching accounts here abandons the current anonymous session's data,
         // so confirm first.
@@ -823,7 +880,15 @@ export default function App() {
           'This Google account is already linked to a different NeuroActive account. Signing in will switch you to that account, and any progress from this session will not transfer. Continue?'
         );
         if (proceed) {
-          await signInWithRedirect(auth, googleProvider);
+          sessionStorage.setItem(REDIRECT_PENDING_KEY, '1');
+          try {
+            await withRedirectTimeout(signInWithRedirect(auth, googleProvider));
+          } catch (err) {
+            sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+            const message = err instanceof Error ? err.message : undefined;
+            if (message !== 'redirect-timeout') console.error('Redirect sign-in error:', err);
+            setSignInError('Sign-in failed. Please try again.');
+          }
         }
       } else if (error.code !== 'auth/user-cancelled' && error.code !== 'auth/popup-closed-by-user') {
         console.error('Redirect sign-in error:', error);
@@ -965,7 +1030,7 @@ export default function App() {
       } catch (err) {
         console.error('[Auth] onAuthStateChanged callback threw:', err);
       } finally {
-        setAuthLoading(false);
+        setAuthStateResolved(true);
       }
     });
 
@@ -1039,6 +1104,7 @@ export default function App() {
     if (!auth) return;
     setSignInLoading(true);
     setSignInError(null);
+    sessionStorage.setItem(REDIRECT_PENDING_KEY, '1');
     try {
       const currentUser = auth.currentUser;
       // Full-page redirect, on both mobile and desktop — result handled by the shared
@@ -1046,14 +1112,23 @@ export default function App() {
       // which was found to silently fail when Google's MFA/2FA step is involved: the
       // user completes auth successfully but the popup never relays the result back,
       // leaving the app stuck in a permanent "signing in" state.
+      //
+      // Raced against a timeout: if the browser never actually performs the top-level
+      // navigation, the promise hangs with no throw — this surfaces an error and resets
+      // the button instead of leaving it stuck on "Signing in…" forever.
       if (currentUser && currentUser.isAnonymous) {
-        await linkWithRedirect(currentUser, googleProvider);
+        await withRedirectTimeout(linkWithRedirect(currentUser, googleProvider));
       } else {
-        await signInWithRedirect(auth, googleProvider);
+        await withRedirectTimeout(signInWithRedirect(auth, googleProvider));
       }
     } catch (error: any) {
-      console.error('Google sign-in error:', error);
-      setSignInError('Sign-in failed. Please try again.');
+      sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+      if (error?.message === 'redirect-timeout') {
+        setSignInError('Sign-in is taking longer than expected. Please check your connection and try again.');
+      } else {
+        console.error('Google sign-in error:', error);
+        setSignInError('Sign-in failed. Please try again.');
+      }
     } finally {
       setSignInLoading(false);
     }
