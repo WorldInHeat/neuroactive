@@ -795,6 +795,15 @@ export default function App() {
     setCheckoutLoading(null);
   }, [currentView]);
 
+  // Hard fallback: authLoading should always resolve via onAuthStateChanged above, but
+  // if something unanticipated prevents that (root cause not yet identified — see the
+  // intermittent stuck-splash reports), force it false after 5s so the splash can never
+  // block the app permanently.
+  useEffect(() => {
+    const timer = setTimeout(() => setAuthLoading(false), 5000);
+    return () => clearTimeout(timer);
+  }, []);
+
   // Handle redirect result after Google sign-in returns to the page. Both mobile and
   // desktop now use the redirect flow (no popup-to-opener handoff to break), so this
   // one effect covers every sign-in/link attempt regardless of device.
@@ -852,6 +861,9 @@ export default function App() {
     let unsubscribePayments: (() => void) | null = null;
 
     const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      // Safety net: an unexpected throw anywhere in here must never leave authLoading
+      // stuck true (permanent splash screen) — setAuthLoading(false) always runs.
+      try {
       if (unsubscribeSnapshot) {
         unsubscribeSnapshot();
         unsubscribeSnapshot = null;
@@ -950,7 +962,11 @@ export default function App() {
           signInAnonymously(auth).catch((err) => console.error('Anonymous sign-in failed:', err));
         }
       }
-      setAuthLoading(false);
+      } catch (err) {
+        console.error('[Auth] onAuthStateChanged callback threw:', err);
+      } finally {
+        setAuthLoading(false);
+      }
     });
 
     return () => {
