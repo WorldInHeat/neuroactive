@@ -29,7 +29,7 @@ import {
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, linkWithPopup, linkWithRedirect, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult, linkWithRedirect, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, type Firestore } from 'firebase/firestore';
 
 import { DECISION_TREE } from './data/decisionTree';
@@ -68,7 +68,6 @@ try {
 }
 
 const googleProvider = new GoogleAuthProvider();
-const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 const isInAppBrowser = /Instagram|FBAN|FBAV|TikTok/i.test(navigator.userAgent);
 
 // --- Helper Components ---
@@ -796,7 +795,9 @@ export default function App() {
     setCheckoutLoading(null);
   }, [currentView]);
 
-  // Handle redirect result after mobile Google sign-in returns to the page
+  // Handle redirect result after Google sign-in returns to the page. Both mobile and
+  // desktop now use the redirect flow (no popup-to-opener handoff to break), so this
+  // one effect covers every sign-in/link attempt regardless of device.
   useEffect(() => {
     if (!auth) return;
     getRedirectResult(auth).then(async (result) => {
@@ -807,8 +808,8 @@ export default function App() {
       await saveUserData({ authProvider: 'google' });
     }).catch(async (error: any) => {
       if (error.code === 'auth/credential-already-in-use') {
-        // Same confirm as the desktop popup path — switching accounts here abandons
-        // the current anonymous session's data.
+        // Switching accounts here abandons the current anonymous session's data,
+        // so confirm first.
         const proceed = window.confirm(
           'This Google account is already linked to a different NeuroActive account. Signing in will switch you to that account, and any progress from this session will not transfer. Continue?'
         );
@@ -1024,45 +1025,19 @@ export default function App() {
     setSignInError(null);
     try {
       const currentUser = auth.currentUser;
-      if (isMobile) {
-        // Redirect flow — page will reload; result handled by getRedirectResult on mount
-        if (currentUser && currentUser.isAnonymous) {
-          await linkWithRedirect(currentUser, googleProvider);
-        } else {
-          await signInWithRedirect(auth, googleProvider);
-        }
-        return;
-      }
-      // Desktop: popup flow
+      // Full-page redirect, on both mobile and desktop — result handled by the shared
+      // getRedirectResult effect on page reload. Avoids the popup-to-opener handoff,
+      // which was found to silently fail when Google's MFA/2FA step is involved: the
+      // user completes auth successfully but the popup never relays the result back,
+      // leaving the app stuck in a permanent "signing in" state.
       if (currentUser && currentUser.isAnonymous) {
-        // Try to link existing anonymous session to Google account
-        try {
-          await linkWithPopup(currentUser, googleProvider);
-          await saveUserData({ authProvider: 'google' });
-        } catch (linkError: any) {
-          if (linkError.code === 'auth/credential-already-in-use') {
-            // This Google account already has a separate Firebase account — switching to
-            // it abandons the current anonymous session's data, so confirm first.
-            const proceed = window.confirm(
-              'This Google account is already linked to a different NeuroActive account. Signing in will switch you to that account, and any progress from this session will not transfer. Continue?'
-            );
-            if (!proceed) return;
-            await signInWithPopup(auth, googleProvider);
-          } else {
-            throw linkError;
-          }
-        }
+        await linkWithRedirect(currentUser, googleProvider);
       } else {
-        await signInWithPopup(auth, googleProvider);
+        await signInWithRedirect(auth, googleProvider);
       }
-      // onAuthStateChanged fires with the Google user — view advances automatically
     } catch (error: any) {
-      if (error.code === 'auth/popup-blocked') {
-        setSignInError('Popup was blocked by your browser. Please allow popups for this site and try again.');
-      } else if (error.code !== 'auth/popup-closed-by-user') {
-        console.error('Google sign-in error:', error);
-        setSignInError('Sign-in failed. Please try again.');
-      }
+      console.error('Google sign-in error:', error);
+      setSignInError('Sign-in failed. Please try again.');
     } finally {
       setSignInLoading(false);
     }
