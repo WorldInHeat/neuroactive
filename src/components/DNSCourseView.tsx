@@ -21,6 +21,7 @@ type Props = {
   checkoutLoading: PriceKey | null;
   setCheckoutLoading: (key: PriceKey | null) => void;
   onGoogleSignIn: () => void;
+  onSendSignInLink: (email: string) => Promise<void>;
   signInLoading: boolean;
   signInError: string | null;
   isInAppBrowser: boolean;
@@ -77,6 +78,7 @@ export default function DNSCourseView({
   checkoutLoading,
   setCheckoutLoading,
   onGoogleSignIn,
+  onSendSignInLink,
   signInLoading,
   signInError,
   isInAppBrowser,
@@ -169,6 +171,7 @@ export default function DNSCourseView({
         setCheckoutLoading={setCheckoutLoading}
         onBack={onBack}
         onGoogleSignIn={onGoogleSignIn}
+        onSendSignInLink={onSendSignInLink}
         signInLoading={signInLoading}
         signInError={signInError}
         isInAppBrowser={isInAppBrowser}

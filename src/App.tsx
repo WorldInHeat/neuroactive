@@ -29,7 +29,23 @@ import {
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult, linkWithRedirect, signInAnonymously, onAuthStateChanged, signOut, type Auth } from 'firebase/auth';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  EmailAuthProvider,
+  signInWithRedirect,
+  getRedirectResult,
+  linkWithRedirect,
+  linkWithCredential,
+  sendSignInLinkToEmail,
+  isSignInWithEmailLink,
+  signInWithEmailLink,
+  fetchSignInMethodsForEmail,
+  signInAnonymously,
+  onAuthStateChanged,
+  signOut,
+  type Auth,
+} from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, type Firestore } from 'firebase/firestore';
 
 import { DECISION_TREE } from './data/decisionTree';
@@ -78,6 +94,17 @@ const isInAppBrowser = /Instagram|FBAN|FBAV|TikTok/i.test(navigator.userAgent);
 // surface as an error instead of being treated as a fresh anonymous session.
 const REDIRECT_PENDING_KEY = 'na_google_redirect_pending';
 
+// Firebase's documented pattern for email-link sign-in: the email is needed again once
+// the user opens the link, but that may happen in a different tab/browser/device than
+// the one that requested it (e.g. opening the link from a phone's mail app), so it has
+// to be persisted somewhere that survives that gap rather than kept in React state.
+const EMAIL_LINK_STORAGE_KEY = 'na_email_for_signin';
+
+// Pinned to the canonical apex host (see tonight's www/apex CSP fix) rather than
+// window.location.href, so the emailed link always lands on the one canonical origin
+// regardless of which host the user happened to be on when they requested it.
+const EMAIL_LINK_CONTINUE_URL = 'https://neuroactivehealth.com/';
+
 // signInWithRedirect/linkWithRedirect navigate the page away on success, so normally
 // this promise's resolution is moot — execution just stops. But if the browser fails to
 // actually perform that navigation (observed as an indefinite hang with no throw and no
@@ -91,6 +118,46 @@ function withRedirectTimeout<T>(promise: Promise<T>): Promise<T> {
       setTimeout(() => reject(new Error('redirect-timeout')), REDIRECT_TIMEOUT_MS)
     ),
   ]);
+}
+
+// Turns an email-link auth error into a message worth showing the user. Every branch is
+// explicit on purpose — no silent failures, matching the redirect-sign-in fix.
+function mapEmailAuthError(error: unknown): string {
+  const code = error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : '';
+  switch (code) {
+    case 'auth/invalid-email':
+    case 'auth/missing-email':
+      return 'That email address doesn’t look valid.';
+    case 'auth/invalid-action-code':
+      return 'This sign-in link is invalid or has already been used.';
+    case 'auth/expired-action-code':
+      return 'This sign-in link has expired. Please request a new one.';
+    case 'auth/too-many-requests':
+    case 'auth/quota-exceeded':
+      return 'Too many attempts. Please wait a moment and try again.';
+    case 'auth/operation-not-allowed':
+      return 'Email sign-in isn’t available right now. Please try Google instead.';
+    case 'auth/unauthorized-continue-uri':
+      return 'Sign-in link setup issue — please contact support.';
+    default:
+      console.error('Email auth error:', error);
+      return 'Something went wrong. Please try again.';
+  }
+}
+
+// If a link/sign-in attempt fails because the email is already registered, check which
+// providers already own it so we can point the user at the right one instead of a dead
+// end — e.g. someone who originally signed up with Google trying to use a magic link here.
+async function describeExistingEmailAccount(auth: Auth, email: string): Promise<string> {
+  try {
+    const methods = await fetchSignInMethodsForEmail(auth, email);
+    if (methods.includes('google.com') && !methods.includes('emailLink')) {
+      return 'This email is already registered with Google — please use "Continue with Google" to sign in.';
+    }
+  } catch (err) {
+    console.error('fetchSignInMethodsForEmail failed:', err);
+  }
+  return 'An account with this email already exists.';
 }
 
 // --- Helper Components ---
@@ -852,6 +919,12 @@ export default function App() {
   // one effect covers every sign-in/link attempt regardless of device.
   useEffect(() => {
     if (!auth) return;
+
+    // Passwordless email-link completion — same "returning from an external auth step"
+    // shape as the Google redirect handled below, just triggered by a normal link click
+    // (sendSignInLinkToEmail) rather than a JS-initiated redirect.
+    completeEmailLinkSignIn();
+
     getRedirectResult(auth).then(async (result) => {
       sessionStorage.removeItem(REDIRECT_PENDING_KEY);
       if (!result) {
@@ -1129,6 +1202,90 @@ export default function App() {
         console.error('Google sign-in error:', error);
         setSignInError('Sign-in failed. Please try again.');
       }
+    } finally {
+      setSignInLoading(false);
+    }
+  };
+
+  // Kicks off the passwordless flow: send the link, remember the email locally (per
+  // Firebase's documented pattern) so completeEmailLinkSignIn below can find it again
+  // when the link is opened — possibly in a different browser/device than this one.
+  // Failures surface via the shared signInError state; success is confirmed locally by
+  // the caller (Paywall) since "email sent" isn't an error and doesn't belong there.
+  const handleSendSignInLink = async (email: string) => {
+    if (!auth) return;
+    setSignInLoading(true);
+    setSignInError(null);
+    try {
+      await sendSignInLinkToEmail(auth, email, {
+        url: EMAIL_LINK_CONTINUE_URL,
+        handleCodeInApp: true,
+      });
+      window.localStorage.setItem(EMAIL_LINK_STORAGE_KEY, email);
+    } catch (error) {
+      setSignInError(mapEmailAuthError(error));
+      throw error;
+    } finally {
+      setSignInLoading(false);
+    }
+  };
+
+  // Completes a magic-link sign-in when this page load is the return from the emailed
+  // link. Mirrors handleGoogleSignIn's structure: link to the existing anonymous UID
+  // when possible (so purchase/progress carries over), falling back to a plain sign-in —
+  // with the same "this will switch accounts" confirmation — whenever completing here
+  // would abandon whatever's currently active (an existing account for this email, or an
+  // already-signed-in non-anonymous session).
+  const completeEmailLinkSignIn = async () => {
+    if (!auth || !isSignInWithEmailLink(auth, window.location.href)) return;
+
+    let email = window.localStorage.getItem(EMAIL_LINK_STORAGE_KEY);
+    if (!email) {
+      // Opened on a different device/browser than the one that requested the link —
+      // fall back to asking, rather than failing silently.
+      email = window.prompt('Please confirm the email address you used to request this sign-in link:');
+    }
+    if (!email) {
+      setSignInError('Sign-in link could not be confirmed — no email provided.');
+      return;
+    }
+
+    setSignInLoading(true);
+    setSignInError(null);
+    try {
+      const currentUser = auth.currentUser;
+
+      if (currentUser && currentUser.isAnonymous) {
+        try {
+          await linkWithCredential(currentUser, EmailAuthProvider.credentialWithLink(email, window.location.href));
+        } catch (linkError) {
+          const code = linkError && typeof linkError === 'object' && 'code' in linkError ? (linkError as { code: unknown }).code : undefined;
+          if (code !== 'auth/email-already-in-use') throw linkError;
+          const description = await describeExistingEmailAccount(auth, email);
+          if (description.includes('Google')) {
+            setSignInError(description);
+            return;
+          }
+          const proceed = window.confirm(
+            `${description} Signing in will switch you to that account, and any progress from this session will not transfer. Continue?`
+          );
+          if (!proceed) return;
+          await signInWithEmailLink(auth, email, window.location.href);
+        }
+      } else {
+        const proceed = window.confirm(
+          'Signing in with this email will switch your active account, and any progress from this session will not transfer. Continue?'
+        );
+        if (!proceed) return;
+        await signInWithEmailLink(auth, email, window.location.href);
+      }
+
+      window.localStorage.removeItem(EMAIL_LINK_STORAGE_KEY);
+      const clean = new URL(window.location.href);
+      ['apiKey', 'oobCode', 'mode', 'lang', 'continueUrl'].forEach((key) => clean.searchParams.delete(key));
+      window.history.replaceState({}, '', clean.toString());
+    } catch (error) {
+      setSignInError(mapEmailAuthError(error));
     } finally {
       setSignInLoading(false);
     }
@@ -1752,6 +1909,7 @@ export default function App() {
           setCheckoutLoading={setCheckoutLoading}
           onBack={() => setCurrentView('dashboard')}
           onGoogleSignIn={handleGoogleSignIn}
+          onSendSignInLink={handleSendSignInLink}
           signInLoading={signInLoading}
           signInError={signInError}
           isInAppBrowser={isInAppBrowser}
@@ -1785,6 +1943,7 @@ export default function App() {
             setCheckoutLoading={setCheckoutLoading}
             onBack={() => setCurrentView('dashboard')}
             onGoogleSignIn={handleGoogleSignIn}
+            onSendSignInLink={handleSendSignInLink}
             signInLoading={signInLoading}
             signInError={signInError}
             isInAppBrowser={isInAppBrowser}
@@ -2060,6 +2219,7 @@ export default function App() {
           setCheckoutLoading={setCheckoutLoading}
           onBack={() => setCurrentView('dashboard')}
           onGoogleSignIn={handleGoogleSignIn}
+          onSendSignInLink={handleSendSignInLink}
           signInLoading={signInLoading}
           signInError={signInError}
           isInAppBrowser={isInAppBrowser}
@@ -2077,6 +2237,7 @@ export default function App() {
           checkoutLoading={checkoutLoading}
           setCheckoutLoading={setCheckoutLoading}
           onGoogleSignIn={handleGoogleSignIn}
+          onSendSignInLink={handleSendSignInLink}
           signInLoading={signInLoading}
           signInError={signInError}
           isInAppBrowser={isInAppBrowser}

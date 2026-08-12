@@ -12,6 +12,7 @@ type Props = {
   setCheckoutLoading: (key: PriceKey | null) => void;
   onBack: () => void;
   onGoogleSignIn: () => void;
+  onSendSignInLink: (email: string) => Promise<void>;
   signInLoading: boolean;
   signInError: string | null;
   isInAppBrowser: boolean;
@@ -41,8 +42,20 @@ const FULL_FEATURES = [
   'New clinical content added regularly',
 ];
 
-export default function Paywall({ auth, checkoutLoading, setCheckoutLoading, onBack, onGoogleSignIn, signInLoading, signInError, isInAppBrowser }: Props) {
+export default function Paywall({
+  auth,
+  checkoutLoading,
+  setCheckoutLoading,
+  onBack,
+  onGoogleSignIn,
+  onSendSignInLink,
+  signInLoading,
+  signInError,
+  isInAppBrowser,
+}: Props) {
   const [checkoutError, setCheckoutError] = useState<PriceKey | null>(null);
+  const [email, setEmail] = useState('');
+  const [linkSent, setLinkSent] = useState(false);
   const visibleTiers = DNS_ONLY_LAUNCH ? ALL_TIERS.filter((t) => t.key === 'program') : ALL_TIERS;
   const features = DNS_ONLY_LAUNCH ? DNS_ONLY_FEATURES : FULL_FEATURES;
 
@@ -56,19 +69,73 @@ export default function Paywall({ auth, checkoutLoading, setCheckoutLoading, onB
 
         {/* Already purchased — fastest way out, shown before any sales content */}
         <div className="text-center">
-          {isInAppBrowser ? (
-            <p className="text-[#3a4a5e] text-sm">
-              Already purchased? Open this page in your browser (not this app) to sign in.
-            </p>
+          <p className="text-[#f0f4f8] text-sm font-semibold mb-3">Already purchased?</p>
+
+          {linkSent ? (
+            <div className="max-w-xs mx-auto bg-[#0f1829] border border-[#00d4c8]/30 rounded-lg p-4">
+              <p className="text-sm text-[#f0f4f8] font-semibold">Check your email</p>
+              <p className="text-xs text-[#6b849e] mt-1">
+                We sent a sign-in link to {email}. Open it on this device to finish signing in.
+              </p>
+              <button
+                type="button"
+                onClick={() => setLinkSent(false)}
+                className="text-[#00d4c8] text-xs font-semibold hover:underline mt-3"
+              >
+                Use a different email
+              </button>
+            </div>
           ) : (
-            <button
-              onClick={onGoogleSignIn}
-              disabled={signInLoading}
-              className="text-[#00d4c8] text-sm font-semibold hover:underline disabled:opacity-60"
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                try {
+                  await onSendSignInLink(email);
+                  setLinkSent(true);
+                } catch {
+                  // Failure already surfaced via signInError.
+                }
+              }}
+              className="max-w-xs mx-auto space-y-2 text-left"
             >
-              {signInLoading ? 'Signing in…' : 'Already purchased? Sign in'}
-            </button>
+              <input
+                type="email"
+                autoComplete="email"
+                placeholder="Email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                className="w-full bg-[#080d1a] border border-[#1a2a42] rounded-lg px-3 py-2 text-sm text-[#f0f4f8] placeholder-[#3a4a5e] focus:outline-none focus:border-[#00d4c8]/50"
+              />
+              <button
+                type="submit"
+                disabled={signInLoading || !email}
+                className="w-full border border-[#00d4c8]/40 text-[#00d4c8] text-sm font-semibold py-2 rounded-lg hover:bg-[#00d4c8]/10 transition-colors disabled:opacity-50"
+              >
+                {signInLoading ? 'Sending…' : 'Email me a sign-in link'}
+              </button>
+            </form>
           )}
+
+          {/* Google — hidden inside an in-app browser since the redirect flow can't complete
+              there. The email-link form above still works, since it needs no
+              redirect/popup. */}
+          <div className="mt-4">
+            {isInAppBrowser ? (
+              <p className="text-[#3a4a5e] text-xs">
+                Open this page in your browser (not this app) to sign in with Google.
+              </p>
+            ) : (
+              <button
+                onClick={onGoogleSignIn}
+                disabled={signInLoading}
+                className="text-[#00d4c8] text-sm font-semibold hover:underline disabled:opacity-60"
+              >
+                {signInLoading ? 'Signing in…' : 'Continue with Google'}
+              </button>
+            )}
+          </div>
+
           {signInError && (
             <p className="text-xs text-red-400 mt-2 leading-relaxed">{signInError}</p>
           )}
