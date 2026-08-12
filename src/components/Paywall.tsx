@@ -141,13 +141,15 @@ export default function Paywall({
           )}
         </div>
 
-        {/* Paywall hero video */}
+        {/* Paywall hero video — personal testimonial, filmed vertically unlike every
+            other video in the app, hence orientation="portrait" (see VideoPlayer). */}
         <VideoPlayer
           nodeId="onboarding_paywall_hero"
-          title="Why NeuroActive is Different"
-          videoId="1206005431"
+          title="My Own DNS Story"
+          videoId="1217789552"
           autoplayToken={null}
           onConsumeAutoplay={() => {}}
+          orientation="portrait"
         />
 
         {/* Doctor header */}

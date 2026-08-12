@@ -10,6 +10,9 @@ type Props = {
   autoplayToken?: string | null;
   // Callback to clear the token once used (One-Shot Pattern)
   onConsumeAutoplay?: () => void;
+  // Every video in the app is landscape except the Paywall's portrait testimonial —
+  // default stays 16:9 so no other call site is affected.
+  orientation?: 'landscape' | 'portrait';
 };
 
 export default function VideoPlayer({
@@ -19,6 +22,7 @@ export default function VideoPlayer({
   videoId,
   autoplayToken,
   onConsumeAutoplay,
+  orientation = 'landscape',
 }: Props) {
   const [isPlaying, setIsPlaying] = useState(false);
 
@@ -66,7 +70,9 @@ export default function VideoPlayer({
 
   return (
     <div className="mb-6">
-      <div className="bg-black aspect-video rounded-xl overflow-hidden shadow-lg relative">
+      <div
+        className={`bg-black ${orientation === 'portrait' ? 'aspect-[9/16] max-w-xs mx-auto' : 'aspect-video'} rounded-xl overflow-hidden shadow-lg relative`}
+      >
         {isPlaying ? (
           <iframe
             key={nodeId} // Forces fresh DOM on video change
