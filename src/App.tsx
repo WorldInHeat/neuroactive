@@ -1609,7 +1609,7 @@ export default function App() {
             </div>
           )}
 
-          {(() => {
+          {!DNS_ONLY_LAUNCH && (() => {
             // Hard rule, independent of user status: never surface a premium node's
             // title/frequency here, same defense-in-depth as SessionSummary.
             const visiblePrescriptions = activePrescriptions.filter((id) => !DECISION_TREE[id]?.isPremium);
