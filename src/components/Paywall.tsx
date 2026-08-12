@@ -11,6 +11,10 @@ type Props = {
   checkoutLoading: PriceKey | null;
   setCheckoutLoading: (key: PriceKey | null) => void;
   onBack: () => void;
+  onGoogleSignIn: () => void;
+  signInLoading: boolean;
+  signInError: string | null;
+  isInAppBrowser: boolean;
 };
 
 // Full four-tier lineup — kept intact (not deleted) so restoring is a one-line change
@@ -37,7 +41,7 @@ const FULL_FEATURES = [
   'New clinical content added regularly',
 ];
 
-export default function Paywall({ auth, checkoutLoading, setCheckoutLoading, onBack }: Props) {
+export default function Paywall({ auth, checkoutLoading, setCheckoutLoading, onBack, onGoogleSignIn, signInLoading, signInError, isInAppBrowser }: Props) {
   const [checkoutError, setCheckoutError] = useState<PriceKey | null>(null);
   const visibleTiers = DNS_ONLY_LAUNCH ? ALL_TIERS.filter((t) => t.key === 'program') : ALL_TIERS;
   const features = DNS_ONLY_LAUNCH ? DNS_ONLY_FEATURES : FULL_FEATURES;
@@ -49,6 +53,26 @@ export default function Paywall({ auth, checkoutLoading, setCheckoutLoading, onB
         <button onClick={onBack} className="text-[#6b849e] hover:text-[#f0f4f8] flex items-center gap-1 transition-colors text-sm">
           <ArrowLeft size={16} /> Back
         </button>
+
+        {/* Already purchased — fastest way out, shown before any sales content */}
+        <div className="text-center">
+          {isInAppBrowser ? (
+            <p className="text-[#3a4a5e] text-sm">
+              Already purchased? Open this page in your browser (not this app) to sign in.
+            </p>
+          ) : (
+            <button
+              onClick={onGoogleSignIn}
+              disabled={signInLoading}
+              className="text-[#00d4c8] text-sm font-semibold hover:underline disabled:opacity-60"
+            >
+              {signInLoading ? 'Signing in…' : 'Already purchased? Sign in'}
+            </button>
+          )}
+          {signInError && (
+            <p className="text-xs text-red-400 mt-2 leading-relaxed">{signInError}</p>
+          )}
+        </div>
 
         {/* Paywall hero video */}
         <VideoPlayer

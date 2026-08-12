@@ -1679,7 +1679,18 @@ export default function App() {
     // Gate any premium node (reveal/prescription nodes and premium videos alike) behind the paywall,
     // regardless of which path in the tree led here.
     if (currentNode.isPremium && !isPremium) {
-      return <Paywall auth={auth} checkoutLoading={checkoutLoading} setCheckoutLoading={setCheckoutLoading} onBack={() => setCurrentView('dashboard')} />;
+      return (
+        <Paywall
+          auth={auth}
+          checkoutLoading={checkoutLoading}
+          setCheckoutLoading={setCheckoutLoading}
+          onBack={() => setCurrentView('dashboard')}
+          onGoogleSignIn={handleGoogleSignIn}
+          signInLoading={signInLoading}
+          signInError={signInError}
+          isInAppBrowser={isInAppBrowser}
+        />
+      );
     }
 
     // Show session summary when user reaches a terminal result node that has active prescriptions.
@@ -1701,7 +1712,18 @@ export default function App() {
       // screen rather than show a plan with premium items missing.
       const hasPremiumPrescription = activePrescriptions.some((id) => DECISION_TREE[id]?.isPremium);
       if (hasPremiumPrescription && !isPremium) {
-        return <Paywall auth={auth} checkoutLoading={checkoutLoading} setCheckoutLoading={setCheckoutLoading} onBack={() => setCurrentView('dashboard')} />;
+        return (
+          <Paywall
+            auth={auth}
+            checkoutLoading={checkoutLoading}
+            setCheckoutLoading={setCheckoutLoading}
+            onBack={() => setCurrentView('dashboard')}
+            onGoogleSignIn={handleGoogleSignIn}
+            signInLoading={signInLoading}
+            signInError={signInError}
+            isInAppBrowser={isInAppBrowser}
+          />
+        );
       }
       return (
         <SessionSummary
@@ -1965,7 +1987,18 @@ export default function App() {
       )}
       {showTerms && <LegalDisclaimer onAgree={handleTermsAgree} onCancel={handleTermsDecline} />}
       {currentView === 'landing' && <LandingPage />}
-      {currentView === 'paywall' && <Paywall auth={auth} checkoutLoading={checkoutLoading} setCheckoutLoading={setCheckoutLoading} onBack={() => setCurrentView('dashboard')} />}
+      {currentView === 'paywall' && (
+        <Paywall
+          auth={auth}
+          checkoutLoading={checkoutLoading}
+          setCheckoutLoading={setCheckoutLoading}
+          onBack={() => setCurrentView('dashboard')}
+          onGoogleSignIn={handleGoogleSignIn}
+          signInLoading={signInLoading}
+          signInError={signInError}
+          isInAppBrowser={isInAppBrowser}
+        />
+      )}
       {currentView === 'assessment' && <AssessmentView />}
       {currentView === 'dns-course' && (
         <DNSCourseView
@@ -1977,6 +2010,10 @@ export default function App() {
           auth={auth}
           checkoutLoading={checkoutLoading}
           setCheckoutLoading={setCheckoutLoading}
+          onGoogleSignIn={handleGoogleSignIn}
+          signInLoading={signInLoading}
+          signInError={signInError}
+          isInAppBrowser={isInAppBrowser}
         />
       )}
       {currentView === 'dashboard' && pendingBaselineNodeId

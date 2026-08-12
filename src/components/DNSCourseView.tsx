@@ -20,6 +20,10 @@ type Props = {
   auth: Auth | null;
   checkoutLoading: PriceKey | null;
   setCheckoutLoading: (key: PriceKey | null) => void;
+  onGoogleSignIn: () => void;
+  signInLoading: boolean;
+  signInError: string | null;
+  isInAppBrowser: boolean;
 };
 
 // Week badge + heading + video (or placeholder) + description — the content shared by
@@ -72,6 +76,10 @@ export default function DNSCourseView({
   auth,
   checkoutLoading,
   setCheckoutLoading,
+  onGoogleSignIn,
+  signInLoading,
+  signInError,
+  isInAppBrowser,
 }: Props) {
   // Hooks must run unconditionally, before the early returns below.
   const [activeTab, setActiveTab] = useState<'today' | 'past'>('today');
@@ -154,7 +162,18 @@ export default function DNSCourseView({
   }
 
   if (currentDayData.isPremium && !isPremium) {
-    return <Paywall auth={auth} checkoutLoading={checkoutLoading} setCheckoutLoading={setCheckoutLoading} onBack={onBack} />;
+    return (
+      <Paywall
+        auth={auth}
+        checkoutLoading={checkoutLoading}
+        setCheckoutLoading={setCheckoutLoading}
+        onBack={onBack}
+        onGoogleSignIn={onGoogleSignIn}
+        signInLoading={signInLoading}
+        signInError={signInError}
+        isInAppBrowser={isInAppBrowser}
+      />
+    );
   }
 
   const isSameDayAlreadyCompleted = dnsCourse.lastCompletedDate === today;
