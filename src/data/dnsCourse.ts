@@ -152,7 +152,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Turning/Rolling Overview',
     description: 'Turning as one unit.',
-    videoId: null,
+    videoId: '1217513188',
     isPremium: true,
   },
   {
@@ -161,7 +161,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Total Control of the Movement',
     description: 'The "traintrack" concept — corresponding dynamic fixed points moving in parallel, neither getting ahead of the other.',
-    videoId: null,
+    videoId: '1217513189',
     isPremium: true,
   },
   {
@@ -170,7 +170,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Open/Close the Door — Lower Extremity Focus',
     description: 'Side lying rotation keeping bottom limbs as fixed points, torso and pelvis moving as one unit. Balance between adductors and external rotators of the hip. Closed chain rotation.',
-    videoId: null,
+    videoId: '1217514578',
     isPremium: true,
   },
   {
@@ -179,7 +179,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Open/Close the Door — Upper Extremity and Neck Focus',
     description: 'Activation of deep neck flexors through rotational stabilization around the fixed shoulder girdle.',
-    videoId: null,
+    videoId: '1217513853',
     isPremium: true,
   },
   {
@@ -188,7 +188,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Differentiated Turning/Rolling',
     description: 'More rotation of pelvis than ribcage. Anti-pattern to leading with the shoulders.',
-    videoId: null,
+    videoId: '1217514278',
     isPremium: true,
   },
   {
@@ -197,7 +197,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Turning into Low Oblique Sit',
     description: 'Using rolling momentum to arrive at the position.',
-    videoId: null,
+    videoId: '1217517863',
     isPremium: true,
   },
   {
@@ -206,7 +206,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Isolated Side Lying to Low Oblique Sit',
     description: 'Own the transition as a skill in isolation.',
-    videoId: null,
+    videoId: '1217515820',
     isPremium: true,
   },
 
@@ -217,7 +217,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Kneeling Overview',
     description: 'Activation of deep stabilizers over superficial paraspinals. IAP and lengthening.',
-    videoId: null,
+    videoId: '1217517372',
     isPremium: true,
   },
   {
@@ -226,7 +226,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Ingredients for Movement',
     description: 'Not actually moving yet, but preparing to. Feet into the floor/quad activation, knees out/glute activation, beginnings of uprighting, sacrum toward the ceiling. Loading the system from the ground up before any movement is asked of it.',
-    videoId: null,
+    videoId: '1217517222',
     isPremium: true,
   },
   {
@@ -235,7 +235,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Egoscue Shoulder Activations',
     description: 'Egoscue shoulder activations in kneeling.',
-    videoId: null,
+    videoId: '1217517220',
     isPremium: true,
   },
   {
@@ -244,7 +244,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Pressurized Hollow',
     description: 'IAP expression in kneeling — builds on the kneeling base established in Days 1–3.',
-    videoId: null,
+    videoId: '1217517223',
     isPremium: true,
   },
   {
@@ -253,7 +253,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: "Child's Pose to 6 Months Prone Transition",
     description: "Child's pose as reset and decompression, also incorporates hand loading before it becomes the focus next day.",
-    videoId: null,
+    videoId: '1217517221',
     isPremium: true,
   },
   {
@@ -262,7 +262,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Hand Loading in Quadruped',
     description: 'Hand loading in quadruped.',
-    videoId: null,
+    videoId: '1217517455',
     isPremium: true,
   },
   {
@@ -271,7 +271,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Bird Dog',
     description: 'Bird dog.',
-    videoId: null,
+    videoId: '1217517454',
     isPremium: true,
   },
 
