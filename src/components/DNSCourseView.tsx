@@ -3,13 +3,22 @@
 // does not touch activePrescriptions, history, or any assessment-flow state.
 import { useState, type ReactElement } from 'react';
 import type { Auth } from 'firebase/auth';
-import { ArrowLeft, CheckCircle, ChevronRight, HelpCircle, Lock, User, X } from 'lucide-react';
+import { ArrowLeft, CheckCircle, ChevronLeft, ChevronRight, HelpCircle, Lock, User, X } from 'lucide-react';
 import { DNS_COURSE } from '../data/dnsCourse';
 import type { DNSCourseDay } from '../data/dnsCourse';
 import type { DnsCourseProgress } from '../state/types';
 import type { PriceKey } from '../services/stripe';
 import VideoPlayer from './VideoPlayer';
 import Paywall from './Paywall';
+
+// The History tab can only ever know about completions from this date forward —
+// dnsCourse.completionDates isn't backfilled for anything completed earlier.
+const HISTORY_TRACKING_STARTED = '2026-08-13';
+const HISTORY_TRACKING_STARTED_LABEL = new Date(`${HISTORY_TRACKING_STARTED}T00:00:00`).toLocaleDateString('en-US', {
+  month: 'long',
+  day: 'numeric',
+  year: 'numeric',
+});
 
 type Props = {
   dnsCourse: DnsCourseProgress;
@@ -27,6 +36,21 @@ type Props = {
   signInError: string | null;
   isInAppBrowser: boolean;
 };
+
+// Standard 7-column month grid: null for the leading/trailing blanks that pad the first
+// and last weeks out to full rows, otherwise the day-of-month number and its ISO date.
+type CalendarCell = { date: number; iso: string } | null;
+function buildCalendarCells(year: number, month: number): CalendarCell[] {
+  const firstWeekday = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells: CalendarCell[] = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) {
+    cells.push({ date: d, iso: `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}` });
+  }
+  while (cells.length % 7 !== 0) cells.push(null);
+  return cells;
+}
 
 // Week badge + heading + video (or placeholder) + description — the content shared by
 // both the current day and whichever past day is being reviewed. Reuses VideoPlayer
@@ -207,8 +231,12 @@ export default function DNSCourseView({
   isInAppBrowser,
 }: Props) {
   // Hooks must run unconditionally, before the early returns below.
-  const [activeTab, setActiveTab] = useState<'today' | 'past'>('today');
+  const [activeTab, setActiveTab] = useState<'today' | 'past' | 'history'>('today');
   const [viewingDay, setViewingDay] = useState<number | null>(null);
+  const [historyMonth, setHistoryMonth] = useState(() => {
+    const [y, m] = today.split('-').map(Number);
+    return { year: y, month: m - 1 }; // 0-indexed month, to match Date's convention
+  });
   // null = closed, 'list', or a GuidanceEntry id — purely local overlay state, so closing
   // it never touches activeTab, viewingDay, dnsCourse, or the parent's currentView.
   const [guidanceView, setGuidanceView] = useState<string | null>(null);
@@ -279,10 +307,16 @@ export default function DNSCourseView({
   const handleMarkComplete = () => {
     const isNewDay = dnsCourse.lastCompletedDate !== today;
     const nextDay = isNewDay ? Math.min(dnsCourse.currentDay + 1, DNS_COURSE.length) : dnsCourse.currentDay;
-    onUpdateDnsCourse({ lastCompletedDate: today, currentDay: nextDay });
+    // Record which real calendar date this day was completed on, for the History tab.
+    // Only touched on an actual new completion — spread the existing map first so
+    // earlier entries are never dropped (same reasoning as dnsCourse itself elsewhere).
+    const completionDates = isNewDay
+      ? { ...dnsCourse.completionDates, [dnsCourse.currentDay]: today }
+      : dnsCourse.completionDates;
+    onUpdateDnsCourse({ lastCompletedDate: today, currentDay: nextDay, completionDates });
   };
 
-  const tabButtonStyle = (tab: 'today' | 'past') =>
+  const tabButtonStyle = (tab: 'today' | 'past' | 'history') =>
     activeTab === tab
       ? { background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)', color: '#080d1a' }
       : { backgroundColor: '#1a2a42', color: '#6b849e' };
@@ -328,11 +362,37 @@ export default function DNSCourseView({
           >
             Past Days
           </button>
+          <button
+            onClick={() => { setActiveTab('history'); setViewingDay(null); }}
+            className="flex-1 py-2 rounded-lg text-sm font-bold transition-all"
+            style={tabButtonStyle('history')}
+          >
+            History
+          </button>
         </div>
       </div>
 
       <div className="max-w-2xl mx-auto p-6 mt-6">
-        {activeTab === 'today' && (
+        {viewingDay !== null ? (() => {
+          // Shared by both Past Days and History — same DayContent, same read-only
+          // rewatch behavior, no progress-tracking side effects either way. Only the
+          // "Back to" destination differs, based on wherever the tap originated.
+          const day = DNS_COURSE[viewingDay - 1];
+          if (!day) return null;
+          return (
+            <>
+              <button
+                onClick={() => setViewingDay(null)}
+                className="text-[#6b849e] hover:text-[#f0f4f8] flex items-center gap-1 transition-colors text-sm mb-4"
+              >
+                <ArrowLeft size={16} /> Back to {activeTab === 'history' ? 'History' : 'Past Days'}
+              </button>
+              {/* View-only: no Mark Complete button, no up-next teaser — rewatching a
+                  past day never touches dnsCourse.currentDay or lastCompletedDate. */}
+              <DayContent day={day} dayIndex={viewingDay} />
+            </>
+          );
+        })() : activeTab === 'today' ? (
           <>
             <DayContent day={currentDayData} dayIndex={dnsCourse.currentDay} />
 
@@ -362,9 +422,7 @@ export default function DNSCourseView({
               </div>
             )}
           </>
-        )}
-
-        {activeTab === 'past' && viewingDay === null && (
+        ) : activeTab === 'past' ? (
           <div className="space-y-3">
             {pastDays.length === 0 ? (
               <p className="text-[#6b849e] text-sm text-center py-8">
@@ -391,23 +449,83 @@ export default function DNSCourseView({
               })
             )}
           </div>
-        )}
+        ) : (() => {
+          // History: a real calendar-grid month view of completed days, driven entirely
+          // by dnsCourse.completionDates (see handleMarkComplete). Skipped/empty dates
+          // are deliberately left looking like ordinary empty days — no gap emphasis.
+          const completionDates = dnsCourse.completionDates ?? {};
+          const dateToDayIndex = new Map<string, number>();
+          Object.entries(completionDates).forEach(([dayIndexStr, iso]) => {
+            dateToDayIndex.set(iso, Number(dayIndexStr));
+          });
+          const trackedCount = Object.keys(completionDates).length;
+          const hasUntrackedHistory = dnsCourse.currentDay - 1 > trackedCount;
 
-        {activeTab === 'past' && viewingDay !== null && (() => {
-          const day = DNS_COURSE[viewingDay - 1];
-          if (!day) return null;
+          const { year, month } = historyMonth;
+          const cells = buildCalendarCells(year, month);
+          const monthLabel = new Date(year, month, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
           return (
-            <>
-              <button
-                onClick={() => setViewingDay(null)}
-                className="text-[#6b849e] hover:text-[#f0f4f8] flex items-center gap-1 transition-colors text-sm mb-4"
-              >
-                <ArrowLeft size={16} /> Back to Past Days
-              </button>
-              {/* View-only: no Mark Complete button, no up-next teaser — rewatching a
-                  past day never touches dnsCourse.currentDay or lastCompletedDate. */}
-              <DayContent day={day} dayIndex={viewingDay} />
-            </>
+            <div>
+              {hasUntrackedHistory && (
+                <p className="text-xs text-[#6b849e] bg-[#0f1829] border border-[#1a2a42] rounded-lg px-3 py-2 mb-4 leading-relaxed">
+                  Your history starts tracking from {HISTORY_TRACKING_STARTED_LABEL} — earlier completed days aren't reflected on the calendar below, but your overall progress is unaffected.
+                </p>
+              )}
+
+              <div className="flex items-center justify-between mb-4">
+                <button
+                  onClick={() => setHistoryMonth(({ year, month }) => (month === 0 ? { year: year - 1, month: 11 } : { year, month: month - 1 }))}
+                  className="p-2 rounded-lg text-[#6b849e] hover:text-[#f0f4f8] hover:bg-[#1a2a42] transition-colors"
+                  aria-label="Previous month"
+                >
+                  <ChevronLeft size={20} />
+                </button>
+                <div className="font-bold text-[#f0f4f8]">{monthLabel}</div>
+                <button
+                  onClick={() => setHistoryMonth(({ year, month }) => (month === 11 ? { year: year + 1, month: 0 } : { year, month: month + 1 }))}
+                  className="p-2 rounded-lg text-[#6b849e] hover:text-[#f0f4f8] hover:bg-[#1a2a42] transition-colors"
+                  aria-label="Next month"
+                >
+                  <ChevronRight size={20} />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-7 gap-1 mb-1">
+                {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((label, i) => (
+                  <div key={i} className="text-center text-[10px] font-bold text-[#6b849e] uppercase py-1">
+                    {label}
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-7 gap-1">
+                {cells.map((cell, i) => {
+                  if (!cell) return <div key={i} className="aspect-square" />;
+                  const dayIndex = dateToDayIndex.get(cell.iso);
+                  if (dayIndex === undefined) {
+                    return (
+                      <div
+                        key={i}
+                        className="aspect-square rounded-lg border border-[#1a2a42] flex items-center justify-center text-[#3a4a5e] text-xs"
+                      >
+                        {cell.date}
+                      </div>
+                    );
+                  }
+                  return (
+                    <button
+                      key={i}
+                      onClick={() => setViewingDay(dayIndex)}
+                      className="aspect-square rounded-lg border border-[#00d4c8]/40 bg-[#00d4c8]/10 hover:bg-[#00d4c8]/20 transition-all flex flex-col items-center justify-center gap-0.5"
+                    >
+                      <span className="text-xs font-bold text-[#f0f4f8]">{cell.date}</span>
+                      <span className="text-[9px] font-bold text-[#00d4c8] leading-none">Day {dayIndex}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           );
         })()}
       </div>

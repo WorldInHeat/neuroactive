@@ -38,6 +38,11 @@ export type DnsCourseProgress = {
   currentDay: number; // 1-84, only this day + earlier are unlocked
   lastCompletedDate: string; // YYYY-MM-DD, local calendar date
   startedAt: string; // ISO date, set once when the user first opens the course
+  // Maps a completed day's 1-based index to the real calendar date (YYYY-MM-DD) it was
+  // completed on. Only written going forward from when the History tab shipped — there's
+  // no way to reconstruct dates for days completed before that, so entries simply don't
+  // exist for those; nothing backfills or fabricates them.
+  completionDates?: Record<number, string>;
 };
 
 export type UserData = {
