@@ -1,9 +1,9 @@
 // src/components/DNSCourseView.tsx
 // 12-Week DNS Foundations course. Structurally separate from DECISION_TREE —
 // does not touch activePrescriptions, history, or any assessment-flow state.
-import { useState } from 'react';
+import { useState, type ReactElement } from 'react';
 import type { Auth } from 'firebase/auth';
-import { ArrowLeft, CheckCircle, ChevronRight, Lock } from 'lucide-react';
+import { ArrowLeft, CheckCircle, ChevronRight, HelpCircle, Lock, User, X } from 'lucide-react';
 import { DNS_COURSE } from '../data/dnsCourse';
 import type { DNSCourseDay } from '../data/dnsCourse';
 import type { DnsCourseProgress } from '../state/types';
@@ -17,6 +17,7 @@ type Props = {
   today: string; // local calendar date, e.g. from todayLocalISO()
   isPremium: boolean;
   onBack: () => void;
+  onOpenSettings: () => void;
   auth: Auth | null;
   checkoutLoading: PriceKey | null;
   setCheckoutLoading: (key: PriceKey | null) => void;
@@ -68,12 +69,134 @@ function DayContent({ day, dayIndex }: { day: DNSCourseDay; dayIndex: number }) 
   );
 }
 
+// Shared between the one-time pre-Day-1 gate below and the revisitable "Before You
+// Start" guidance entry, so the copy lives in exactly one place.
+function BeforeYouStartContent() {
+  return (
+    <>
+      <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] mb-6">
+        <h2 className="text-lg font-bold text-[#f0f4f8] mb-2">What is DNS?</h2>
+        <p className="text-[#6b849e] text-sm leading-relaxed">
+          Dynamic Neuromuscular Stabilization is based on how a healthy infant learns to move — rolling, crawling, standing — before ever being taught. Those early patterns wire in a stabilization strategy your nervous system is supposed to use for life. Most adults have drifted from it, usually without knowing. This program rebuilds it, one developmental position at a time, in the same sequence a body learns it naturally.
+        </p>
+      </div>
+
+      <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] mb-6 space-y-5">
+        <div>
+          <h3 className="font-bold text-[#f0f4f8] mb-1">It's okay to repeat a day.</h3>
+          <p className="text-[#6b849e] text-sm leading-relaxed">
+            If Day 4 didn't feel right, do it again tomorrow. The calendar isn't the point — the movement is. Some weeks will click fast. Others will take longer. Both are normal.
+          </p>
+        </div>
+        <div>
+          <h3 className="font-bold text-[#f0f4f8] mb-1">Quality beats quantity, every time.</h3>
+          <p className="text-[#6b849e] text-sm leading-relaxed">
+            A position done with real control for 30 seconds is worth more than five minutes of gritting through it. If it feels like survival, it's not working yet — go back and find the version that feels effortless.
+          </p>
+        </div>
+        <div>
+          <h3 className="font-bold text-[#f0f4f8] mb-1">You can't cheat this.</h3>
+          <p className="text-[#6b849e] text-sm leading-relaxed">
+            Rushing to the next day before you're ready doesn't get you there faster. It just means you build the next position on a foundation that isn't set. Be honest with yourself about where you actually are.
+          </p>
+        </div>
+        <div>
+          <h3 className="font-bold text-[#f0f4f8] mb-1">Missing a day won't set you back.</h3>
+          <p className="text-[#6b849e] text-sm leading-relaxed">
+            Life happens. Come back whenever you're ready — your progress is exactly where you left it.
+          </p>
+        </div>
+        <p className="text-[#f0f4f8] text-sm font-semibold text-center pt-2">This isn't a race. It's practice.</p>
+      </div>
+    </>
+  );
+}
+
+function HowMuchToPracticeContent() {
+  const paragraphs = [
+    "The daily video itself is short, but we recommend doing your DNS exercises for 10–15 minutes once per day when you're starting out (this can grow to 10–20 minutes as you progress).",
+    "Why so little? Because these movements and positions are already wired into your brain from early development — you're not learning something new, you're reminding your brain of what it already knows. That's why a relatively short amount of focused practice is enough to create real, lasting change: it works at a subconscious (subcortical) level, below the reach of conscious effort or willpower.",
+    "Do the new exercise of the day first, then spend the remaining time returning to something from past days or weeks — unless you need the full time just to feel comfortable with the new movement, in which case, that's completely fine too.",
+    "Quality over quantity — only perfect practice makes perfect. If you're the type to want to do more, it's better to split your practice into two separate 10–15 minute sessions than one 40-minute session. Longer single sessions increase the chance that fatigue creeps in and you start compensating — at which point you're no longer training the movement, you're training the compensation.",
+    "If a new exercise feels difficult or unfamiliar, it's completely okay to stay on it for a few extra days before moving forward — there's no rush. And if something feels hard or uncomfortable later on, even weeks after you've moved past it, it's okay to come back to it. The videos will always be there waiting for you when you're ready.",
+    'Throughout every session, keep coming back to the fundamentals: abdominal breathing, nasal breathing, fixed points, and joint centration (once you understand these concepts).',
+    "Once your 12 weeks are complete, you're free to pick and choose whichever positions and movements serve you best going forward — but keep checking back in on the others, especially the foundational ones, often.",
+  ];
+  return (
+    <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] space-y-4">
+      {paragraphs.map((p, i) => (
+        <p key={i} className="text-[#6b849e] text-sm leading-relaxed">
+          {p}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+// Small, deliberately generic list+modal pattern — more reference entries will likely be
+// added later, so each entry is just a label + title + content renderer.
+type GuidanceEntry = { id: string; label: string; title: string; Content: () => ReactElement };
+
+const GUIDANCE_ENTRIES: GuidanceEntry[] = [
+  { id: 'before-you-start', label: 'Before You Start', title: 'Before You Start', Content: BeforeYouStartContent },
+  { id: 'how-much-to-practice', label: 'How Much to Practice', title: 'How Much to Practice', Content: HowMuchToPracticeContent },
+];
+
+// null = closed, 'list' = the entry list, otherwise a GuidanceEntry id.
+function GuidanceModal({ view, onNavigate, onClose }: { view: string; onNavigate: (view: string) => void; onClose: () => void }) {
+  const activeEntry = view !== 'list' ? GUIDANCE_ENTRIES.find((e) => e.id === view) : undefined;
+
+  return (
+    <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
+      <div className="bg-[#0f1829] max-w-lg w-full rounded-xl shadow-2xl max-h-[85vh] flex flex-col border border-[#1a2a42]">
+        <div className="p-4 border-b border-[#1a2a42] flex items-center justify-between flex-shrink-0">
+          {activeEntry ? (
+            <button
+              onClick={() => onNavigate('list')}
+              className="text-[#6b849e] hover:text-[#f0f4f8] flex items-center gap-1 text-sm transition-colors"
+            >
+              <ArrowLeft size={16} /> Back
+            </button>
+          ) : (
+            <div className="w-12" />
+          )}
+          <div className="font-semibold text-[#f0f4f8] text-center flex-1 truncate px-2">
+            {activeEntry ? activeEntry.title : 'Guidance'}
+          </div>
+          <button onClick={onClose} className="text-[#6b849e] hover:text-[#f0f4f8] transition-colors" aria-label="Close">
+            <X size={20} />
+          </button>
+        </div>
+        <div className="p-6 overflow-y-auto flex-1">
+          {activeEntry ? (
+            <activeEntry.Content />
+          ) : (
+            <div className="space-y-3">
+              {GUIDANCE_ENTRIES.map((entry) => (
+                <button
+                  key={entry.id}
+                  onClick={() => onNavigate(entry.id)}
+                  className="w-full bg-[#080d1a] p-4 rounded-lg border border-[#1a2a42] flex items-center justify-between hover:border-[#00d4c8]/40 transition-all text-left"
+                >
+                  <span className="text-sm font-semibold text-[#f0f4f8]">{entry.label}</span>
+                  <ChevronRight size={16} className="text-[#6b849e] flex-shrink-0" />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function DNSCourseView({
   dnsCourse,
   onUpdateDnsCourse,
   today,
   isPremium,
   onBack,
+  onOpenSettings,
   auth,
   checkoutLoading,
   setCheckoutLoading,
@@ -86,6 +209,9 @@ export default function DNSCourseView({
   // Hooks must run unconditionally, before the early returns below.
   const [activeTab, setActiveTab] = useState<'today' | 'past'>('today');
   const [viewingDay, setViewingDay] = useState<number | null>(null);
+  // null = closed, 'list', or a GuidanceEntry id — purely local overlay state, so closing
+  // it never touches activeTab, viewingDay, dnsCourse, or the parent's currentView.
+  const [guidanceView, setGuidanceView] = useState<string | null>(null);
 
   const currentDayData = DNS_COURSE[dnsCourse.currentDay - 1];
 
@@ -116,40 +242,7 @@ export default function DNSCourseView({
         <div className="max-w-2xl mx-auto p-6 pt-10">
           <h1 className="text-2xl font-bold text-[#f0f4f8] mb-6 text-center">Before You Start</h1>
 
-          <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] mb-6">
-            <h2 className="text-lg font-bold text-[#f0f4f8] mb-2">What is DNS?</h2>
-            <p className="text-[#6b849e] text-sm leading-relaxed">
-              Dynamic Neuromuscular Stabilization is based on how a healthy infant learns to move — rolling, crawling, standing — before ever being taught. Those early patterns wire in a stabilization strategy your nervous system is supposed to use for life. Most adults have drifted from it, usually without knowing. This program rebuilds it, one developmental position at a time, in the same sequence a body learns it naturally.
-            </p>
-          </div>
-
-          <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] mb-6 space-y-5">
-            <div>
-              <h3 className="font-bold text-[#f0f4f8] mb-1">It's okay to repeat a day.</h3>
-              <p className="text-[#6b849e] text-sm leading-relaxed">
-                If Day 4 didn't feel right, do it again tomorrow. The calendar isn't the point — the movement is. Some weeks will click fast. Others will take longer. Both are normal.
-              </p>
-            </div>
-            <div>
-              <h3 className="font-bold text-[#f0f4f8] mb-1">Quality beats quantity, every time.</h3>
-              <p className="text-[#6b849e] text-sm leading-relaxed">
-                A position done with real control for 30 seconds is worth more than five minutes of gritting through it. If it feels like survival, it's not working yet — go back and find the version that feels effortless.
-              </p>
-            </div>
-            <div>
-              <h3 className="font-bold text-[#f0f4f8] mb-1">You can't cheat this.</h3>
-              <p className="text-[#6b849e] text-sm leading-relaxed">
-                Rushing to the next day before you're ready doesn't get you there faster. It just means you build the next position on a foundation that isn't set. Be honest with yourself about where you actually are.
-              </p>
-            </div>
-            <div>
-              <h3 className="font-bold text-[#f0f4f8] mb-1">Missing a day won't set you back.</h3>
-              <p className="text-[#6b849e] text-sm leading-relaxed">
-                Life happens. Come back whenever you're ready — your progress is exactly where you left it.
-              </p>
-            </div>
-            <p className="text-[#f0f4f8] text-sm font-semibold text-center pt-2">This isn't a race. It's practice.</p>
-          </div>
+          <BeforeYouStartContent />
 
           <button
             onClick={() => onUpdateDnsCourse({ startedAt: today })}
@@ -195,6 +288,10 @@ export default function DNSCourseView({
       : { backgroundColor: '#1a2a42', color: '#6b849e' };
 
   return (
+    <>
+      {guidanceView !== null && (
+        <GuidanceModal view={guidanceView} onNavigate={setGuidanceView} onClose={() => setGuidanceView(null)} />
+      )}
     <div className="min-h-screen bg-[#080d1a] pb-20">
       <div className="bg-[#0f1829] border-b border-[#1a2a42] sticky top-0 z-30">
         <div className="p-4 flex items-center justify-between max-w-2xl mx-auto">
@@ -202,7 +299,18 @@ export default function DNSCourseView({
             <ArrowLeft size={20} /> Back
           </button>
           <div className="font-semibold text-[#f0f4f8]">12-Week DNS Foundations</div>
-          <div className="w-16" />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setGuidanceView('list')}
+              className="text-[#6b849e] hover:text-[#f0f4f8] p-2 rounded-full hover:bg-[#1a2a42] transition-colors"
+              aria-label="Guidance"
+            >
+              <HelpCircle size={20} />
+            </button>
+            <button onClick={onOpenSettings} className="bg-[#1a2a42] p-2 rounded-full hover:opacity-80 transition-opacity" aria-label="Profile & Settings">
+              <User size={20} className="text-[#6b849e]" />
+            </button>
+          </div>
         </div>
 
         <div className="max-w-2xl mx-auto px-4 pb-3 flex gap-2">
@@ -304,5 +412,6 @@ export default function DNSCourseView({
         })()}
       </div>
     </div>
+    </>
   );
 }

@@ -246,6 +246,7 @@ const LegalDisclaimer = ({ onAgree, onCancel }: { onAgree: () => void; onCancel:
 const SettingsView = ({
   isPremium,
   onBack,
+  onGoToDashboard,
   onLogout,
   onReset,
   onUpgrade,
@@ -257,6 +258,7 @@ const SettingsView = ({
 }: {
   isPremium: boolean;
   onBack: () => void;
+  onGoToDashboard: () => void;
   onLogout: () => void;
   onReset: () => void;
   onUpgrade: () => void;
@@ -273,7 +275,11 @@ const SettingsView = ({
           <ArrowLeft size={20} /> Back
         </button>
         <div className="font-semibold text-[#f0f4f8]">Profile & Settings</div>
-        <div className="w-16"></div>
+        {/* Separate from Back above — always jumps to Dashboard specifically, regardless
+            of what Back would otherwise return to. */}
+        <button onClick={onGoToDashboard} className="text-[#6b849e] hover:text-[#f0f4f8] text-sm font-medium transition-colors">
+          Dashboard
+        </button>
       </div>
 
       <div className="max-w-xl mx-auto p-6 space-y-6">
@@ -2233,6 +2239,7 @@ export default function App() {
           today={todayLocalISO()}
           isPremium={isPremium}
           onBack={() => setCurrentView('dashboard')}
+          onOpenSettings={() => setCurrentView('settings')}
           auth={auth}
           checkoutLoading={checkoutLoading}
           setCheckoutLoading={setCheckoutLoading}
@@ -2252,6 +2259,7 @@ export default function App() {
         <SettingsView
           isPremium={isPremium}
           onBack={() => setCurrentView('dashboard')}
+          onGoToDashboard={() => setCurrentView('dashboard')}
           onLogout={handleLogout}
           onReset={handleResetJourney}
           onUpgrade={() => setCurrentView('paywall')}
