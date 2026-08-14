@@ -160,6 +160,13 @@ async function describeExistingEmailAccount(auth: Auth, email: string): Promise<
   return 'An account with this email already exists.';
 }
 
+// Fields saveUserData strips under DNS_ONLY_LAUNCH — see the comment above saveUserData
+// itself for why. Module-scoped (not per-render) so it doesn't make saveUserData look
+// unstable to exhaustive-deps.
+const ASSESSMENT_FIELDS_GATED_UNDER_DNS_ONLY_LAUNCH = [
+  'activeJourney', 'activePrescriptions', 'history', 'currentNodeId', 'painLog',
+] as const;
+
 // --- Helper Components ---
 
 // Reused by SettingsView's "Sign in with Google" button
@@ -868,11 +875,31 @@ export default function App() {
   */
 
   // Firebase: save user data
+  //
+  // Under DNS_ONLY_LAUNCH, the pain-recovery/assessment flow has no reachable UI entry
+  // point, but the underlying write paths (handleOptionClick, handleResetJourney,
+  // handleSavePainLog, the Library/prescription shortcuts) are all still fully wired —
+  // hiding a button doesn't stop the function behind it from running if something reaches
+  // it another way. Stripping these specific fields here, in the one place all of them
+  // funnel through, means no assessment/pain data can reach Firestore while the flag is
+  // on, regardless of which call site triggered the write — without special-casing every
+  // call site individually, and without touching dnsCourse or any other field. Flip
+  // DNS_ONLY_LAUNCH back to restore normal behavior, same as everywhere else it's used.
   const saveUserData = async (updates: Partial<UserData>) => {
     if (!auth || !db || !auth.currentUser) return;
+
+    let toWrite = updates;
+    if (DNS_ONLY_LAUNCH) {
+      toWrite = { ...updates };
+      for (const field of ASSESSMENT_FIELDS_GATED_UNDER_DNS_ONLY_LAUNCH) {
+        delete toWrite[field];
+      }
+      if (Object.keys(toWrite).length === 0) return;
+    }
+
     const uid = auth.currentUser.uid;
     const docRef = doc(db, 'artifacts', appId, 'users', uid, 'userData', 'main');
-    await setDoc(docRef, updates, { merge: true });
+    await setDoc(docRef, toWrite, { merge: true });
   };
 
   // setDoc with merge:true replaces the whole dnsCourse map rather than merging it key
