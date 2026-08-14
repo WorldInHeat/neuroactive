@@ -1,10 +1,17 @@
 import { db } from './firebase';
 import { collection, addDoc, onSnapshot } from 'firebase/firestore';
 
+// 'program' now points at a live-mode Stripe price. import.meta.env.DEV (same pattern as
+// DevTimeSkip in App.tsx) keeps local dev on the test-mode price so `npm run dev` can
+// never trigger a real charge. monthly/annual/elite stay on their test IDs, unchanged —
+// this is the minimal version; a fuller test/live system can come later.
+const PROGRAM_PRICE_TEST = 'price_1TJhw1RsRdChIWS1ZmkYWFy2';
+const PROGRAM_PRICE_LIVE = 'price_1U4Bec2NbKaJ0YSoKoicGfHi';
+
 const PRICES: Record<string, string> = {
   monthly: 'price_1TJhuYRsRdChIWS1HBZggMVK',
   annual:  'price_1TJhvBRsRdChIWS1SwRI53MQ',
-  program: 'price_1TJhw1RsRdChIWS1ZmkYWFy2',
+  program: import.meta.env.DEV ? PROGRAM_PRICE_TEST : PROGRAM_PRICE_LIVE,
   elite:   'price_1TJhwVRsRdChIWS1twZddLiZ',
 };
 
