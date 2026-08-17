@@ -6,6 +6,9 @@ type Props = {
   title: string;
   frequency?: string;
   videoId: string;
+  // Vimeo's privacy hash, required for Unlisted videos to play. Must be the first query
+  // parameter on the embed URL — see the comment on vimeoSrc below.
+  hash?: string;
   // Token pattern "nodeId:timestamp" guarantees intent is specific to THIS video instance
   autoplayToken?: string | null;
   // Callback to clear the token once used (One-Shot Pattern)
@@ -20,6 +23,7 @@ export default function VideoPlayer({
   title,
   frequency,
   videoId,
+  hash,
   autoplayToken,
   onConsumeAutoplay,
   orientation = 'landscape',
@@ -56,10 +60,20 @@ export default function VideoPlayer({
   }, [autoplayToken, nodeId, onConsumeAutoplay]);
 
   const vimeoSrc = useMemo(() => {
-    const separator = videoId.includes('?') ? '&' : '?';
-    // muted=1 is required by most browsers for autoplay
-    return `https://player.vimeo.com/video/${videoId}${separator}autoplay=1&title=0&byline=0&portrait=0&muted=1&playsinline=1&loop=1`;
-  }, [videoId]);
+    // Vimeo requires the privacy hash (h) to be the first query parameter for Unlisted
+    // videos to play — every other parameter must come after it via &, not before.
+    // Confirmed against Vimeo's own embed documentation, not assumed.
+    const params = new URLSearchParams();
+    if (hash) params.set('h', hash);
+    params.set('autoplay', '1');
+    params.set('title', '0');
+    params.set('byline', '0');
+    params.set('portrait', '0');
+    params.set('muted', '1'); // required by most browsers for autoplay
+    params.set('playsinline', '1');
+    params.set('loop', '1');
+    return `https://player.vimeo.com/video/${videoId}?${params.toString()}`;
+  }, [videoId, hash]);
 
   const vimeoLink = useMemo(() => {
     const cleanId = videoId.split('?')[0];

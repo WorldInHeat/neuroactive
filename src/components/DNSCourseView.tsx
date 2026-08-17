@@ -76,6 +76,7 @@ function DayContent({ day, dayIndex }: { day: DNSCourseDay; dayIndex: number }) 
           nodeId={`dns_course_day_${dayIndex}`}
           title={day.dayTitle}
           videoId={day.videoId}
+          hash={day.hash}
           autoplayToken={null}
           onConsumeAutoplay={() => {}}
         />

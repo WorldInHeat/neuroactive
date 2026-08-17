@@ -383,18 +383,24 @@ const SettingsView = ({
           <h3 className="font-bold text-[#f0f4f8] mb-3 flex items-center gap-2">
             <HelpCircle size={20} className="text-[#00d4c8]" /> Support
           </h3>
-          <button className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-[#1a2a42] text-left transition-colors">
+          <a href="mailto:DrB@neuroactivehealth.com" className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-[#1a2a42] text-left transition-colors">
             <span className="flex items-center gap-3 text-[#6b849e]">
               <Mail size={18} /> Contact Dr. Bruene
             </span>
             <ChevronRight size={16} className="text-[#1a2a42]" />
-          </button>
-          <button className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-[#1a2a42] text-left transition-colors">
+          </a>
+          <a href="/privacy" className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-[#1a2a42] text-left transition-colors">
+            <span className="flex items-center gap-3 text-[#6b849e]">
+              <Lock size={18} /> Privacy Policy
+            </span>
+            <ChevronRight size={16} className="text-[#1a2a42]" />
+          </a>
+          <a href="/terms" className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-[#1a2a42] text-left transition-colors">
             <span className="flex items-center gap-3 text-[#6b849e]">
               <FileText size={18} /> Terms of Service
             </span>
             <ChevronRight size={16} className="text-[#1a2a42]" />
-          </button>
+          </a>
         </div>
 
         {/* Danger zone */}
