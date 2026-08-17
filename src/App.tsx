@@ -811,6 +811,23 @@ export default function App() {
   const [currentNodeId, setCurrentNodeId] = useState<string>('start');
   const [history, setHistory] = useState<string[]>([]);
   const [isPremium, setIsPremium] = useState(false);
+  // Server-computed DNS Foundations entitlement (artifacts/{appId}/users/{uid}/entitlement/main) —
+  // written only by Cloud Functions from verified Stripe data, never client-writable (see
+  // firestore.rules). This is the actual DNS course security boundary; `isPremium` above
+  // stays wired to Settings/Library for legacy display only, per security findings #1-3.
+  //
+  // Tri-state rather than boolean: 'loading' covers both "waiting on this uid's first
+  // snapshot" (avoids flashing the paywall at a legitimate purchaser while their real
+  // entitlement is still in flight) AND "uid just changed, previous value no longer
+  // applies" (closes the stale-entitlement gap Codex found — see the auth effect below).
+  // Only 'entitled' unlocks anything; 'loading' and 'not-entitled' are both treated as
+  // locked, so there's no window where a wrong/stale value can unlock the course.
+  const [dnsEntitlementState, setDnsEntitlementState] = useState<'loading' | 'entitled' | 'not-entitled'>('loading');
+  // Tracks whose entitlement dnsEntitlementState currently reflects, so the auth effect
+  // can tell "uid actually changed, reset to loading" apart from "same uid, listener
+  // re-fired" (e.g. a token refresh) — resetting on every re-fire would flash the
+  // loading state for no reason.
+  const entitlementUidRef = useRef<string | null>(null);
   const [activePrescriptions, setActivePrescriptions] = useState<string[]>([]);
   const [activeJourney, setActiveJourney] = useState<string | null>(null);
   const [painLog, setPainLog] = useState<PainLogEntry[]>([]);
@@ -1036,6 +1053,7 @@ export default function App() {
     let unsubscribeSnapshot: (() => void) | null = null;
     let unsubscribeSubscriptions: (() => void) | null = null;
     let unsubscribePayments: (() => void) | null = null;
+    let unsubscribeEntitlement: (() => void) | null = null;
 
     const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
       // Safety net: an unexpected throw anywhere in here must never leave authLoading
@@ -1086,6 +1104,36 @@ export default function App() {
           if (data.dnsCourse) setDnsCourse(data.dnsCourse);
         });
 
+        // DNS Foundations entitlement — server-written only (functions/src/index.ts
+        // recomputeDnsEntitlement), never client-writable (see firestore.rules). This is
+        // the actual security boundary for DNS course access/video credentials; it's
+        // read-only here, never set from client state.
+        if (unsubscribeEntitlement) unsubscribeEntitlement();
+        if (entitlementUidRef.current !== user.uid) {
+          // uid actually changed (not just this listener re-firing for the same user) —
+          // drop the previous user's entitlement value immediately, before the new
+          // listener has had any chance to report anything. Closes the window Codex
+          // found: without this, a stale `true` from the previous account could remain
+          // on screen (and gate a DayVideo fetch) until the new snapshot — or its error
+          // callback — resolves, which might never happen.
+          entitlementUidRef.current = user.uid;
+          setDnsEntitlementState('loading');
+        }
+        const entitlementRef = doc(db, 'artifacts', appId, 'users', user.uid, 'entitlement', 'main');
+        unsubscribeEntitlement = onSnapshot(
+          entitlementRef,
+          (snap) => {
+            const entitled = snap.exists() && snap.data()?.dnsFoundationsEntitled === true;
+            setDnsEntitlementState(entitled ? 'entitled' : 'not-entitled');
+          },
+          (err) => {
+            console.warn('[Entitlement] snapshot failed:', err);
+            // Fail closed: an errored listener must never leave a stale 'entitled' (or
+            // indefinite 'loading') on screen.
+            setDnsEntitlementState('not-entitled');
+          }
+        );
+
         // Stripe sync — isPremium is the OR of two independent signals: an active/trialing
         // subscription, or a succeeded one-time payment (e.g. the 12-Week Program). Each
         // listener only knows about its own collection, so neither may write isPremium
@@ -1132,6 +1180,9 @@ export default function App() {
         setAuthUser(null);
         if (unsubscribeSubscriptions) { unsubscribeSubscriptions(); unsubscribeSubscriptions = null; }
         if (unsubscribePayments) { unsubscribePayments(); unsubscribePayments = null; }
+        if (unsubscribeEntitlement) { unsubscribeEntitlement(); unsubscribeEntitlement = null; }
+        entitlementUidRef.current = null;
+        setDnsEntitlementState('loading');
         // No session at all — sign in anonymously in the background so guest access is
         // frictionless. The user stays on whatever view they're on (default: landing);
         // no separate sign-in screen or explicit "continue as guest" click required.
@@ -1150,6 +1201,7 @@ export default function App() {
       if (unsubscribeSnapshot) unsubscribeSnapshot();
       if (unsubscribeSubscriptions) unsubscribeSubscriptions();
       if (unsubscribePayments) unsubscribePayments();
+      if (unsubscribeEntitlement) unsubscribeEntitlement();
       unsubscribeAuth();
     };
   }, []);
@@ -1203,6 +1255,8 @@ export default function App() {
     setHistory([]);
     setCurrentNodeId('start');
     setIsPremium(false);
+    entitlementUidRef.current = null;
+    setDnsEntitlementState('loading');
     setPainLog([]);
     // setPhaseLocks({});
     // setLastCheckInAt(null);
@@ -2270,7 +2324,7 @@ export default function App() {
           dnsCourse={dnsCourse}
           onUpdateDnsCourse={updateDnsCourse}
           today={todayLocalISO()}
-          isPremium={isPremium}
+          dnsEntitlementState={dnsEntitlementState}
           onBack={() => setCurrentView('dashboard')}
           onOpenSettings={() => setCurrentView('settings')}
           auth={auth}

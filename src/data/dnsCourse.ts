@@ -10,12 +10,10 @@ export interface DNSCourseDay {
   weekPhase: 'Foundation' | 'Integration' | 'Application';
   dayTitle: string;
   description: string;
-  videoId: string | null; // null = not shot yet, show "coming soon"
-  // Vimeo's privacy hash for Unlisted videos — the string after the video ID in a Vimeo
-  // share link (vimeo.com/{videoId}/{hash}). Required for the embed to play now that
-  // these videos are Unlisted rather than Public. Optional/undefined for any entry that
-  // hasn't been paired with its hash yet.
-  hash?: string;
+  // Whether this day's video has been shot and is available. Actual Vimeo videoId/hash
+  // are NOT stored client-side (security fix — see getDnsCourseDayMedia Cloud Function);
+  // they're fetched on demand for authenticated, DNS-entitled users only.
+  hasVideo: boolean;
   isPremium: boolean;
 }
 
@@ -27,8 +25,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Overview and Introduction',
     description: 'Importance of the position, how foundational it is, how few people stabilize this way. Diaphragmatic breathing, creation and maintenance of IAP.',
-    videoId: '1215609094',
-    hash: '3e19868043',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -37,8 +34,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Lifting and Holding the Legs',
     description: 'Not cheating, not enduring without proper strategy. Compensations to identify and cue against: flaring lower ribs, arching the back/anterior pelvic tilt, breath holding, abdominal hollow instead of IAP, over-recruiting the neck, shaking/enduring rather than finding effortless stability.',
-    videoId: '1215609304',
-    hash: '99a4928270',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -47,8 +43,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Pelvic Floor Focus',
     description: 'Pelvic floor focus in the position.',
-    videoId: '1215625311',
-    hash: '5d7533e4d6',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -57,8 +52,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Heel Taps',
     description: 'Heel taps.',
-    videoId: '1215625310',
-    hash: '1ca352626d',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -67,8 +61,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Overhead Challenges',
     description: 'Overhead challenges.',
-    videoId: '1215625390',
-    hash: '6dc9e2a82a',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -77,8 +70,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Dead Bug',
     description: 'Dead bug.',
-    videoId: '1215625313',
-    hash: '99945d20b5',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -87,8 +79,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Progress to 6 Months Supine',
     description: 'Holding the feet, low abdominal wall activation.',
-    videoId: '1215625312',
-    hash: '6c851871ab',
+    hasVideo: true,
     isPremium: true,
   },
 
@@ -99,8 +90,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: '3 Months Prone Overview',
     description: '3 months prone overview.',
-    videoId: '1215647164',
-    hash: '5b10105a75',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -109,8 +99,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Higher Detail Tweaks and Tricks',
     description: 'Shoulder centration challenges: supination/pronation with fixed elbow as fixed point. Max/min effort — finding the threshold where stability emerges without bracing.',
-    videoId: '1215647165',
-    hash: '94daa14c62',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -119,8 +108,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: '4.5 Months Prone Overview',
     description: '4.5 months prone overview.',
-    videoId: '1215647162',
-    hash: 'df7c59a5ba',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -129,8 +117,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Contralateral Reaching',
     description: 'Now that the contralateral strategy is established, the free arm reaches. Getting into a flow of switching side to side, establishing fixed points, then reaching the free/stepping forward arm. Establish the stepping arm before transitioning.',
-    videoId: '1215647163',
-    hash: 'd12f93c42a',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -139,8 +126,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Pelvic Rotations',
     description: 'Balance between adductors and external rotators of the hip in closed chain. Differentiation of hip movement — the spine participates, but the quality of that participation is what\'s being trained.',
-    videoId: '1215647703',
-    hash: '32b66f36d8',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -149,8 +135,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: '4.5 Prone Plank (Precreeping)',
     description: "The 4.5 prone position, now held under real load. This is where everything you built in earlier days gets tested against gravity — full body, one continuous line, no cheating with the hips or letting the low back sag. It's harder than it looks, and that's the point: this is the strength precreeping actually needs before your body's ready to move through it next week.",
-    videoId: '1215647702',
-    hash: '1bb0ecacf2',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -159,8 +144,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Creeping: Single Step and Full Pattern',
     description: 'Combines the single-step weight transfer and rotational challenge with full creeping locomotion, forwards and backwards.',
-    videoId: '1215647704',
-    hash: '6da276333d',
+    hasVideo: true,
     isPremium: true,
   },
 
@@ -171,8 +155,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Turning/Rolling Overview',
     description: 'Turning as one unit.',
-    videoId: '1217513188',
-    hash: 'c38d13bebd',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -181,8 +164,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Total Control of the Movement',
     description: 'The "traintrack" concept — corresponding dynamic fixed points moving in parallel, neither getting ahead of the other.',
-    videoId: '1217513189',
-    hash: '0bc10b53cc',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -191,8 +173,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Open/Close the Door — Lower Extremity Focus',
     description: 'Side lying rotation keeping bottom limbs as fixed points, torso and pelvis moving as one unit. Balance between adductors and external rotators of the hip. Closed chain rotation.',
-    videoId: '1217514578',
-    hash: '57afb0f930',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -201,8 +182,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Open/Close the Door — Upper Extremity and Neck Focus',
     description: 'Activation of deep neck flexors through rotational stabilization around the fixed shoulder girdle.',
-    videoId: '1217513853',
-    hash: '6f4ef35f4e',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -211,8 +191,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Differentiated Turning/Rolling',
     description: 'More rotation of pelvis than ribcage. Anti-pattern to leading with the shoulders.',
-    videoId: '1217514278',
-    hash: 'd88911b148',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -221,8 +200,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Turning into Low Oblique Sit',
     description: 'Using rolling momentum to arrive at the position.',
-    videoId: '1217517863',
-    hash: '63c0a918fa',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -231,8 +209,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Isolated Side Lying to Low Oblique Sit',
     description: 'Own the transition as a skill in isolation.',
-    videoId: '1217515820',
-    hash: 'f1640b615d',
+    hasVideo: true,
     isPremium: true,
   },
 
@@ -243,8 +220,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Kneeling Overview',
     description: 'Activation of deep stabilizers over superficial paraspinals. IAP and lengthening.',
-    videoId: '1217517372',
-    hash: '6f4e59ecf6',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -253,8 +229,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Ingredients for Movement',
     description: 'Not actually moving yet, but preparing to. Feet into the floor/quad activation, knees out/glute activation, beginnings of uprighting, sacrum toward the ceiling. Loading the system from the ground up before any movement is asked of it.',
-    videoId: '1217517222',
-    hash: '51dc0635bb',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -263,8 +238,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Egoscue Shoulder Activations',
     description: 'Egoscue shoulder activations in kneeling.',
-    videoId: '1217517220',
-    hash: '28df72d6bf',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -273,8 +247,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Pressurized Hollow',
     description: 'IAP expression in kneeling — builds on the kneeling base established in Days 1–3.',
-    videoId: '1217517223',
-    hash: '5fc29569d0',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -283,8 +256,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: "Child's Pose to 6 Months Prone Transition",
     description: "Child's pose as reset and decompression, also incorporates hand loading before it becomes the focus next day.",
-    videoId: '1217517221',
-    hash: 'be984526aa',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -293,8 +265,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Hand Loading in Quadruped',
     description: 'Hand loading in quadruped.',
-    videoId: '1217517455',
-    hash: 'fcd88ab4d8',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -303,8 +274,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Foundation',
     dayTitle: 'Bird Dog',
     description: 'Bird dog.',
-    videoId: '1217517454',
-    hash: '47b92fc227',
+    hasVideo: true,
     isPremium: true,
   },
 
@@ -315,8 +285,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Low Oblique Sit Rotations',
     description: 'Midback mobility and shoulder centration.',
-    videoId: '1218738743',
-    hash: '76e8e4540f',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -325,8 +294,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Low Oblique Sit Side Plank',
     description: 'Shoulder centration established over previous weeks makes the lateral load bearing achievable here.',
-    videoId: '1218738742',
-    hash: '3625066147',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -335,8 +303,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Turning/Rolling to High Oblique Sit',
     description: 'Hand transitions.',
-    videoId: '1218740619',
-    hash: '525e758965',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -345,8 +312,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'High Oblique Sit Side Plank',
     description: 'Shoulder centration through well-loaded hand.',
-    videoId: '1218740618',
-    hash: '81b12db26e',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -355,8 +321,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'S Position and Transitions',
     description: 'Side to side.',
-    videoId: '1218740620',
-    hash: 'd0254e3128',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -365,8 +330,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Into and Out of Tripod & Look Ma No Hands',
     description: 'S position in and out of tripod.',
-    videoId: '1218741275',
-    hash: '4e27bfa7d9',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -375,8 +339,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'High Oblique Sit to Bear',
     description: "We'll return to this in more detail — revisit for check-in.",
-    videoId: '1218741274',
-    hash: '3653d7ab74',
+    hasVideo: true,
     isPremium: true,
   },
 
@@ -387,8 +350,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Tripod Overview',
     description: 'Spinal lengthening, lengthen hamstrings.',
-    videoId: '1218779978',
-    hash: '765f630459',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -397,8 +359,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Post Tilt Bridge Introduction',
     description: 'Reaching in tripod, forward and up / thread the needle.',
-    videoId: '1218779769',
-    hash: '54d1083b67',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -407,8 +368,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Post Tilt Bridge Review — Foot Loading',
     description: 'Foot loading and knee tracking with rocking.',
-    videoId: '1218779771',
-    hash: 'c0074c37fc',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -417,8 +377,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Post Tilt Bridge Review — Back Foot Loading',
     description: 'On your mark, get set, go.',
-    videoId: '1218779968',
-    hash: '93d20870b4',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -427,8 +386,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Uprighting from Tripod',
     description: 'Post tilt glute bridge payoff.',
-    videoId: '1218779772',
-    hash: '4d2c75ea31',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -437,8 +395,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'High Kneel to Sit',
     description: 'High kneel to sit — building the transition.',
-    videoId: '1218779770',
-    hash: 'a4b763c1ea',
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -447,8 +404,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'High Kneel to Stand',
     description: 'Both back foot variations, weekly check-in.',
-    videoId: '1218779967',
-    hash: '772c2fe9ae',
+    hasVideo: true,
     isPremium: true,
   },
 
@@ -459,7 +415,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Crawling Timing',
     description: 'Contralateral pattern, hand and knee in sync. Single step — isolate the weight transfer before adding continuous movement.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -468,7 +424,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Crawling Forwards and Backwards',
     description: 'Crawling forwards and backwards — multiple steps.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -477,7 +433,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Cat/Camel/Cow/Dog',
     description: 'Mobilization in the quadruped position. Midweek reset after two days of locomotion demand.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -486,7 +442,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Klapp Variation: Spider Position',
     description: 'Klapp variation: Spider position.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -495,7 +451,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Spinal Rotation from Spider Position',
     description: 'Transverse plane theme from Week 5 revisited now from a loaded quadruped position.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -504,7 +460,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: '"Under the Wire"',
     description: "Child's pose to 6 months prone through Spider. Like military crawling under barbed wire: child's pose collapses into 6 months prone and threads through to Spider.",
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -513,7 +469,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Pressurized Hollow from Quadruped',
     description: 'Progression from the kneeling pressurized hollow in Week 4, now expressed with less ground contact.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
 
@@ -524,7 +480,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Bear Position Overview',
     description: 'High bear vs low bear — hip height changes the demand on the spine and shoulders dramatically. Low bear more forgiving, high bear exposes instability immediately.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -533,7 +489,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Hand Walking / Bear to Squat / Bear to Stand',
     description: 'First link between ground-based position and upright movement. Bear to squat is introduced here rather than in the bear week — bear to stand establishes the upright transition, bear to squat in Week 10 introduces the loaded descent.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -542,7 +498,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Lifting a Hand, Lifting a Foot',
     description: 'Contralateral pattern.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -551,7 +507,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Bear Bird Dog',
     description: 'Bear bird dog.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -560,7 +516,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Bear Crawl',
     description: 'Bear crawl.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -569,7 +525,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Bear to High Oblique Sit',
     description: 'Moving from four-point loading back into the rotational ground positions from Weeks 5–6.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -578,7 +534,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Integration',
     dayTitle: 'Bear to Crab/Star Position',
     description: 'Both hands and feet on the floor, face up/supine, trunk elevated. Full hip extension expression from the crab base.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
 
@@ -589,7 +545,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Waking the Foot',
     description: 'Most people have switched their feet off through years of supportive footwear and sedentary patterns.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -598,7 +554,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Foot Loading in Staggered Standing',
     description: 'Isolate the demand to one foot before asking both to work together.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -607,7 +563,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Standing Open/Close the Door',
     description: 'Callback to Week 3 — the same exercise now expressed standing. Fixed points are now the feet rather than the pelvis. Tests whether rotational stability has transferred upright.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -616,7 +572,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Foot Loading in Tripod — More Detail',
     description: "People can now feel things in this position they couldn't feel in Week 6.",
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -625,7 +581,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Long Foot/Short Foot',
     description: 'Towel rolling exercise. Not purely DNS but produces excellent results. The entire intrinsic muscle system of the foot, not just the toes.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -634,7 +590,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Oblique/Transverse Squat Transitions',
     description: 'High oblique sit to squat to high oblique sit on the other side — like S position transitions but with one foot then both feet loaded. Bridge between rotational ground work and bilateral squat.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -643,7 +599,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Foot Loading During Walking',
     description: 'Taking everything into the most fundamental human movement pattern.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
 
@@ -654,7 +610,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Vertical Squat Holding onto Something',
     description: 'Removes dorsiflexion to isolate hip and spine component. Also dorsiflexion mobilization.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -663,7 +619,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Bear to Squat Transition',
     description: 'Bear to stand was Week 8 Day 2. Bear to squat here introduces the loaded descent.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -672,7 +628,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Squat as Position',
     description: 'Stability and alignment — owning the position before loading it.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -681,7 +637,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Squat as Bodyweight Exercise',
     description: 'Load and repetition now that the position is owned.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -690,7 +646,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Narrow Squat',
     description: 'Feet together, all the way down. Observed in 4-year-olds at the farmers market — kids squat this way naturally when bored. Challenges adductor and internal rotator control; wider stance allows external rotation compensation.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -699,7 +655,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Squat as Weighted/Gym Exercise',
     description: 'Squat as weighted/gym exercise.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -708,7 +664,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Front Foot Elevated Step Back Lunge',
     description: "DNS Weightlifting's preferred alternative to low bar squats — trains the same patterns with less spinal loading.",
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
 
@@ -719,7 +675,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Kettlebell Etiquette',
     description: 'Turning from 3–6 months supine and back with resistance — review with added nuance and load.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -728,7 +684,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Build to Low Oblique Sit and Back',
     description: 'Build to low oblique sit and back.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -737,7 +693,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Build to High Oblique Sit and Back',
     description: 'Build to high oblique sit and back.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -746,7 +702,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'High Oblique Sit / S Position to Tripod and Back',
     description: 'Build from high oblique sit / S position to tripod and back.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -755,7 +711,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Uprighting from Tripod and Back',
     description: 'Uprighting from tripod and back.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -764,7 +720,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Tripod to Stand and Back',
     description: 'Tripod to stand and back.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -773,7 +729,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Full Czech Get Up',
     description: 'Squat at the top — full Czech get up forwards and backwards. This is also where people will viscerally feel how much the previous 10 weeks changed them.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
 
@@ -784,7 +740,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Oblique Sling Loading in Rolling Pattern',
     description: 'With kettlebell. The contralateral pattern from Week 3 with added resistance — reveals any remaining compensation.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -793,7 +749,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: '6 Months Supine Rolling',
     description: 'Probably the most visually striking exercise in the program. Captures the before/after of the whole 12 weeks.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -802,7 +758,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Reciprocal Scapular Movement — Seated',
     description: "A full day on the concept in sitting because it's difficult to grasp at first.",
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -811,7 +767,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Reciprocal Scapular Movement — Supine, Quadruped, Kneeling',
     description: 'Once the concept is understood from Day 3, the other three positions are achievable.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -820,7 +776,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Warrior Pose and Pelvic Movement',
     description: 'DNS approach to the position — reframed around pelvic positioning and IAP rather than traditional yoga cuing.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -829,7 +785,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Handstand / Overhead Press',
     description: 'The handstand is the full expression of shoulder centration and IAP under maximum load. OHP is the gym-accessible version of the same demand.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
   {
@@ -838,7 +794,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Hanging 3 Months Supine',
     description: 'The foundational position expressed in space with gravity reversed. Full circle — the program ends where it began, but the person holding the position is not the same person who started it.',
-    videoId: null,
+    hasVideo: false,
     isPremium: true,
   },
 ];

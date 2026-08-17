@@ -7,6 +7,14 @@ service cloud.firestore {
       allow read, write: if request.auth != null && request.auth.uid == uid;
     }
 
+    // Server-controlled entitlement (e.g. DNS Foundations access). Only Cloud Functions,
+    // via the Admin SDK (which bypasses these rules entirely), ever write this — the
+    // owner may read their own entitlement but can never write or forge it.
+    match /artifacts/{appId}/users/{uid}/entitlement/{doc} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
     // Stripe customer data (written by the Firebase Stripe extension)
     match /customers/{uid} {
       allow read, write: if request.auth != null && request.auth.uid == uid;

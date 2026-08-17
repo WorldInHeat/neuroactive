@@ -1,13 +1,14 @@
 // src/components/DNSCourseView.tsx
 // 12-Week DNS Foundations course. Structurally separate from DECISION_TREE —
 // does not touch activePrescriptions, history, or any assessment-flow state.
-import { useState, type ReactElement } from 'react';
+import { useEffect, useState, type ReactElement } from 'react';
 import type { Auth } from 'firebase/auth';
 import { ArrowLeft, CheckCircle, ChevronLeft, ChevronRight, HelpCircle, Lock, User, X } from 'lucide-react';
 import { DNS_COURSE } from '../data/dnsCourse';
 import type { DNSCourseDay } from '../data/dnsCourse';
 import type { DnsCourseProgress } from '../state/types';
 import type { PriceKey } from '../services/stripe';
+import { fetchDnsCourseDayMedia, type DnsCourseDayMedia } from '../services/dnsCourseMedia';
 import VideoPlayer from './VideoPlayer';
 import Paywall from './Paywall';
 
@@ -24,7 +25,11 @@ type Props = {
   dnsCourse: DnsCourseProgress;
   onUpdateDnsCourse: (updates: Partial<DnsCourseProgress>) => void;
   today: string; // local calendar date, e.g. from todayLocalISO()
-  isPremium: boolean;
+  // Server-verified DNS Foundations entitlement — 'loading' until the first snapshot for
+  // the current uid resolves. Only 'entitled' unlocks anything; both 'loading' and
+  // 'not-entitled' render as locked, so a legitimate purchaser sees a brief loading state
+  // rather than a paywall flash, without ever trusting an unresolved/stale value.
+  dnsEntitlementState: 'loading' | 'entitled' | 'not-entitled';
   onBack: () => void;
   onOpenSettings: () => void;
   auth: Auth | null;
@@ -55,6 +60,56 @@ function buildCalendarCells(year: number, month: number): CalendarCell[] {
 // Week badge + heading + video (or placeholder) + description — the content shared by
 // both the current day and whichever past day is being reviewed. Reuses VideoPlayer
 // rather than duplicating video-playing logic.
+// Vimeo credentials aren't in the client bundle (security fix — see
+// functions/src/index.ts: getDnsCourseDayMedia) — fetched on demand per day, only
+// succeeds for an authenticated, DNS-entitled caller. The parent renders this with
+// `key={dayIndex}` so switching days remounts a fresh instance (empty media/failed
+// state) rather than needing an explicit reset inside the effect. A stale in-flight
+// request is ignored via the `cancelled` flag rather than shown once it resolves after
+// the component has already unmounted for a different day.
+function DayVideo({ dayIndex, title }: { dayIndex: number; title: string }) {
+  const [media, setMedia] = useState<DnsCourseDayMedia | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchDnsCourseDayMedia(dayIndex)
+      .then((result) => { if (!cancelled) setMedia(result); })
+      .catch((err) => {
+        console.error('[DNS course] video fetch failed:', err);
+        if (!cancelled) setFailed(true);
+      });
+    return () => { cancelled = true; };
+  }, [dayIndex]);
+
+  if (failed) {
+    return (
+      <div className="bg-[#0f1829] border border-[#1a2a42] rounded-xl aspect-video flex items-center justify-center mb-6">
+        <p className="text-[#6b849e] text-sm font-semibold">Couldn't load this video — try again shortly.</p>
+      </div>
+    );
+  }
+
+  if (!media) {
+    return (
+      <div className="bg-black rounded-xl aspect-video flex items-center justify-center mb-6 animate-pulse">
+        <p className="text-[#6b849e] text-sm font-semibold">Loading video…</p>
+      </div>
+    );
+  }
+
+  return (
+    <VideoPlayer
+      nodeId={`dns_course_day_${dayIndex}`}
+      title={title}
+      videoId={media.videoId}
+      hash={media.hash}
+      autoplayToken={null}
+      onConsumeAutoplay={() => {}}
+    />
+  );
+}
+
 function DayContent({ day, dayIndex }: { day: DNSCourseDay; dayIndex: number }) {
   return (
     <>
@@ -71,15 +126,8 @@ function DayContent({ day, dayIndex }: { day: DNSCourseDay; dayIndex: number }) 
         <p className="text-[#6b849e] text-sm mt-1">{day.weekTitle}</p>
       </div>
 
-      {day.videoId ? (
-        <VideoPlayer
-          nodeId={`dns_course_day_${dayIndex}`}
-          title={day.dayTitle}
-          videoId={day.videoId}
-          hash={day.hash}
-          autoplayToken={null}
-          onConsumeAutoplay={() => {}}
-        />
+      {day.hasVideo ? (
+        <DayVideo key={dayIndex} dayIndex={dayIndex} title={day.dayTitle} />
       ) : (
         <div className="bg-[#0f1829] border border-[#1a2a42] rounded-xl aspect-video flex items-center justify-center mb-6">
           <p className="text-[#6b849e] text-sm font-semibold">Video coming soon</p>
@@ -219,7 +267,7 @@ export default function DNSCourseView({
   dnsCourse,
   onUpdateDnsCourse,
   today,
-  isPremium,
+  dnsEntitlementState,
   onBack,
   onOpenSettings,
   auth,
@@ -285,7 +333,18 @@ export default function DNSCourseView({
     );
   }
 
-  if (currentDayData.isPremium && !isPremium) {
+  if (currentDayData.isPremium && dnsEntitlementState !== 'entitled') {
+    // 'loading': the current uid's entitlement snapshot hasn't resolved yet — a real
+    // purchaser lands here first, so show a lightweight wait state instead of flashing
+    // the paywall at them. 'not-entitled' (resolved, confirmed no access, or a uid
+    // change/listener error per the auth effect) shows the real paywall.
+    if (dnsEntitlementState === 'loading') {
+      return (
+        <div className="min-h-screen bg-[#080d1a] flex items-center justify-center">
+          <p className="text-[#6b849e] text-sm font-semibold">Checking your access…</p>
+        </div>
+      );
+    }
     return (
       <Paywall
         auth={auth}
