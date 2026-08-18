@@ -139,6 +139,11 @@ function mapEmailAuthError(error: unknown): string {
       return 'Email sign-in isn’t available right now. Please try Google instead.';
     case 'auth/unauthorized-continue-uri':
       return 'Sign-in link setup issue — please contact support.';
+    case 'auth/email-already-in-use':
+    case 'auth/credential-already-in-use':
+      return 'This email already belongs to an existing NeuroActive account. Please sign in to that existing account.';
+    case 'auth/account-exists-with-different-credential':
+      return 'An account already exists using another sign-in method. Please sign in using the method associated with that account.';
     default:
       console.error('Email auth error:', error);
       return 'Something went wrong. Please try again.';
@@ -1002,11 +1007,14 @@ export default function App() {
     }).catch(async (error: any) => {
       sessionStorage.removeItem(REDIRECT_PENDING_KEY);
       setRedirectResultResolved(true);
-      if (error.code === 'auth/credential-already-in-use') {
+      if (
+        error.code === 'auth/credential-already-in-use' ||
+        error.code === 'auth/email-already-in-use'
+      ) {
         // Switching accounts here abandons the current anonymous session's data,
         // so confirm first.
         const proceed = window.confirm(
-          'This Google account is already linked to a different NeuroActive account. Signing in will switch you to that account, and any progress from this session will not transfer. Continue?'
+          'This Google identity already belongs to an existing NeuroActive account. Continuing will switch you from this temporary session to that existing account, and progress from this temporary session will not automatically transfer. Continue?'
         );
         if (proceed) {
           sessionStorage.setItem(REDIRECT_PENDING_KEY, '1');
@@ -1019,6 +1027,10 @@ export default function App() {
             setSignInError('Sign-in failed. Please try again.');
           }
         }
+      } else if (error.code === 'auth/account-exists-with-different-credential') {
+        setSignInError(
+          'An account already exists using another sign-in method. Please sign in using the method associated with that account.'
+        );
       } else if (error.code !== 'auth/user-cancelled' && error.code !== 'auth/popup-closed-by-user') {
         console.error('Redirect sign-in error:', error);
         setSignInError('Sign-in failed. Please try again.');
@@ -1353,7 +1365,16 @@ export default function App() {
           await linkWithCredential(currentUser, EmailAuthProvider.credentialWithLink(email, window.location.href));
         } catch (linkError) {
           const code = linkError && typeof linkError === 'object' && 'code' in linkError ? (linkError as { code: unknown }).code : undefined;
-          if (code !== 'auth/email-already-in-use') throw linkError;
+          const isExistingEmailAccount =
+            code === 'auth/email-already-in-use' ||
+            code === 'auth/credential-already-in-use';
+          if (code === 'auth/account-exists-with-different-credential') {
+            setSignInError(
+              'An account already exists using another sign-in method. Please sign in using the method associated with that account.'
+            );
+            return;
+          }
+          if (!isExistingEmailAccount) throw linkError;
           const description = await describeExistingEmailAccount(auth, email);
           if (description.includes('Google')) {
             setSignInError(description);
