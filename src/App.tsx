@@ -172,6 +172,30 @@ const ASSESSMENT_FIELDS_GATED_UNDER_DNS_ONLY_LAUNCH = [
   'activeJourney', 'activePrescriptions', 'history', 'currentNodeId', 'painLog',
 ] as const;
 
+// Canonical fresh-account DNS course state — used both as the initial useState value and
+// as what dnsCourse resets to whenever the authenticated uid actually changes (see the
+// auth effect's dnsCourseUidRef check), so a new/different account never starts from a
+// previous account's in-memory progress.
+const DEFAULT_DNS_COURSE: DnsCourseProgress = { currentDay: 1, lastCompletedDate: '', startedAt: '' };
+
+// Firestore data is never runtime-type-checked (docSnap.data() is an unchecked cast, same
+// as every other field hydrated below) — a malformed/legacy currentDay (wrong type, out of
+// range, non-integer, or a numeric string that would silently string-concatenate instead
+// of adding on the next `currentDay + 1`) has to be caught right here, at the one point
+// untrusted stored data enters dnsCourse state. Applied at hydration time (not in
+// DNSCourseView) so everything downstream can keep assuming currentDay is always a real
+// integer in 1..85 — DNSCourseView's Course Complete/pacing logic is unchanged and relies
+// on that. Malformed data resets the whole dnsCourse to the fresh default rather than
+// trying to guess/repair a value, so it can never fabricate progress or expose days that
+// weren't actually earned (e.g. a corrupted 0 must not read as "past days 1-83", and a
+// corrupted >85 must not read as "course complete").
+function normalizeDnsCourse(raw: DnsCourseProgress): DnsCourseProgress {
+  const { currentDay } = raw;
+  const isValidCurrentDay =
+    typeof currentDay === 'number' && Number.isInteger(currentDay) && currentDay >= 1 && currentDay <= 85;
+  return isValidCurrentDay ? raw : DEFAULT_DNS_COURSE;
+}
+
 // --- Helper Components ---
 
 // Reused by SettingsView's "Sign in with Google" button
@@ -847,7 +871,11 @@ export default function App() {
   const [checkoutLoading, setCheckoutLoading] = useState<PriceKey | null>(null);
   const [paymentMessage, setPaymentMessage] = useState<{ type: 'success' | 'canceled'; text: string } | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [dnsCourse, setDnsCourse] = useState<DnsCourseProgress>({ currentDay: 1, lastCompletedDate: '', startedAt: '' });
+  const [dnsCourse, setDnsCourse] = useState<DnsCourseProgress>(DEFAULT_DNS_COURSE);
+  // Tracks whose dnsCourse the state above currently reflects, mirroring
+  // entitlementUidRef below — lets the auth effect tell "uid actually changed, reset
+  // progress before hydrating" apart from "same uid, listener re-fired."
+  const dnsCourseUidRef = useRef<string | null>(null);
 
   // Captured once at mount, before anything has a chance to clear the flag — tells us
   // whether this page load is potentially the return leg of a redirect sign-in.
@@ -1094,6 +1122,18 @@ export default function App() {
           }).catch((err) => console.warn('[Stripe] customer doc check failed:', err));
         }
 
+        if (dnsCourseUidRef.current !== user.uid) {
+          // uid actually changed — reset dnsCourse to the fresh default BEFORE this
+          // uid's userData listener has any chance to hydrate it, so a different
+          // account never starts out showing (or later persisting) the previous
+          // account's in-memory course progress. If the destination uid's document has
+          // no dnsCourse field, this default is simply what stays. Linking a new
+          // Google/email identity onto an existing (anonymous) session keeps the same
+          // uid, so this branch doesn't fire and progress is left untouched.
+          dnsCourseUidRef.current = user.uid;
+          setDnsCourse(DEFAULT_DNS_COURSE);
+        }
+
         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'userData', 'main');
 
         unsubscribeSnapshot = onSnapshot(docRef, (docSnap) => {
@@ -1113,7 +1153,7 @@ export default function App() {
           setTroubleshootingAttempts(data.troubleshootingAttempts ?? 0);
           setHasWatchedWelcome(data.hasWatchedWelcome ?? false);
           setHasWatchedAssessmentIntro(data.hasWatchedAssessmentIntro ?? false);
-          if (data.dnsCourse) setDnsCourse(data.dnsCourse);
+          if (data.dnsCourse) setDnsCourse(normalizeDnsCourse(data.dnsCourse));
         });
 
         // DNS Foundations entitlement — server-written only (functions/src/index.ts
@@ -1195,6 +1235,8 @@ export default function App() {
         if (unsubscribeEntitlement) { unsubscribeEntitlement(); unsubscribeEntitlement = null; }
         entitlementUidRef.current = null;
         setDnsEntitlementState('loading');
+        dnsCourseUidRef.current = null;
+        setDnsCourse(DEFAULT_DNS_COURSE);
         // No session at all — sign in anonymously in the background so guest access is
         // frictionless. The user stays on whatever view they're on (default: landing);
         // no separate sign-in screen or explicit "continue as guest" click required.
@@ -1269,6 +1311,8 @@ export default function App() {
     setIsPremium(false);
     entitlementUidRef.current = null;
     setDnsEntitlementState('loading');
+    dnsCourseUidRef.current = null;
+    setDnsCourse(DEFAULT_DNS_COURSE);
     setPainLog([]);
     // setPhaseLocks({});
     // setLastCheckInAt(null);

@@ -263,6 +263,45 @@ function GuidanceModal({ view, onNavigate, onClose }: { view: string; onNavigate
   );
 }
 
+// Shown on the Today tab once today's lesson has already been marked complete. This is
+// deliberately NOT the normal locked-preview treatment (Lock icon, muted/opacity-60,
+// "Unlocks after you complete Day X") used for a day the user simply hasn't reached yet
+// — that's an earned-progression lock. This is a same-day pacing wait after a genuine
+// completion, so it reads as success + "come back tomorrow," not as something withheld.
+function TodayCompletionWaitState({ completedDayIndex, nextDayIndex }: { completedDayIndex: number; nextDayIndex: number | null }) {
+  return (
+    <div className="bg-[#0f1829] p-8 rounded-2xl border border-[#00e096]/20 text-center">
+      <CheckCircle className="text-[#00e096] mx-auto mb-3" size={40} />
+      <h2 className="text-xl font-bold text-[#f0f4f8] mb-1">Day {completedDayIndex} complete</h2>
+      <p className="text-[#6b849e] text-sm">
+        {nextDayIndex !== null ? `Day ${nextDayIndex} unlocks tomorrow.` : 'Nice work today.'}
+      </p>
+    </div>
+  );
+}
+
+// Shown on the Today tab once currentDay has advanced past the last real day — i.e. Day
+// 84 has been completed. Reuses the same success/terminal visual language as
+// TodayCompletionWaitState (this is also a completion state, just a permanent one, not a
+// same-day pacing wait) rather than the old standalone full-screen version, so the tab
+// bar stays visible and Past Days/History remain reachable for rewatching Day 84.
+function CourseCompleteState({ onReviewPastDays }: { onReviewPastDays: () => void }) {
+  return (
+    <div className="bg-[#0f1829] p-8 rounded-2xl border border-[#00e096]/20 text-center">
+      <CheckCircle className="text-[#00e096] mx-auto mb-3" size={40} />
+      <h2 className="text-xl font-bold text-[#f0f4f8] mb-1">Course Complete</h2>
+      <p className="text-[#6b849e] text-sm mb-6">You've completed all 84 days of the DNS Foundations program.</p>
+      <button
+        onClick={onReviewPastDays}
+        className="px-6 py-3 rounded-xl font-bold text-sm text-[#080d1a] hover:opacity-90 active:scale-95 transition-all"
+        style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+      >
+        Review Past Days
+      </button>
+    </div>
+  );
+}
+
 export default function DNSCourseView({
   dnsCourse,
   onUpdateDnsCourse,
@@ -290,25 +329,13 @@ export default function DNSCourseView({
   // it never touches activeTab, viewingDay, dnsCourse, or the parent's currentView.
   const [guidanceView, setGuidanceView] = useState<string | null>(null);
 
+  // undefined once currentDay has advanced past the last real day (see handleMarkComplete
+  // below) — i.e. the course is complete. Previously this was handled as a full-screen
+  // early return here, which made it unreachable in practice (currentDay was capped at
+  // DNS_COURSE.length forever) AND, even if reached, would have hidden Past Days/History
+  // entirely. Now it's handled inside the Today tab instead (see CourseCompleteState),
+  // so the tab bar — and Day 84's rewatch access via Past Days/History — stays intact.
   const currentDayData = DNS_COURSE[dnsCourse.currentDay - 1];
-
-  if (!currentDayData) {
-    return (
-      <div className="min-h-screen bg-[#080d1a] p-6">
-        <div className="max-w-2xl mx-auto bg-[#0f1829] p-6 rounded-xl border border-[#1a2a42]">
-          <h2 className="text-xl font-bold text-[#f0f4f8]">Course Complete</h2>
-          <p className="text-[#6b849e] mt-2">You've completed all 84 days of the DNS Foundations program.</p>
-          <button
-            onClick={onBack}
-            className="mt-4 px-4 py-2 rounded-lg font-semibold text-[#080d1a]"
-            style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
-          >
-            Back to Dashboard
-          </button>
-        </div>
-      </div>
-    );
-  }
 
   // Shown once, before the user has ever started the course. Deliberately shown before
   // the paywall check below — this is philosophy/context-setting, not program content,
@@ -333,7 +360,11 @@ export default function DNSCourseView({
     );
   }
 
-  if (currentDayData.isPremium && dnsEntitlementState !== 'entitled') {
+  // currentDayData is undefined only in the course-complete state (see above) — every
+  // real day in DNS_COURSE is premium, so `?? true` preserves the exact same gating
+  // behavior for that state (Past Days/History content is premium too) without reading
+  // .isPremium off of undefined.
+  if ((currentDayData?.isPremium ?? true) && dnsEntitlementState !== 'entitled') {
     // 'loading': the current uid's entitlement snapshot hasn't resolved yet — a real
     // purchaser lands here first, so show a lightweight wait state instead of flashing
     // the paywall at them. 'not-entitled' (resolved, confirmed no access, or a uid
@@ -361,12 +392,29 @@ export default function DNSCourseView({
   }
 
   const isSameDayAlreadyCompleted = dnsCourse.lastCompletedDate === today;
+  // Which day was actually completed today — read from completionDates (keyed by the day
+  // that was current AT THE MOMENT it was completed, before currentDay advanced) rather
+  // than derived as `currentDay - 1`, so this stays correct even at the Day 84 ceiling
+  // where currentDay no longer advances past the day that was just completed.
+  const completedTodayDayIndex = isSameDayAlreadyCompleted
+    ? Number(
+        Object.entries(dnsCourse.completionDates ?? {}).find(([, date]) => date === today)?.[0] ??
+          dnsCourse.currentDay - 1
+      )
+    : null;
   const nextDayData = DNS_COURSE[dnsCourse.currentDay]; // currentDay is 1-based, so this is the next entry
   const pastDays = DNS_COURSE.slice(0, dnsCourse.currentDay - 1); // days 1..currentDay-1
 
   const handleMarkComplete = () => {
     const isNewDay = dnsCourse.lastCompletedDate !== today;
-    const nextDay = isNewDay ? Math.min(dnsCourse.currentDay + 1, DNS_COURSE.length) : dnsCourse.currentDay;
+    // Capped at DNS_COURSE.length + 1 (85), one past the last real day, rather than at
+    // DNS_COURSE.length (84) — completing Day 84 must actually advance past it so
+    // currentDayData above becomes undefined and the course-complete state is reached;
+    // capping at 84 forever was the pre-existing defect that made Course Complete
+    // unreachable. The +1 cap still stops currentDay from growing without bound if this
+    // were ever invoked again after completion (it isn't, from the UI, once
+    // currentDayData is undefined).
+    const nextDay = isNewDay ? Math.min(dnsCourse.currentDay + 1, DNS_COURSE.length + 1) : dnsCourse.currentDay;
     // Record which real calendar date this day was completed on, for the History tab.
     // Only touched on an actual new completion — spread the existing map first so
     // earlier entries are never dropped (same reasoning as dnsCourse itself elsewhere).
@@ -453,35 +501,50 @@ export default function DNSCourseView({
             </>
           );
         })() : activeTab === 'today' ? (
-          <>
-            <DayContent day={currentDayData} dayIndex={dnsCourse.currentDay} />
+          !currentDayData ? (
+            <CourseCompleteState onReviewPastDays={() => setActiveTab('past')} />
+          ) : isSameDayAlreadyCompleted ? (
+            // currentDay has already advanced to the next lesson, but at most one new
+            // lesson unlocks per local calendar day — don't mount DayContent (and so
+            // don't mount DayVideo / call getDnsCourseDayMedia) for it until then.
+            <TodayCompletionWaitState
+              completedDayIndex={completedTodayDayIndex as number}
+              nextDayIndex={
+                (completedTodayDayIndex as number) + 1 <= DNS_COURSE.length
+                  ? (completedTodayDayIndex as number) + 1
+                  : null
+              }
+            />
+          ) : (
+            <>
+              <DayContent day={currentDayData} dayIndex={dnsCourse.currentDay} />
 
-            <button
-              onClick={handleMarkComplete}
-              disabled={isSameDayAlreadyCompleted}
-              className="w-full py-4 rounded-xl font-bold text-base text-[#080d1a] hover:opacity-90 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100"
-              style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
-            >
-              <CheckCircle size={18} />
-              {isSameDayAlreadyCompleted ? 'Completed for Today' : 'Mark Complete & Continue'}
-            </button>
-
-            {nextDayData && (
-              <div
-                className="mt-4 rounded-xl p-4 flex items-center gap-3 opacity-60"
-                style={{ background: '#0f1829', border: '1px solid #1a2a42' }}
+              <button
+                onClick={handleMarkComplete}
+                className="w-full py-4 rounded-xl font-bold text-base text-[#080d1a] hover:opacity-90 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100"
+                style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
               >
-                <Lock size={18} className="text-[#6b849e] flex-shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-bold text-[#6b849e] uppercase tracking-wider">
-                    Week {nextDayData.week}, Day {nextDayData.day}
-                  </p>
-                  <p className="text-sm font-semibold text-[#f0f4f8] truncate">{nextDayData.dayTitle}</p>
-                  <p className="text-xs text-[#6b849e] mt-0.5">Unlocks after you complete Day {dnsCourse.currentDay}</p>
+                <CheckCircle size={18} />
+                Mark Complete & Continue
+              </button>
+
+              {nextDayData && (
+                <div
+                  className="mt-4 rounded-xl p-4 flex items-center gap-3 opacity-60"
+                  style={{ background: '#0f1829', border: '1px solid #1a2a42' }}
+                >
+                  <Lock size={18} className="text-[#6b849e] flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-bold text-[#6b849e] uppercase tracking-wider">
+                      Week {nextDayData.week}, Day {nextDayData.day}
+                    </p>
+                    <p className="text-sm font-semibold text-[#f0f4f8] truncate">{nextDayData.dayTitle}</p>
+                    <p className="text-xs text-[#6b849e] mt-0.5">Unlocks after you complete Day {dnsCourse.currentDay}</p>
+                  </div>
                 </div>
-              </div>
-            )}
-          </>
+              )}
+            </>
+          )
         ) : activeTab === 'past' ? (
           <div className="space-y-3">
             {pastDays.length === 0 ? (
