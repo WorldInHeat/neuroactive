@@ -302,6 +302,15 @@ function CourseCompleteState({ onReviewPastDays }: { onReviewPastDays: () => voi
   );
 }
 
+// Internal QA affordance — lets the owner open any of the 84 real lesson days for
+// verification, regardless of dnsCourse.currentDay. Hardcoded Firebase UID (not email),
+// same pattern as functions/scripts/grantBetaEntitlement.js: no lookup/resolution logic,
+// just an explicit allowlist. This is a UI-visibility check only, never a security
+// boundary — isQaOwner below also requires dnsEntitlementState === 'entitled', and every
+// QA-opened lesson still goes through the same fetchDnsCourseDayMedia -> the
+// getDnsCourseDayMedia entitlement check server-side, unchanged.
+const QA_OWNER_UIDS = ['y8ZkA5H9j3Gc9GrHXWPWf3fBUe32'];
+
 export default function DNSCourseView({
   dnsCourse,
   onUpdateDnsCourse,
@@ -319,7 +328,7 @@ export default function DNSCourseView({
   isInAppBrowser,
 }: Props) {
   // Hooks must run unconditionally, before the early returns below.
-  const [activeTab, setActiveTab] = useState<'today' | 'past' | 'history'>('today');
+  const [activeTab, setActiveTab] = useState<'today' | 'past' | 'history' | 'qa'>('today');
   const [viewingDay, setViewingDay] = useState<number | null>(null);
   const [historyMonth, setHistoryMonth] = useState(() => {
     const [y, m] = today.split('-').map(Number);
@@ -328,6 +337,29 @@ export default function DNSCourseView({
   // null = closed, 'list', or a GuidanceEntry id — purely local overlay state, so closing
   // it never touches activeTab, viewingDay, dnsCourse, or the parent's currentView.
   const [guidanceView, setGuidanceView] = useState<string | null>(null);
+
+  // isOwnerUid alone is never a security boundary — it only ever gates UI reachability.
+  // Real access is still enforced by dnsEntitlementState (isQaOwner below, and the
+  // unmodified entitlement/paywall check further down) and, independently, by
+  // getDnsCourseDayMedia server-side.
+  const isOwnerUid = QA_OWNER_UIDS.includes(auth?.currentUser?.uid ?? '');
+  const isQaOwner = dnsEntitlementState === 'entitled' && isOwnerUid;
+
+  // QA is a local convenience for one hardcoded uid and must never survive a uid change or
+  // entitlement loss into a different session on the same mounted instance — closes the
+  // moment isQaOwner drops, same defensive shape as entitlementUidRef/dnsCourseUidRef in
+  // App.tsx. Adjusting state during render (React's documented pattern for "reset state
+  // when a prop changes") rather than in a useEffect, so the reset lands in the same
+  // render pass instead of triggering an extra one. No-op for every non-owner uid, which
+  // never sets isQaOwner true in the first place.
+  const [prevIsQaOwner, setPrevIsQaOwner] = useState(isQaOwner);
+  if (isQaOwner !== prevIsQaOwner) {
+    setPrevIsQaOwner(isQaOwner);
+    if (!isQaOwner) {
+      setActiveTab((tab) => (tab === 'qa' ? 'today' : tab));
+      setViewingDay(null);
+    }
+  }
 
   // undefined once currentDay has advanced past the last real day (see handleMarkComplete
   // below) — i.e. the course is complete. Previously this was handled as a full-screen
@@ -340,7 +372,18 @@ export default function DNSCourseView({
   // Shown once, before the user has ever started the course. Deliberately shown before
   // the paywall check below — this is philosophy/context-setting, not program content,
   // so non-premium users see it too (same reasoning as keeping pain-triage free).
-  if (!dnsCourse.startedAt) {
+  //
+  // Narrow owner-only exception (Codex review fix): for every uid except the exact QA
+  // owner uid, that ordering is unchanged. For the owner, this full-page return would
+  // otherwise block reachability to the entitlement/paywall check AND the QA tab behind
+  // it — an entitled owner could only reach QA by first writing real progress (clicking
+  // "Start Week 1, Day 1" below), and an unentitled owner would see this screen instead
+  // of failing closed to the paywall. Skipping it here lets the very next check
+  // (unmodified) resolve loading/paywall/entitled for the owner first; the owner's
+  // "not started yet" state is then handled inside the Today tab itself (see the
+  // `activeTab === 'today'` branch below), the same way `!currentDayData` (course
+  // complete) already is, instead of a blocking full page.
+  if (!dnsCourse.startedAt && !isOwnerUid) {
     return (
       <div className="min-h-screen bg-[#080d1a] pb-20">
         <div className="max-w-2xl mx-auto p-6 pt-10">
@@ -382,6 +425,7 @@ export default function DNSCourseView({
         checkoutLoading={checkoutLoading}
         setCheckoutLoading={setCheckoutLoading}
         onBack={onBack}
+        onOpenSettings={onOpenSettings}
         onGoogleSignIn={onGoogleSignIn}
         onSendSignInLink={onSendSignInLink}
         signInLoading={signInLoading}
@@ -477,31 +521,73 @@ export default function DNSCourseView({
           >
             History
           </button>
+          {/* Owner-only, deliberately off the app's teal/purple palette (dashed amber) so
+              it never reads as a normal tab. */}
+          {isQaOwner && (
+            <button
+              onClick={() => { setActiveTab('qa'); setViewingDay(null); }}
+              className="flex-1 py-2 rounded-lg text-sm font-bold transition-all border border-dashed"
+              style={
+                activeTab === 'qa'
+                  ? { backgroundColor: '#ffcc00', color: '#080d1a', borderColor: '#ffcc00' }
+                  : { backgroundColor: '#1a2a42', color: '#ffcc00', borderColor: 'rgba(255,204,0,0.4)' }
+              }
+            >
+              QA Lessons
+            </button>
+          )}
         </div>
       </div>
 
       <div className="max-w-2xl mx-auto p-6 mt-6">
         {viewingDay !== null ? (() => {
-          // Shared by both Past Days and History — same DayContent, same read-only
-          // rewatch behavior, no progress-tracking side effects either way. Only the
-          // "Back to" destination differs, based on wherever the tap originated.
+          // Shared by Past Days, History, and QA Lessons — same DayContent, same
+          // read-only rewatch behavior, no progress-tracking side effects either way.
+          // Only the "Back to" destination differs, based on wherever the tap
+          // originated — activeTab isn't touched when viewingDay is set, so it still
+          // reflects the originating tab here, and Back (which only clears viewingDay)
+          // lands back on that same tab, QA included.
           const day = DNS_COURSE[viewingDay - 1];
           if (!day) return null;
+          const backLabel = activeTab === 'qa' ? 'QA Lessons' : activeTab === 'history' ? 'History' : 'Past Days';
           return (
             <>
               <button
                 onClick={() => setViewingDay(null)}
                 className="text-[#6b849e] hover:text-[#f0f4f8] flex items-center gap-1 transition-colors text-sm mb-4"
               >
-                <ArrowLeft size={16} /> Back to {activeTab === 'history' ? 'History' : 'Past Days'}
+                <ArrowLeft size={16} /> Back to {backLabel}
               </button>
+              {activeTab === 'qa' && (
+                <div className="inline-block bg-[#ffcc00]/10 border border-dashed border-[#ffcc00]/40 rounded-full px-3 py-1 text-[10px] font-bold text-[#ffcc00] uppercase tracking-wider mb-4">
+                  Internal QA View · Day {viewingDay}
+                </div>
+              )}
               {/* View-only: no Mark Complete button, no up-next teaser — rewatching a
                   past day never touches dnsCourse.currentDay or lastCompletedDate. */}
               <DayContent day={day} dayIndex={viewingDay} />
             </>
           );
         })() : activeTab === 'today' ? (
-          !currentDayData ? (
+          !dnsCourse.startedAt ? (
+            // Only reachable here for the entitled QA owner uid with an empty
+            // startedAt — every other uid already returned the full-page BeforeYouStart
+            // screen above before ever reaching this render. Same content, same single
+            // write (onUpdateDnsCourse({ startedAt: today })) as that screen — moved
+            // in-tab rather than duplicated, so QA/Past Days/History stay reachable
+            // alongside it and the normal start behavior (D) is identical once clicked.
+            <>
+              <h1 className="text-2xl font-bold text-[#f0f4f8] mb-6 text-center">Before You Start</h1>
+              <BeforeYouStartContent />
+              <button
+                onClick={() => onUpdateDnsCourse({ startedAt: today })}
+                className="w-full py-4 rounded-xl font-bold text-base text-[#080d1a] hover:opacity-90 active:scale-95 transition-all"
+                style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+              >
+                Start Week 1, Day 1
+              </button>
+            </>
+          ) : !currentDayData ? (
             <CourseCompleteState onReviewPastDays={() => setActiveTab('past')} />
           ) : isSameDayAlreadyCompleted ? (
             // currentDay has already advanced to the next lesson, but at most one new
@@ -571,6 +657,35 @@ export default function DNSCourseView({
                 );
               })
             )}
+          </div>
+        ) : activeTab === 'qa' ? (
+          // Internal QA browser: every real DNS_COURSE day (index + 1 = overall course
+          // day, NOT the per-week day.day field, which repeats 1-7 each week), regardless
+          // of dnsCourse.currentDay. Selecting one only sets viewingDay — same read-only
+          // path as Past Days/History above, DayVideo included; no onUpdateDnsCourse, no
+          // handleMarkComplete, nothing here ever writes dnsCourse or userData/main.
+          <div className="space-y-3">
+            <div className="bg-[#ffcc00]/10 border border-dashed border-[#ffcc00]/40 rounded-xl px-4 py-3 text-xs text-[#ffcc00] font-semibold">
+              Internal QA — opens real production lesson content for verification. Never affects course progress, pacing, or entitlement.
+            </div>
+            {DNS_COURSE.map((day, i) => {
+              const dayIndex = i + 1;
+              return (
+                <button
+                  key={dayIndex}
+                  onClick={() => setViewingDay(dayIndex)}
+                  className="w-full bg-[#0f1829] p-4 rounded-xl border border-dashed border-[#ffcc00]/30 flex items-center justify-between hover:border-[#ffcc00]/70 transition-all text-left"
+                >
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-[#ffcc00] uppercase tracking-wider">
+                      Day {dayIndex} · Week {day.week}, Day {day.day}
+                    </p>
+                    <p className="text-sm font-semibold text-[#f0f4f8] truncate">{day.dayTitle}</p>
+                  </div>
+                  <ChevronRight size={18} className="text-[#6b849e] flex-shrink-0" />
+                </button>
+              );
+            })}
           </div>
         ) : (() => {
           // History: a real calendar-grid month view of completed days, driven entirely

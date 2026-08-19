@@ -28,7 +28,7 @@ import {
   Dumbbell,
 } from 'lucide-react';
 
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getAuth,
   GoogleAuthProvider,
@@ -46,7 +46,7 @@ import {
   signOut,
   type Auth,
 } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, type Firestore } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, getDoc, getDocFromServer, onSnapshot, collection, type Firestore } from 'firebase/firestore';
 
 import { DECISION_TREE } from './data/decisionTree';
 import type { PainLogEntry, UserData, DnsCourseProgress } from './state/types';
@@ -1172,10 +1172,34 @@ export default function App() {
           setDnsEntitlementState('loading');
         }
         const entitlementRef = doc(db, 'artifacts', appId, 'users', user.uid, 'entitlement', 'main');
+        // TEMPORARY diagnostic — remove once the live paywall/entitlement discrepancy is
+        // resolved. Logs the actual runtime Firebase/Firestore identity behind this
+        // listener, independent of anything inferred from source.
+        console.log('[Entitlement] runtime identity', {
+          dbAppName: db.app.name,
+          dbAppProjectId: db.app.options.projectId,
+          dbAppAppId: db.app.options.appId,
+          dbIsExpectedDefaultApp: db.app === getApp(),
+          dbToJSON: db.toJSON(),
+          entitlementRefPath: entitlementRef.path,
+          entitlementRefFirestoreIsDb: entitlementRef.firestore === db,
+          allApps: getApps().map((a) => ({ name: a.name, projectId: a.options.projectId, appId: a.options.appId })),
+        });
         unsubscribeEntitlement = onSnapshot(
           entitlementRef,
           (snap) => {
             const entitled = snap.exists() && snap.data()?.dnsFoundationsEntitled === true;
+            // TEMPORARY diagnostic — remove once the live paywall/entitlement discrepancy
+            // is resolved. Not gated on any flag; intentionally logs every snapshot.
+            console.log('[Entitlement] snapshot', {
+              uid: user.uid,
+              exists: snap.exists(),
+              data: snap.data(),
+              entitled,
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+              t: Date.now(),
+            });
             setDnsEntitlementState(entitled ? 'entitled' : 'not-entitled');
           },
           (err) => {
@@ -1185,6 +1209,123 @@ export default function App() {
             setDnsEntitlementState('not-entitled');
           }
         );
+
+        // TEMPORARY diagnostic — one-shot read that bypasses cache entirely, run
+        // alongside the listener above to compare a forced server response against
+        // whatever onSnapshot reports. Does not feed into dnsEntitlementState or any
+        // other state; purely observational.
+        getDocFromServer(entitlementRef)
+          .then((serverSnap) => {
+            console.log('[Entitlement] forced server read', {
+              exists: serverSnap.exists(),
+              data: serverSnap.data(),
+              t: Date.now(),
+            });
+          })
+          .catch((err) => {
+            console.warn('[Entitlement] forced server read failed', err);
+          });
+
+        // TEMPORARY diagnostic — one-shot raw REST GET of the exact entitlement document,
+        // bypassing the @firebase/firestore SDK entirely (a genuinely independent read
+        // path — no SDK request-building or response-parsing involved). The ID token
+        // exists only inside this .then() chain, used once as this request's Authorization
+        // header, and is never logged, stored, or referenced anywhere else. Purely
+        // observational — does not feed into dnsEntitlementState or any other state.
+        user.getIdToken().then((idToken) => {
+          return fetch(
+            'https://firestore.googleapis.com/v1/projects/neuroactive/databases/(default)/documents/' +
+              `artifacts/neuroactive-prod/users/${user.uid}/entitlement/main`,
+            { headers: { Authorization: `Bearer ${idToken}` } }
+          );
+        }).then(async (res) => {
+          console.log('[Entitlement] REST GET', {
+            status: res.status,
+            ok: res.ok,
+            body: await res.json().catch(() => null),
+          });
+        }).catch((err) => {
+          console.warn('[Entitlement] REST GET failed', err);
+        });
+
+        // TEMPORARY diagnostic — comparison REST GET of a different document under the
+        // SAME uid, protected by the structurally identical `request.auth.uid == uid`
+        // rule, using the exact same token/host/project/database/browser session as the
+        // entitlement REST GET above. Purely observational; does not feed into any state.
+        user.getIdToken().then((idToken) => {
+          return fetch(
+            'https://firestore.googleapis.com/v1/projects/neuroactive/databases/(default)/documents/' +
+              `artifacts/neuroactive-prod/users/${user.uid}/userData/main`,
+            { headers: { Authorization: `Bearer ${idToken}` } }
+          );
+        }).then(async (res) => {
+          console.log('[Firestore comparison] userData REST GET', {
+            status: res.status,
+            ok: res.ok,
+            body: await res.json().catch(() => null),
+          });
+        }).catch((err) => {
+          console.warn('[Firestore comparison] userData REST GET failed', err);
+        });
+
+        // TEMPORARY diagnostic — single BatchGetDocuments request for BOTH the working
+        // (userData/main) and failing (entitlement/main) documents in one HTTP call,
+        // using the current Firebase user's ID token. The token exists only inside this
+        // .then() chain, used once as this request's Authorization header, and is never
+        // logged or stored. Purely observational; does not feed into any state.
+        user.getIdToken().then((idToken) => {
+          return fetch(
+            'https://firestore.googleapis.com/v1/projects/neuroactive/databases/(default)/documents:batchGet',
+            {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${idToken}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                documents: [
+                  `projects/neuroactive/databases/(default)/documents/artifacts/neuroactive-prod/users/${user.uid}/userData/main`,
+                  `projects/neuroactive/databases/(default)/documents/artifacts/neuroactive-prod/users/${user.uid}/entitlement/main`,
+                ],
+              }),
+            }
+          );
+        }).then(async (res) => {
+          console.log('[Firestore comparison] Firebase batchGet', {
+            status: res.status,
+            ok: res.ok,
+            body: await res.json().catch(() => null),
+          });
+        }).catch((err) => {
+          console.warn('[Firestore comparison] Firebase batchGet failed', err);
+        });
+
+        // TEMPORARY diagnostic — proves the actual signed identity of the current ID
+        // token via the official getIdTokenResult() API, rather than trusting user.uid
+        // as a proxy for it. Does not force a refresh (getIdTokenResult() with no
+        // argument, same as the default getIdToken() used elsewhere). Only an explicit
+        // whitelist of fields is logged — result.token (the raw JWT) and the full result
+        // object are never referenced. Purely observational; does not touch auth state,
+        // dnsEntitlementState, Firestore, or rules.
+        user.getIdTokenResult().then((result) => {
+          console.log('[Entitlement] token claims', {
+            localUserUid: user.uid,
+            authTime: result.authTime,
+            issuedAtTime: result.issuedAtTime,
+            expirationTime: result.expirationTime,
+            signInProvider: result.signInProvider,
+            claims: {
+              sub: result.claims.sub,
+              user_id: result.claims.user_id,
+              aud: result.claims.aud,
+              iss: result.claims.iss,
+              auth_time: result.claims.auth_time,
+              iat: result.claims.iat,
+              exp: result.claims.exp,
+              firebase: result.claims.firebase,
+              tenant: result.claims.tenant,
+            },
+          });
+        }).catch((err) => {
+          console.warn('[Entitlement] token claims failed', err);
+        });
 
         // Stripe sync — isPremium is the OR of two independent signals: an active/trialing
         // subscription, or a succeeded one-time payment (e.g. the 12-Week Program). Each
@@ -2066,6 +2207,7 @@ export default function App() {
           checkoutLoading={checkoutLoading}
           setCheckoutLoading={setCheckoutLoading}
           onBack={() => setCurrentView('dashboard')}
+          onOpenSettings={() => setCurrentView('settings')}
           onGoogleSignIn={handleGoogleSignIn}
           onSendSignInLink={handleSendSignInLink}
           signInLoading={signInLoading}
@@ -2100,6 +2242,7 @@ export default function App() {
             checkoutLoading={checkoutLoading}
             setCheckoutLoading={setCheckoutLoading}
             onBack={() => setCurrentView('dashboard')}
+            onOpenSettings={() => setCurrentView('settings')}
             onGoogleSignIn={handleGoogleSignIn}
             onSendSignInLink={handleSendSignInLink}
             signInLoading={signInLoading}
@@ -2376,6 +2519,7 @@ export default function App() {
           checkoutLoading={checkoutLoading}
           setCheckoutLoading={setCheckoutLoading}
           onBack={() => setCurrentView('dashboard')}
+          onOpenSettings={() => setCurrentView('settings')}
           onGoogleSignIn={handleGoogleSignIn}
           onSendSignInLink={handleSendSignInLink}
           signInLoading={signInLoading}

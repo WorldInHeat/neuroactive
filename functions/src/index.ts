@@ -26,6 +26,29 @@ function entitlementDocRef(uid: string) {
   return db.doc(`artifacts/${APP_ID}/users/${uid}/entitlement/main`);
 }
 
+// Single source of truth for "is this uid DNS-entitled", read via the Admin SDK (bypasses
+// Security Rules entirely — same IAM-authorized access class as the rest of this trusted
+// server boundary). Shared by getDnsCourseDayMedia and getDnsEntitlement so both callables
+// apply the exact same predicate. Missing document, missing field, or anything other than
+// the literal boolean true all resolve to false — this never infers entitlement from
+// absence of data, only from an explicit true.
+async function hasDnsEntitlement(uid: string): Promise<boolean> {
+  const ref = entitlementDocRef(uid);
+  const snap = await ref.get();
+  const entitled = snap.exists && snap.data()?.dnsFoundationsEntitled === true;
+
+  // TEMPORARY diagnostic — remove once the Firebase support case is resolved.
+  console.log('[DNS entitlement] Admin SDK read', {
+    project: process.env.GOOGLE_CLOUD_PROJECT,
+    databaseId: db.databaseId,
+    path: ref.path,
+    exists: snap.exists,
+    entitled,
+  });
+
+  return entitled;
+}
+
 // The Stripe Firebase Extension (invertase/firestore-stripe-payments) writes each
 // completed Checkout Session's line items onto the payment document as `items`, with
 // `item.price` as either an expanded Price object or a plain price ID string depending
@@ -89,11 +112,30 @@ export const getDnsCourseDayMedia = onCall(async (request) => {
     throw new HttpsError('invalid-argument', 'Invalid DNS course day.');
   }
 
-  const entitlementSnap = await entitlementDocRef(request.auth.uid).get();
-  const entitled = entitlementSnap.exists && entitlementSnap.data()?.dnsFoundationsEntitled === true;
+  const entitled = await hasDnsEntitlement(request.auth.uid);
   if (!entitled) {
     throw new HttpsError('permission-denied', 'DNS Foundations entitlement required.');
   }
 
   return DNS_COURSE_DAY_MEDIA[day];
+});
+
+// Read-only entitlement status for the calling user, sourced via the Admin SDK rather
+// than the client Firestore listener/REST path. Bridge for a reproduced, still-under-
+// investigation inconsistency where Firebase-ID-token-governed Firestore reads report
+// this document as absent while every IAM-authenticated read (Console, gcloud REST,
+// batchGet) consistently finds it — see the open Firebase support case. Takes no input;
+// the uid is exclusively request.auth.uid, verified server-side by the callable runtime,
+// never client-supplied. Any failure to read fails closed (throws, never returns true).
+export const getDnsEntitlement = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Sign in required.');
+  }
+
+  try {
+    return { dnsFoundationsEntitled: await hasDnsEntitlement(request.auth.uid) };
+  } catch (error) {
+    console.error('[DNS entitlement] Admin read failed', { uid: request.auth.uid, error });
+    throw new HttpsError('internal', 'Unable to verify DNS Foundations entitlement.');
+  }
 });
