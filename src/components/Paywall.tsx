@@ -11,6 +11,7 @@ type Props = {
   checkoutLoading: PriceKey | null;
   setCheckoutLoading: (key: PriceKey | null) => void;
   onBack: () => void;
+  onOpenSettings: () => void;
   onGoogleSignIn: () => void;
   onSendSignInLink: (email: string) => Promise<void>;
   signInLoading: boolean;
@@ -47,6 +48,7 @@ export default function Paywall({
   checkoutLoading,
   setCheckoutLoading,
   onBack,
+  onOpenSettings,
   onGoogleSignIn,
   onSendSignInLink,
   signInLoading,
@@ -66,10 +68,15 @@ export default function Paywall({
   return (
     <div className="min-h-screen bg-[#080d1a] overflow-y-auto">
       <div className="max-w-lg mx-auto px-6 py-12 space-y-8">
-        {/* Back */}
-        <button onClick={onBack} className="text-[#6b849e] hover:text-[#f0f4f8] flex items-center gap-1 transition-colors text-sm">
-          <ArrowLeft size={16} /> Back
-        </button>
+        {/* Back + persistent account access, matching Dashboard/DNSCourseView's header icon */}
+        <div className="flex items-center justify-between">
+          <button onClick={onBack} className="text-[#6b849e] hover:text-[#f0f4f8] flex items-center gap-1 transition-colors text-sm">
+            <ArrowLeft size={16} /> Back
+          </button>
+          <button onClick={onOpenSettings} className="bg-[#1a2a42] p-2 rounded-full hover:opacity-80 transition-opacity" aria-label="Profile & Settings">
+            <User size={20} className="text-[#6b849e]" />
+          </button>
+        </div>
 
         {/* Already purchased — fastest way out, shown before any sales content */}
         <div className="text-center">

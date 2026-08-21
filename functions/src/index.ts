@@ -26,6 +26,16 @@ function entitlementDocRef(uid: string) {
   return db.doc(`artifacts/${APP_ID}/users/${uid}/entitlement/main`);
 }
 
+// Single source of truth for "is this uid DNS-entitled", read via the Admin SDK (bypasses
+// Security Rules entirely — same IAM-authorized access class as the rest of this trusted
+// server boundary). Missing document, missing field, or anything other than the literal
+// boolean true all resolve to false — this never infers entitlement from absence of
+// data, only from an explicit true.
+async function hasDnsEntitlement(uid: string): Promise<boolean> {
+  const snap = await entitlementDocRef(uid).get();
+  return snap.exists && snap.data()?.dnsFoundationsEntitled === true;
+}
+
 // The Stripe Firebase Extension (invertase/firestore-stripe-payments) writes each
 // completed Checkout Session's line items onto the payment document as `items`, with
 // `item.price` as either an expanded Price object or a plain price ID string depending
@@ -89,8 +99,7 @@ export const getDnsCourseDayMedia = onCall(async (request) => {
     throw new HttpsError('invalid-argument', 'Invalid DNS course day.');
   }
 
-  const entitlementSnap = await entitlementDocRef(request.auth.uid).get();
-  const entitled = entitlementSnap.exists && entitlementSnap.data()?.dnsFoundationsEntitled === true;
+  const entitled = await hasDnsEntitlement(request.auth.uid);
   if (!entitled) {
     throw new HttpsError('permission-denied', 'DNS Foundations entitlement required.');
   }

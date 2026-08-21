@@ -2066,6 +2066,7 @@ export default function App() {
           checkoutLoading={checkoutLoading}
           setCheckoutLoading={setCheckoutLoading}
           onBack={() => setCurrentView('dashboard')}
+          onOpenSettings={() => setCurrentView('settings')}
           onGoogleSignIn={handleGoogleSignIn}
           onSendSignInLink={handleSendSignInLink}
           signInLoading={signInLoading}
@@ -2100,6 +2101,7 @@ export default function App() {
             checkoutLoading={checkoutLoading}
             setCheckoutLoading={setCheckoutLoading}
             onBack={() => setCurrentView('dashboard')}
+            onOpenSettings={() => setCurrentView('settings')}
             onGoogleSignIn={handleGoogleSignIn}
             onSendSignInLink={handleSendSignInLink}
             signInLoading={signInLoading}
@@ -2376,6 +2378,7 @@ export default function App() {
           checkoutLoading={checkoutLoading}
           setCheckoutLoading={setCheckoutLoading}
           onBack={() => setCurrentView('dashboard')}
+          onOpenSettings={() => setCurrentView('settings')}
           onGoogleSignIn={handleGoogleSignIn}
           onSendSignInLink={handleSendSignInLink}
           signInLoading={signInLoading}

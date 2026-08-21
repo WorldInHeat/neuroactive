@@ -37,7 +37,7 @@ const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 // Console -> Authentication -> Users). Deliberately NOT resolved from email here — per
 // requirements, only UIDs you've separately confirmed are accepted.
 const BETA_COHORT_UIDS = [
-  'hnf35g3YI5X4yKV2JZllK4DbX0c2',
+  'y8ZkA5HM93gcwGrhXHUMf3fBue32',
 ];
 
 // --- Fixed, non-configurable targets ------------------------------------------------
