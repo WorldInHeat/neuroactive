@@ -64,6 +64,7 @@ export default function Paywall({
   const [ageError, setAgeError] = useState(false);
   const visibleTiers = DNS_ONLY_LAUNCH ? ALL_TIERS.filter((t) => t.key === 'program') : ALL_TIERS;
   const features = DNS_ONLY_LAUNCH ? DNS_ONLY_FEATURES : FULL_FEATURES;
+  const isAnonymous = auth?.currentUser?.isAnonymous === true;
 
   return (
     <div className="min-h-screen bg-[#080d1a] overflow-y-auto">
@@ -248,15 +249,20 @@ export default function Paywall({
 
         {/* CTA */}
         <div className="space-y-3 pb-8">
+          {isAnonymous && (
+            <p className="text-center text-sm text-[#6b849e]">
+              Sign in with Google or email before purchasing DNS Foundations.
+            </p>
+          )}
           {visibleTiers.map(({ key, label, sublabel }) => {
             const uid = auth?.currentUser?.uid;
             const loading = checkoutLoading === key;
             return (
               <div key={key}>
                 <button
-                  disabled={checkoutLoading !== null || !uid}
+                  disabled={checkoutLoading !== null || !uid || isAnonymous}
                   onClick={async () => {
-                    if (!uid) return;
+                    if (!uid || isAnonymous) return;
                     if (!ageConfirmed) {
                       setAgeError(true);
                       return;
@@ -276,7 +282,7 @@ export default function Paywall({
                 >
                   <span className="flex items-center gap-2">
                     <CreditCard size={18} />
-                    {loading ? 'Loading…' : label}
+                    {isAnonymous ? 'Sign in above to purchase' : loading ? 'Loading…' : label}
                   </span>
                   {!loading && <span className="text-xs font-normal opacity-70">{sublabel}</span>}
                 </button>

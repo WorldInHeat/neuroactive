@@ -1,5 +1,6 @@
 import { db } from './firebase';
 import { collection, addDoc, onSnapshot } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 
 // 'program' now points at a live-mode Stripe price. import.meta.env.DEV (same pattern as
 // DevTimeSkip in App.tsx) keeps local dev on the test-mode price so `npm run dev` can
@@ -28,6 +29,20 @@ const CHECKOUT_MODE: Record<PriceKey, 'payment' | 'subscription'> = {
 };
 
 export async function createCheckoutSession(userId: string, priceKey: PriceKey): Promise<void> {
+  // Production DNS Checkout is created at a trusted server boundary using a modern
+  // Stripe API version. Keep local development on the existing test price so running
+  // the dev client can never create a live charge.
+  if (priceKey === 'program' && !import.meta.env.DEV) {
+    const createDnsCheckout = httpsCallable<void, { url: string }>(
+      getFunctions(),
+      'createDnsCheckoutSession'
+    );
+    const result = await createDnsCheckout();
+    if (!result.data.url) throw new Error('Checkout URL was not returned.');
+    window.location.assign(result.data.url);
+    return;
+  }
+
   const checkoutSessionRef = await addDoc(
     collection(db, 'customers', userId, 'checkout_sessions'),
     {

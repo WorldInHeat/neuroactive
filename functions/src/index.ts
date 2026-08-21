@@ -5,11 +5,13 @@
 
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
-import { initializeApp } from 'firebase-admin/app';
+import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { DNS_COURSE_DAY_MEDIA } from './dnsCourseDayMedia';
 
-initializeApp();
+export { createDnsCheckoutSession, handleDnsNoCostCheckout } from './dnsCheckout';
+
+if (getApps().length === 0) initializeApp();
 const db = getFirestore();
 
 // Must match the appId constant in src/App.tsx / src/services/firebase.ts.
