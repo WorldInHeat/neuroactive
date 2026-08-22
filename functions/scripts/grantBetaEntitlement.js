@@ -17,17 +17,20 @@
 //     clear message and non-zero exit code — never silently skips or continues.
 //   - Dry-run by default: prints the full plan (every UID + what would happen) and
 //     performs zero writes unless invoked with --execute.
-//   - Only ever WRITES when a uid currently has no entitlement document at all. Every
-//     other existing state (already beta-granted, already paid, or explicitly
-//     false/revoked) is skipped — this script can never overwrite or downgrade
-//     legitimate entitlement provenance, and never auto-re-grants a revoked account.
+//   - Only ever touches the single `beta_grant` basis on the entitlement document (see
+//     functions/src/dnsEntitlement.ts) — every other basis (a Stripe purchase, a $0
+//     promotional Checkout) is read back unchanged and rewritten as-is, so this script
+//     can grant beta access to an account that also has a real, or even a refunded,
+//     purchase on it without touching that purchase's own basis either way. A uid whose
+//     beta_grant basis is already active is skipped (idempotent, safe to re-run).
 //   - UID list is explicit and hardcoded below — no email lookup, no resolution logic.
 //   - Every UID is validated (type, trimmed, non-empty, no "/", safe character set) and
 //     deduplicated BEFORE Admin SDK initialization or any Firestore access.
-//   - The actual grant write at --execute time uses an atomic create-only operation
-//     (DocumentReference.create), not a plan-then-set — if an entitlement document was
-//     created by anything else (e.g. a real purchase) between planning and writing, the
-//     create fails instead of silently overwriting it.
+//   - The actual grant write at --execute time is a Firestore transaction: read the
+//     current document, merge in an active beta_grant basis alongside every existing
+//     basis untouched, recompute the derived dnsFoundationsEntitled/source fields from
+//     the full merged set, write. A document with no existing entitlement at all, and a
+//     document with other active bases, are both handled by the same transaction.
 
 const { initializeApp, applicationDefault } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
@@ -110,14 +113,46 @@ function validateAndDedupeUids(rawList) {
   return valid;
 }
 
-// grpc.status.ALREADY_EXISTS — the code the Admin Firestore SDK surfaces when
-// DocumentReference.create() targets a path that already has a document. Matched on
-// both code and message text since error-wrapping has varied across SDK versions.
-const FIRESTORE_ALREADY_EXISTS_CODE = 6;
-function isAlreadyExistsError(err) {
-  if (!err) return false;
-  if (err.code === FIRESTORE_ALREADY_EXISTS_CODE) return true;
-  if (typeof err.message === 'string' && /already exists/i.test(err.message)) return true;
+// Mirrors isValidActiveBasis in functions/src/dnsEntitlement.ts EXACTLY — the single
+// validity predicate for "does this basis entry actually authorize DNS access."
+// `active: true` alone is never sufficient: the basis's key, type, and provenance ID
+// must all agree with one of the three recognized, structurally valid forms. Duplicated
+// here (not imported) because this script runs standalone in Cloud Shell and is
+// deliberately not part of the deployed Functions codebase (see header) — but the logic
+// must stay identical, or this script could compute effective entitlement differently
+// than the deployed Functions do. Keep the two in sync if the basis model ever changes.
+function isValidActiveBasis(basisKey, basis) {
+  if (!basis || basis.active !== true) return false;
+  // A terminally revoked basis can never authorize, independent of key/type/provenance
+  // checks below — this must hold even if `active: true` is also present due to
+  // malformed, historical, or otherwise corrupt state.
+  if (basis.terminal === true) return false;
+
+  if (basisKey === 'beta_grant') {
+    return basis.type === 'beta_grant';
+  }
+
+  const paidPrefix = 'stripe_program:';
+  if (basisKey.startsWith(paidPrefix)) {
+    const paymentIntentId = basisKey.slice(paidPrefix.length);
+    return (
+      basis.type === 'stripe_program' &&
+      paymentIntentId.length > 0 &&
+      basis.stripePaymentId === paymentIntentId
+    );
+  }
+
+  const zeroTotalPrefix = 'stripe_program_zero_total:';
+  if (basisKey.startsWith(zeroTotalPrefix)) {
+    const checkoutSessionId = basisKey.slice(zeroTotalPrefix.length);
+    return (
+      basis.type === 'stripe_program_zero_total' &&
+      checkoutSessionId.length > 0 &&
+      basis.stripeCheckoutSessionId === checkoutSessionId
+    );
+  }
+
+  // Every other key shape, including any `legacy_unknown:*` key, is never authorizing.
   return false;
 }
 
@@ -180,9 +215,19 @@ async function main() {
 
   const db = getFirestore(app);
 
+  // Is the beta_grant basis already active on this uid's document? Checks both the
+  // current per-basis shape and the legacy flat shape (a document written before
+  // per-basis tracking existed, which never had a `bases` field at all).
+  function betaBasisAlreadyActive(data) {
+    if (data.bases) return isValidActiveBasis('beta_grant', data.bases.beta_grant);
+    return data.source === 'beta_grant' && data.dnsFoundationsEntitled === true;
+  }
+
   // Plan is computed in full, for every uid, before any write happens — this is the
   // "print exactly which UIDs it will grant before writing" step, and it runs
-  // identically in both dry-run and --execute mode.
+  // identically in both dry-run and --execute mode. GRANT here means "ensure the
+  // beta_grant basis is active" — it says nothing about, and never touches, any other
+  // basis (a Stripe purchase, active or refunded) that may also be on the document.
   const plan = [];
   for (const uid of uids) {
     const ref = db.doc(entitlementPath(uid));
@@ -202,28 +247,31 @@ async function main() {
     }
 
     const data = snap.data() || {};
-    if (data.dnsFoundationsEntitled === true) {
+
+    if (betaBasisAlreadyActive(data)) {
       plan.push({
         uid,
         action: 'SKIP',
-        reason: `already entitled (source: ${JSON.stringify(data.source ?? null)}) — never overwriting existing true entitlement`,
+        reason: 'beta_grant basis is already active — never re-writing an already-active basis',
       });
       continue;
     }
 
-    if (data.dnsFoundationsEntitled === false) {
+    if (!data.bases && data.dnsFoundationsEntitled === false) {
       plan.push({
         uid,
         action: 'FLAG_FOR_REVIEW',
-        reason: `dnsFoundationsEntitled is explicitly false (source: ${JSON.stringify(data.source ?? null)}, updatedAt: ${formatTimestamp(data.updatedAt)}) — no code path in this project ever writes false automatically, so this can only be a deliberate manual revocation (e.g. after a refund). NOT auto-granting. Review this account manually before deciding.`,
+        reason: `legacy document has dnsFoundationsEntitled explicitly false (source: ${JSON.stringify(data.source ?? null)}, updatedAt: ${formatTimestamp(data.updatedAt)}) — this predates per-basis tracking and no code path writes false automatically for a legacy document, so this can only be a deliberate manual revocation. NOT auto-granting beta access over it without review.`,
       });
       continue;
     }
 
     plan.push({
       uid,
-      action: 'FLAG_FOR_REVIEW',
-      reason: `entitlement document exists in an unexpected shape (raw: ${JSON.stringify(data)}) — not matching any known-good pattern. NOT auto-granting.`,
+      action: 'GRANT',
+      reason: data.bases || data.dnsFoundationsEntitled === true
+        ? `beta_grant basis not yet active (existing source: ${JSON.stringify(data.source ?? null)}) — other bases on this document, if any, are left untouched`
+        : 'entitlement document exists in an unrecognized shape — granting beta_grant basis only, every other field is left untouched',
     });
   }
 
@@ -251,27 +299,110 @@ async function main() {
     return;
   }
 
+  // Mirrors applyDnsEntitlementBasis in functions/src/dnsEntitlement.ts — duplicated
+  // here in plain JS rather than imported, since this script runs standalone in Cloud
+  // Shell and is deliberately not part of the deployed Functions codebase (see header).
+  // Keep the two in sync if the basis model ever changes.
+  async function grantBetaBasis(uid) {
+    const ref = db.doc(entitlementPath(uid));
+    return db.runTransaction(async (transaction) => {
+      const snap = await transaction.get(ref);
+      const data = snap.exists ? snap.data() || {} : {};
+      const bases = { ...(data.bases || {}) };
+      const now = FieldValue.serverTimestamp();
+
+      // One-time implicit migration: a legacy document (no `bases` field yet) that
+      // already has some OTHER active grant must have that grant represented as its
+      // own basis before this beta_grant basis is added, or it would silently vanish
+      // from the effective computation the moment a second basis is ever recorded.
+      if (!data.bases && data.dnsFoundationsEntitled === true && typeof data.source === 'string') {
+        if (data.source === 'stripe:program' && typeof data.stripePaymentId === 'string') {
+          bases[`stripe_program:${data.stripePaymentId}`] = {
+            type: 'stripe_program',
+            active: true,
+            stripePaymentId: data.stripePaymentId,
+            migratedFromLegacy: true,
+            createdAt: now,
+            updatedAt: now,
+          };
+        } else if (
+          data.source === 'stripe:program:zero-total-checkout' &&
+          typeof data.stripeCheckoutSessionId === 'string'
+        ) {
+          bases[`stripe_program_zero_total:${data.stripeCheckoutSessionId}`] = {
+            type: 'stripe_program_zero_total',
+            active: true,
+            stripeCheckoutSessionId: data.stripeCheckoutSessionId,
+            migratedFromLegacy: true,
+            createdAt: now,
+            updatedAt: now,
+          };
+        } else if (data.source !== 'beta_grant') {
+          // Fail closed, not open: every source string this project has ever written is
+          // one of the three handled above, so this should be structurally unreachable —
+          // but an unrecognized state must never keep authorizing access just because it
+          // used to. Migrated INACTIVE and flagged for manual review, matching
+          // functions/src/dnsEntitlement.ts's migrateLegacyBasis exactly.
+          console.warn(`  NOTE: ${uid} has an unrecognized legacy entitlement source (${JSON.stringify(data.source)}) — migrating as INACTIVE, flagged for manual review, not auto-granting access from it.`);
+          bases[`legacy_unknown:${data.source}`] = {
+            type: 'legacy_unknown',
+            active: false,
+            needsManualReview: true,
+            unrecognizedLegacySource: data.source,
+            migratedFromLegacy: true,
+            createdAt: now,
+            updatedAt: now,
+          };
+        }
+      }
+
+      const existingBetaBasis = bases.beta_grant;
+      bases.beta_grant = {
+        type: 'beta_grant',
+        active: true,
+        cohort: COHORT,
+        createdAt: existingBetaBasis?.createdAt ?? now,
+        updatedAt: now,
+      };
+
+      const effective = Object.entries(bases).some(([key, b]) => isValidActiveBasis(key, b));
+      // legacy_unknown deliberately excluded — it never passes isValidActiveBasis, so it
+      // never needs a display label, matching dnsEntitlement.ts's SOURCE_PRIORITY.
+      const sourcePriority = ['stripe_program', 'stripe_program_zero_total', 'beta_grant'];
+      const sourceStrings = {
+        stripe_program: 'stripe:program',
+        stripe_program_zero_total: 'stripe:program:zero-total-checkout',
+        beta_grant: 'beta_grant',
+      };
+      let source = null;
+      for (const type of sourcePriority) {
+        const hit = Object.entries(bases).find(([key, b]) => b && b.type === type && isValidActiveBasis(key, b));
+        if (hit) {
+          source = sourceStrings[type];
+          break;
+        }
+      }
+
+      transaction.set(
+        ref,
+        {
+          dnsFoundationsEntitled: effective,
+          source,
+          bases,
+          updatedAt: now,
+        },
+        { merge: true }
+      );
+    });
+  }
+
   console.log('');
   console.log('Writing grants...');
   for (const item of toGrant) {
-    const ref = db.doc(entitlementPath(item.uid));
     try {
-      // create(), not set()/merge — atomic, fails outright if a document now exists at
-      // this path. Planning happened earlier and is not re-checked here, so this is the
-      // only thing standing between "no document at plan time" and actually overwriting
-      // something that appeared in between (e.g. a real purchase completing).
-      await ref.create({
-        dnsFoundationsEntitled: true,
-        source: 'beta_grant',
-        cohort: COHORT,
-        updatedAt: FieldValue.serverTimestamp(),
-      });
+      await grantBetaBasis(item.uid);
       console.log(`  granted: ${item.uid}`);
     } catch (err) {
-      if (isAlreadyExistsError(err)) {
-        console.log(`  SKIPPED ${item.uid}: an entitlement document now exists that didn't exist during planning — not overwriting it. Re-run the script to see its current state.`);
-        continue;
-      }
       console.error(`  FAILED to write ${item.uid}: ${String(err)}`);
       console.error('Aborting remaining writes rather than continuing after a failure.');
       process.exit(1);

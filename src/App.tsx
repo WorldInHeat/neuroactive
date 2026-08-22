@@ -281,6 +281,7 @@ const LegalDisclaimer = ({ onAgree, onCancel }: { onAgree: () => void; onCancel:
 // --- Settings Component ---
 const SettingsView = ({
   isPremium,
+  dnsAccountStatus,
   onBack,
   onGoToDashboard,
   onLogout,
@@ -293,6 +294,13 @@ const SettingsView = ({
   signInError,
 }: {
   isPremium: boolean;
+  // DNS_ONLY_LAUNCH-only account status, computed in App() from the server-authoritative
+  // entitlement basis (see functions/src/dnsEntitlement.ts) — drives the Current Plan
+  // label below instead of the legacy isPremium/Stripe-subscription signal, so a
+  // beta-granted account never shows "Free Tier" and a purchaser's refund never shows
+  // "God Mode (Pro)" merely because some unrelated legacy isPremium flag is still true.
+  // When DNS_ONLY_LAUNCH is off, the legacy isPremium-driven label is used unchanged.
+  dnsAccountStatus: 'active' | 'beta' | 'none';
   onBack: () => void;
   onGoToDashboard: () => void;
   onLogout: () => void;
@@ -400,9 +408,19 @@ const SettingsView = ({
           <div className="flex justify-between items-center bg-[#080d1a] p-4 rounded-xl border border-[#1a2a42]">
             <div>
               <span className="text-xs font-bold text-[#6b849e] uppercase">Current Plan</span>
-              <div className="text-lg font-bold text-[#f0f4f8]">{isPremium ? 'God Mode (Pro)' : 'Free Tier'}</div>
+              <div className="text-lg font-bold text-[#f0f4f8]">
+                {DNS_ONLY_LAUNCH
+                  ? dnsAccountStatus === 'active'
+                    ? 'DNS Foundations — Active'
+                    : dnsAccountStatus === 'beta'
+                    ? 'DNS Foundations — Beta Access'
+                    : 'Free Tier'
+                  : isPremium
+                  ? 'God Mode (Pro)'
+                  : 'Free Tier'}
+              </div>
             </div>
-            {isPremium ? (
+            {(DNS_ONLY_LAUNCH ? dnsAccountStatus !== 'none' : isPremium) ? (
               <div className="flex flex-col items-end gap-2">
                 <span className="bg-[#00e096]/15 text-[#00e096] border border-[#00e096]/30 px-3 py-1 rounded-full text-xs font-bold">Active</span>
                 {onManageSubscription && (
@@ -873,6 +891,11 @@ export default function App() {
   // Only 'entitled' unlocks anything; 'loading' and 'not-entitled' are both treated as
   // locked, so there's no window where a wrong/stale value can unlock the course.
   const [dnsEntitlementState, setDnsEntitlementState] = useState<'loading' | 'entitled' | 'not-entitled'>('loading');
+  // The entitlement document's derived `source` field (e.g. 'stripe:program',
+  // 'beta_grant') — see functions/src/dnsEntitlement.ts. Display-only: drives the
+  // DNS_ONLY_LAUNCH account-status label in Settings, never a security decision (that's
+  // dnsEntitlementState alone). Reset alongside dnsEntitlementState everywhere below.
+  const [dnsEntitlementSource, setDnsEntitlementSource] = useState<string | null>(null);
   // Tracks whose entitlement dnsEntitlementState currently reflects, so the auth effect
   // can tell "uid actually changed, reset to loading" apart from "same uid, listener
   // re-fired" (e.g. a token refresh) — resetting on every re-fire would flash the
@@ -1191,6 +1214,7 @@ export default function App() {
           // callback — resolves, which might never happen.
           entitlementUidRef.current = user.uid;
           setDnsEntitlementState('loading');
+          setDnsEntitlementSource(null);
         }
         const entitlementRef = doc(db, 'artifacts', appId, 'users', user.uid, 'entitlement', 'main');
         unsubscribeEntitlement = onSnapshot(
@@ -1198,12 +1222,14 @@ export default function App() {
           (snap) => {
             const entitled = snap.exists() && snap.data()?.dnsFoundationsEntitled === true;
             setDnsEntitlementState(entitled ? 'entitled' : 'not-entitled');
+            setDnsEntitlementSource(entitled ? (snap.data()?.source ?? null) : null);
           },
           (err) => {
             console.warn('[Entitlement] snapshot failed:', err);
             // Fail closed: an errored listener must never leave a stale 'entitled' (or
             // indefinite 'loading') on screen.
             setDnsEntitlementState('not-entitled');
+            setDnsEntitlementSource(null);
           }
         );
 
@@ -1256,6 +1282,7 @@ export default function App() {
         if (unsubscribeEntitlement) { unsubscribeEntitlement(); unsubscribeEntitlement = null; }
         entitlementUidRef.current = null;
         setDnsEntitlementState('loading');
+        setDnsEntitlementSource(null);
         dnsCourseUidRef.current = null;
         setDnsCourse(DEFAULT_DNS_COURSE);
         // No session at all — sign in anonymously in the background so guest access is
@@ -1332,6 +1359,7 @@ export default function App() {
     setIsPremium(false);
     entitlementUidRef.current = null;
     setDnsEntitlementState('loading');
+    setDnsEntitlementSource(null);
     dnsCourseUidRef.current = null;
     setDnsCourse(DEFAULT_DNS_COURSE);
     setPainLog([]);
@@ -2376,6 +2404,18 @@ export default function App() {
     </div>
   );
 
+  // DNS_ONLY_LAUNCH account-status label for Settings — see functions/src/dnsEntitlement.ts
+  // for the server-side basis model this reads. 'beta_grant' as the *only* active basis
+  // reads as 'beta'; any Stripe-derived basis (paid or a legitimate $0 promo) being active
+  // reads as 'active', matching the source-priority the server already computes. Purely
+  // for display — dnsEntitlementState alone still governs actual DNS course access.
+  const dnsAccountStatus: 'active' | 'beta' | 'none' =
+    dnsEntitlementState !== 'entitled'
+      ? 'none'
+      : dnsEntitlementSource === 'beta_grant'
+      ? 'beta'
+      : 'active';
+
   if (authLoading) {
     return (
       <div className="min-h-screen bg-[#080d1a] flex items-center justify-center">
@@ -2442,6 +2482,7 @@ export default function App() {
       {currentView === 'settings' && (
         <SettingsView
           isPremium={isPremium}
+          dnsAccountStatus={dnsAccountStatus}
           onBack={() => setCurrentView('dashboard')}
           onGoToDashboard={() => setCurrentView('dashboard')}
           onLogout={handleLogout}
