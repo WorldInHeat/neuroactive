@@ -507,7 +507,7 @@ const SettingsView = ({
             <h3 className="font-bold text-[#f0f4f8] mb-1">Password sign-in</h3>
             {setPasswordMode === 'done' ? (
               <p className="text-sm text-[#00e096]">
-                Password set. You can now sign in directly with your email and password.
+                Password updated. You can sign in directly with your email and password.
               </p>
             ) : setPasswordMode === 'form' ? (
               <form
@@ -575,7 +575,7 @@ const SettingsView = ({
                     disabled={signInLoading || !newPassword}
                     className="flex-1 border border-[#00d4c8]/40 text-[#00d4c8] text-sm font-semibold py-2 rounded-lg hover:bg-[#00d4c8]/10 transition-colors disabled:opacity-50"
                   >
-                    {signInLoading ? 'Setting…' : 'Set password'}
+                    {signInLoading ? 'Saving…' : 'Set or change password'}
                   </button>
                   <button
                     type="button"
@@ -589,14 +589,14 @@ const SettingsView = ({
             ) : (
               <>
                 <p className="text-sm text-[#6b849e] mb-4">
-                  Add a password to your NeuroActive account so you can sign in directly with your email and
-                  password. This can be especially useful when using NeuroActive from your Home Screen.
+                  Set or change your NeuroActive password so you can sign in directly with your email and
+                  password.
                 </p>
                 <button
                   onClick={() => setSetPasswordMode('form')}
                   className="w-full border border-[#00d4c8]/40 text-[#00d4c8] text-sm font-semibold py-2 rounded-lg hover:bg-[#00d4c8]/10 transition-colors"
                 >
-                  Set a password
+                  Set or change password
                 </button>
               </>
             )}
