@@ -70,24 +70,25 @@ export async function createCheckoutSession(userId: string, priceKey: PriceKey):
   });
 }
 
-export async function createPortalLink(userId: string): Promise<void> {
-  const portalLinkRef = await addDoc(
-    collection(db, 'customers', userId, 'portal_links'),
-    { return_url: window.location.origin }
+export async function createPortalLink(): Promise<void> {
+  const createPortal = httpsCallable<{ returnUrl: string }, { url?: unknown }>(
+    getFunctions(),
+    'ext-firestore-stripe-payments-createPortalLink'
   );
+  const result = await createPortal({ returnUrl: window.location.origin });
+  if (typeof result.data.url !== 'string') {
+    throw new Error('The customer portal URL was not returned.');
+  }
 
-  return new Promise((resolve, reject) => {
-    const unsubscribe = onSnapshot(portalLinkRef, (snap) => {
-      const data = snap.data();
-      if (data?.url) {
-        unsubscribe();
-        window.location.assign(data.url);
-        resolve();
-      }
-      if (data?.error) {
-        unsubscribe();
-        reject(new Error(data.error.message));
-      }
-    });
-  });
+  let portalUrl: URL;
+  try {
+    portalUrl = new URL(result.data.url);
+  } catch {
+    throw new Error('The customer portal returned an invalid URL.');
+  }
+  if (portalUrl.protocol !== 'https:' || portalUrl.hostname !== 'billing.stripe.com') {
+    throw new Error('The customer portal returned an unsafe URL.');
+  }
+
+  window.location.assign(portalUrl.href);
 }

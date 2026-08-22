@@ -298,12 +298,31 @@ const SettingsView = ({
   onLogout: () => void;
   onReset: () => void;
   onUpgrade: () => void;
-  onManageSubscription?: () => void;
+  onManageSubscription?: () => Promise<void>;
   userInfo?: { displayName: string | null; photoURL: string | null; email: string | null; isAnonymous: boolean };
   onGoogleSignIn: () => void;
   signInLoading: boolean;
   signInError: string | null;
 }) => {
+  const [portalLoading, setPortalLoading] = useState(false);
+  const [portalError, setPortalError] = useState<string | null>(null);
+  const portalInFlightRef = useRef(false);
+
+  const handleManageSubscription = async () => {
+    if (!onManageSubscription || portalInFlightRef.current) return;
+    portalInFlightRef.current = true;
+    setPortalLoading(true);
+    setPortalError(null);
+    try {
+      await onManageSubscription();
+    } catch (err) {
+      console.error('Portal link error:', err);
+      setPortalError('Unable to open subscription management. Please try again or contact support.');
+      portalInFlightRef.current = false;
+      setPortalLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#080d1a] pb-20">
       <div className="bg-[#0f1829] border-b border-[#1a2a42] sticky top-0 z-30 flex items-center justify-between p-4">
@@ -388,10 +407,11 @@ const SettingsView = ({
                 <span className="bg-[#00e096]/15 text-[#00e096] border border-[#00e096]/30 px-3 py-1 rounded-full text-xs font-bold">Active</span>
                 {onManageSubscription && (
                   <button
-                    onClick={onManageSubscription}
-                    className="text-xs text-[#6b849e] hover:text-[#f0f4f8] transition-colors underline"
+                    onClick={handleManageSubscription}
+                    disabled={portalLoading}
+                    className="text-xs text-[#6b849e] hover:text-[#f0f4f8] transition-colors underline disabled:opacity-50"
                   >
-                    Manage Subscription
+                    {portalLoading ? 'Opening…' : 'Manage Subscription'}
                   </button>
                 )}
               </div>
@@ -405,6 +425,7 @@ const SettingsView = ({
               </button>
             )}
           </div>
+          {portalError && <p className="mt-3 text-sm text-[#ff4466]" role="alert">{portalError}</p>}
         </div>
 
         {/* Support */}
@@ -2428,12 +2449,8 @@ export default function App() {
           onUpgrade={openUpgrade}
           onManageSubscription={async () => {
             const uid = auth?.currentUser?.uid;
-            if (!uid) return;
-            try {
-              await createPortalLink(uid);
-            } catch (err) {
-              console.error('Portal link error:', err);
-            }
+            if (!uid) throw new Error('You must be signed in to manage a subscription.');
+            await createPortalLink();
           }}
           userInfo={authUser ?? undefined}
           onGoogleSignIn={handleGoogleSignIn}
