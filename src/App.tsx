@@ -54,6 +54,7 @@ import VideoPlayer from './components/VideoPlayer';
 import SessionSummary from './components/SessionSummary';
 import Paywall from './components/Paywall';
 import DNSCourseView from './components/DNSCourseView';
+import InstallSettingsCard from './components/InstallSettingsCard';
 import { createPortalLink, type PriceKey } from './services/stripe';
 import { DNS_ONLY_LAUNCH } from './config/launchConfig';
 
@@ -445,6 +446,11 @@ const SettingsView = ({
           </div>
           {portalError && <p className="mt-3 text-sm text-[#ff4466]" role="alert">{portalError}</p>}
         </div>
+
+        {/* Install NeuroActive — shows an "installed" confirmation in standalone mode,
+            install/instructions otherwise, or hides itself on an unsupported browser
+            with no install path available. */}
+        <InstallSettingsCard />
 
         {/* Support */}
         <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] space-y-1">

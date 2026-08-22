@@ -12,6 +12,7 @@ import { fetchDnsCourseDayMedia, type DnsCourseDayMedia } from '../services/dnsC
 import VideoPlayer from './VideoPlayer';
 import Paywall from './Paywall';
 import DNSProgramIntroduction from './DNSProgramIntroduction';
+import InstallPromptCard from './InstallPromptCard';
 
 // The History tab can only ever know about completions from this date forward —
 // dnsCourse.completionDates isn't backfilled for anything completed earlier.
@@ -548,6 +549,14 @@ export default function DNSCourseView({
       </div>
 
       <div className="max-w-2xl mx-auto p-6 mt-6">
+        {/* Optional install prompt — only ever reached once entitlement/paywall/QA-owner
+            checks above have already passed, i.e. the user is actually in the program.
+            eligible uses currentDay > 1 (already advances only once Day 1 is actually
+            completed, via handleMarkComplete) rather than showing on first arrival, so
+            the user experiences the program before being asked to install. No new
+            persisted field — this reads the same currentDay already driving Today/Past
+            Days/History. */}
+        <InstallPromptCard eligible={dnsCourse.currentDay > 1} />
         {viewingDay !== null ? (() => {
           // Shared by Past Days, History, and QA Lessons — same DayContent, same
           // read-only rewatch behavior, no progress-tracking side effects either way.
