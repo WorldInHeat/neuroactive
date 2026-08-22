@@ -11,6 +11,7 @@ import type { PriceKey } from '../services/stripe';
 import { fetchDnsCourseDayMedia, type DnsCourseDayMedia } from '../services/dnsCourseMedia';
 import VideoPlayer from './VideoPlayer';
 import Paywall from './Paywall';
+import DNSProgramIntroduction from './DNSProgramIntroduction';
 
 // The History tab can only ever know about completions from this date forward —
 // dnsCourse.completionDates isn't backfilled for anything completed earlier.
@@ -337,6 +338,9 @@ export default function DNSCourseView({
   // null = closed, 'list', or a GuidanceEntry id — purely local overlay state, so closing
   // it never touches activeTab, viewingDay, dnsCourse, or the parent's currentView.
   const [guidanceView, setGuidanceView] = useState<string | null>(null);
+  // Navigation-only state: advancing from the public program introduction to the
+  // paywall never writes user/course data and never participates in authorization.
+  const [showPaywall, setShowPaywall] = useState(false);
 
   // isOwnerUid alone is never a security boundary — it only ever gates UI reachability.
   // Real access is still enforced by dnsEntitlementState (isQaOwner below, and the
@@ -369,20 +373,56 @@ export default function DNSCourseView({
   // so the tab bar — and Day 84's rewatch access via Past Days/History — stays intact.
   const currentDayData = DNS_COURSE[dnsCourse.currentDay - 1];
 
-  // Shown once, before the user has ever started the course. Deliberately shown before
-  // the paywall check below — this is philosophy/context-setting, not program content,
-  // so non-premium users see it too (same reasoning as keeping pain-triage free).
+  // currentDayData is undefined only in the course-complete state (see above) — every
+  // real day in DNS_COURSE is premium, so `?? true` preserves the exact same gating
+  // behavior for that state (Past Days/History content is premium too) without reading
+  // .isPremium off of undefined.
+  if ((currentDayData?.isPremium ?? true) && dnsEntitlementState !== 'entitled') {
+    // 'loading': the current uid's entitlement snapshot hasn't resolved yet — a real
+    // purchaser lands here first, so show a lightweight wait state instead of flashing
+    // the paywall at them. 'not-entitled' (resolved, confirmed no access, or a uid
+    // change/listener error per the auth effect) shows the real paywall.
+    if (dnsEntitlementState === 'loading') {
+      return (
+        <div className="min-h-screen bg-[#080d1a] flex items-center justify-center">
+          <p className="text-[#6b849e] text-sm font-semibold">Checking your access…</p>
+        </div>
+      );
+    }
+    if (!showPaywall) {
+      return (
+        <DNSProgramIntroduction
+          onBack={onBack}
+          onContinue={() => setShowPaywall(true)}
+          onOpenSettings={onOpenSettings}
+        />
+      );
+    }
+    return (
+      <Paywall
+        auth={auth}
+        checkoutLoading={checkoutLoading}
+        setCheckoutLoading={setCheckoutLoading}
+        onBack={onBack}
+        onOpenSettings={onOpenSettings}
+        onGoogleSignIn={onGoogleSignIn}
+        onSendSignInLink={onSendSignInLink}
+        signInLoading={signInLoading}
+        signInError={signInError}
+        isInAppBrowser={isInAppBrowser}
+      />
+    );
+  }
+
+  // Shown once, now that entitlement is confirmed — this is the first screen of the
+  // entitled program experience, not pre-purchase content (moved below the entitlement
+  // check above; previously shown to unentitled visitors too).
   //
-  // Narrow owner-only exception (Codex review fix): for every uid except the exact QA
-  // owner uid, that ordering is unchanged. For the owner, this full-page return would
-  // otherwise block reachability to the entitlement/paywall check AND the QA tab behind
-  // it — an entitled owner could only reach QA by first writing real progress (clicking
-  // "Start Week 1, Day 1" below), and an unentitled owner would see this screen instead
-  // of failing closed to the paywall. Skipping it here lets the very next check
-  // (unmodified) resolve loading/paywall/entitled for the owner first; the owner's
-  // "not started yet" state is then handled inside the Today tab itself (see the
-  // `activeTab === 'today'` branch below), the same way `!currentDayData` (course
-  // complete) already is, instead of a blocking full page.
+  // Narrow owner-only exception (unchanged): the QA owner reaches this component's tab
+  // bar/QA tab even with an empty startedAt, without being blocked by this full-page
+  // return — their "not started yet" state is handled inside the Today tab instead (see
+  // the `activeTab === 'today'` branch below), the same way `!currentDayData` (course
+  // complete) already is.
   if (!dnsCourse.startedAt && !isOwnerUid) {
     return (
       <div className="min-h-screen bg-[#080d1a] pb-20">
@@ -400,38 +440,6 @@ export default function DNSCourseView({
           </button>
         </div>
       </div>
-    );
-  }
-
-  // currentDayData is undefined only in the course-complete state (see above) — every
-  // real day in DNS_COURSE is premium, so `?? true` preserves the exact same gating
-  // behavior for that state (Past Days/History content is premium too) without reading
-  // .isPremium off of undefined.
-  if ((currentDayData?.isPremium ?? true) && dnsEntitlementState !== 'entitled') {
-    // 'loading': the current uid's entitlement snapshot hasn't resolved yet — a real
-    // purchaser lands here first, so show a lightweight wait state instead of flashing
-    // the paywall at them. 'not-entitled' (resolved, confirmed no access, or a uid
-    // change/listener error per the auth effect) shows the real paywall.
-    if (dnsEntitlementState === 'loading') {
-      return (
-        <div className="min-h-screen bg-[#080d1a] flex items-center justify-center">
-          <p className="text-[#6b849e] text-sm font-semibold">Checking your access…</p>
-        </div>
-      );
-    }
-    return (
-      <Paywall
-        auth={auth}
-        checkoutLoading={checkoutLoading}
-        setCheckoutLoading={setCheckoutLoading}
-        onBack={onBack}
-        onOpenSettings={onOpenSettings}
-        onGoogleSignIn={onGoogleSignIn}
-        onSendSignInLink={onSendSignInLink}
-        signInLoading={signInLoading}
-        signInError={signInError}
-        isInAppBrowser={isInAppBrowser}
-      />
     );
   }
 

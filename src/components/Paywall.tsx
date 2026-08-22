@@ -64,7 +64,9 @@ export default function Paywall({
   const [ageError, setAgeError] = useState(false);
   const visibleTiers = DNS_ONLY_LAUNCH ? ALL_TIERS.filter((t) => t.key === 'program') : ALL_TIERS;
   const features = DNS_ONLY_LAUNCH ? DNS_ONLY_FEATURES : FULL_FEATURES;
-  const isAnonymous = auth?.currentUser?.isAnonymous === true;
+  // Treat the brief/no-user edge the same as an anonymous session: purchasing stays
+  // disabled and account-access controls remain available until a real user exists.
+  const isAnonymous = !auth?.currentUser || auth.currentUser.isAnonymous;
 
   return (
     <div className="min-h-screen bg-[#080d1a] overflow-y-auto">
@@ -79,9 +81,10 @@ export default function Paywall({
           </button>
         </div>
 
-        {/* Already purchased — fastest way out, shown before any sales content */}
-        <div className="text-center">
-          <p className="text-[#f0f4f8] text-sm font-semibold mb-3">Already purchased?</p>
+        {/* Anonymous account upgrade — authenticated users already have an account and
+            should not be prompted to sign in again or create a duplicate identity. */}
+        {isAnonymous && <div className="text-center">
+          <p className="text-[#f0f4f8] text-sm font-semibold mb-3">Sign in or create an account</p>
 
           {linkSent ? (
             <div className="max-w-xs mx-auto bg-[#0f1829] border border-[#00d4c8]/30 rounded-lg p-4">
@@ -151,7 +154,7 @@ export default function Paywall({
           {signInError && (
             <p className="text-xs text-red-400 mt-2 leading-relaxed">{signInError}</p>
           )}
-        </div>
+        </div>}
 
         {/* Paywall hero video — personal testimonial, filmed vertically unlike every
             other video in the app, hence orientation="portrait" (see VideoPlayer). */}

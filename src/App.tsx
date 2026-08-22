@@ -1479,6 +1479,13 @@ export default function App() {
     }
   };
 
+  // DNS launch purchase entry points all pass through DNSCourseView so entitlement
+  // loading and the pre-paywall introduction cannot be bypassed by an Upgrade button.
+  const openUpgrade = () => {
+    if (DNS_ONLY_LAUNCH) attemptNavigation('dns-course');
+    else setCurrentView('paywall');
+  };
+
   // Shared entry point for "Start/New/Begin Assessment" — the only callers that
   // enter the assessment flow fresh (no specific nodeId). Deep links (Library
   // playback, prescription follow-up, etc.) always pass a nodeId and skip this
@@ -1820,7 +1827,7 @@ export default function App() {
             <div className="flex items-center gap-4">
               {!isPremium && (
                 <button
-                  onClick={() => setCurrentView('paywall')}
+                  onClick={openUpgrade}
                   className="text-xs font-bold text-[#080d1a] px-3 py-1.5 rounded-full hover:opacity-90 transition-all"
                   style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
                 >
@@ -2389,6 +2396,7 @@ export default function App() {
       {currentView === 'assessment' && <AssessmentView />}
       {currentView === 'dns-course' && (
         <DNSCourseView
+          key={auth?.currentUser?.uid ?? 'signed-out'}
           dnsCourse={dnsCourse}
           onUpdateDnsCourse={updateDnsCourse}
           today={todayLocalISO()}
@@ -2407,7 +2415,7 @@ export default function App() {
       )}
       {currentView === 'dashboard' && pendingBaselineNodeId
         ? <BaselineCaptureScreen onSave={handleBaselineSaveAndContinue} todayISO={todayISO} />
-        : currentView === 'dashboard' && !hasWatchedWelcome
+        : currentView === 'dashboard' && !hasWatchedWelcome && !DNS_ONLY_LAUNCH
         ? <WelcomeVideoScreen onContinue={() => { setHasWatchedWelcome(true); saveUserData({ hasWatchedWelcome: true }); }} />
         : currentView === 'dashboard' && <Dashboard />}
       {currentView === 'settings' && (
@@ -2417,7 +2425,7 @@ export default function App() {
           onGoToDashboard={() => setCurrentView('dashboard')}
           onLogout={handleLogout}
           onReset={handleResetJourney}
-          onUpgrade={() => setCurrentView('paywall')}
+          onUpgrade={openUpgrade}
           onManageSubscription={async () => {
             const uid = auth?.currentUser?.uid;
             if (!uid) return;
@@ -2436,7 +2444,7 @@ export default function App() {
       {currentView === 'library' && (
         <LibraryView
           isPremium={isPremium}
-          onUnlock={() => setCurrentView('paywall')}
+          onUnlock={openUpgrade}
           onPlay={(id) => {
             const newHistory = [...history, currentNodeId];
             setHistory(newHistory);
