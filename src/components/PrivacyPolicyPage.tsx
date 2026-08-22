@@ -99,7 +99,10 @@ export default function PrivacyPolicyPage() {
       </LegalSection>
 
       <LegalSection number={6} title="Age">
-        <p>NeuroActive is intended for use by adults age 18 and older.</p>
+        <p>
+          NeuroActive is not intended for children under 13. If you are under the age of majority where you live,
+          you should use NeuroActive only with the permission and supervision of a parent or legal guardian.
+        </p>
       </LegalSection>
 
       <LegalSection number={7} title="Your Rights">

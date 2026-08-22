@@ -13,8 +13,10 @@ export default function TermsOfServicePage() {
 
       <LegalSection number={1} title="Eligibility">
         <p>
-          You must be 18 or older to use the app or purchase the program. By using the app, you represent that you
-          meet this requirement.
+          You must be at least 13 years old to use NeuroActive. If you are under the age of majority where you
+          live, you may use NeuroActive only with the permission and supervision of a parent or legal guardian. By
+          permitting a minor to use NeuroActive, the parent or legal guardian agrees to these Terms on the minor's
+          behalf.
         </p>
       </LegalSection>
 

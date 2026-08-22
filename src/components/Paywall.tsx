@@ -58,10 +58,6 @@ export default function Paywall({
   const [checkoutError, setCheckoutError] = useState<PriceKey | null>(null);
   const [email, setEmail] = useState('');
   const [linkSent, setLinkSent] = useState(false);
-  // Unchecked by default, never persisted anywhere — a purchase-time representation only,
-  // not a stored age/DOB record.
-  const [ageConfirmed, setAgeConfirmed] = useState(false);
-  const [ageError, setAgeError] = useState(false);
   const visibleTiers = DNS_ONLY_LAUNCH ? ALL_TIERS.filter((t) => t.key === 'program') : ALL_TIERS;
   const features = DNS_ONLY_LAUNCH ? DNS_ONLY_FEATURES : FULL_FEATURES;
   // Treat the brief/no-user edge the same as an anonymous session: purchasing stays
@@ -217,7 +213,7 @@ export default function Paywall({
           ))}
         </div>
 
-        {/* Legal disclosure + age confirmation — shown immediately before purchase */}
+        {/* Legal disclosure — shown immediately before purchase */}
         <div className="space-y-3">
           <p className="text-center text-xs text-[#6b849e] leading-relaxed">
             By purchasing, you agree to the{' '}
@@ -230,24 +226,6 @@ export default function Paywall({
             </a>
             .
           </p>
-          <label className="flex items-start gap-2 text-sm text-[#f0f4f8] cursor-pointer">
-            <input
-              type="checkbox"
-              checked={ageConfirmed}
-              onChange={(e) => {
-                setAgeConfirmed(e.target.checked);
-                if (e.target.checked) setAgeError(false);
-              }}
-              className="mt-0.5 accent-[#00d4c8]"
-            />
-            I confirm that I am at least 18 years old.
-          </label>
-          {ageError && (
-            <div className="flex items-center gap-2 text-sm text-[#ff4466]">
-              <AlertCircle size={14} className="flex-shrink-0" />
-              Please confirm you're at least 18 years old to continue.
-            </div>
-          )}
         </div>
 
         {/* CTA */}
@@ -266,10 +244,6 @@ export default function Paywall({
                   disabled={checkoutLoading !== null || !uid || isAnonymous}
                   onClick={async () => {
                     if (!uid || isAnonymous) return;
-                    if (!ageConfirmed) {
-                      setAgeError(true);
-                      return;
-                    }
                     setCheckoutError(null);
                     setCheckoutLoading(key);
                     try {
