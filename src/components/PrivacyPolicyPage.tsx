@@ -16,7 +16,7 @@ export default function PrivacyPolicyPage() {
         <p>
           <strong className="text-[#f0f4f8] font-semibold">Account information.</strong> When you first use the
           app, an anonymous account is created automatically so your progress can be saved before you sign in. If
-          you later sign in with Google or an email link, your account becomes associated with your sign-in
+          you later sign in with Google, email/password, or an email link, your account becomes associated with your sign-in
           credentials. Progress saved before signing in will generally carry over when sign-in is completed on the
           same device. Progress from an anonymous session may not carry over when an email sign-in link is opened
           on a different device.

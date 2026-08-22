@@ -39,6 +39,8 @@ type Props = {
   setCheckoutLoading: (key: PriceKey | null) => void;
   onGoogleSignIn: () => void;
   onSendSignInLink: (email: string) => Promise<void>;
+  onCreatePasswordAccount: (email: string, password: string) => Promise<'ok' | 'account-exists'>;
+  onSignInWithPassword: (email: string, password: string) => Promise<void>;
   signInLoading: boolean;
   signInError: string | null;
   isInAppBrowser: boolean;
@@ -325,6 +327,8 @@ export default function DNSCourseView({
   setCheckoutLoading,
   onGoogleSignIn,
   onSendSignInLink,
+  onCreatePasswordAccount,
+  onSignInWithPassword,
   signInLoading,
   signInError,
   isInAppBrowser,
@@ -408,6 +412,8 @@ export default function DNSCourseView({
         onOpenSettings={onOpenSettings}
         onGoogleSignIn={onGoogleSignIn}
         onSendSignInLink={onSendSignInLink}
+        onCreatePasswordAccount={onCreatePasswordAccount}
+        onSignInWithPassword={onSignInWithPassword}
         signInLoading={signInLoading}
         signInError={signInError}
         isInAppBrowser={isInAppBrowser}

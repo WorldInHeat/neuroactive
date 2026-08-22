@@ -40,6 +40,8 @@ import {
   sendSignInLinkToEmail,
   isSignInWithEmailLink,
   signInWithEmailLink,
+  signInWithEmailAndPassword,
+  updatePassword,
   fetchSignInMethodsForEmail,
   signInAnonymously,
   onAuthStateChanged,
@@ -151,6 +153,36 @@ function mapEmailAuthError(error: unknown): string {
   }
 }
 
+// Mirrors mapEmailAuthError for the password paths (create/sign-in/set-password). Kept
+// separate rather than merged, since the two error codespaces barely overlap (weak-password
+// and invalid-credential only apply here) and a shared function would need a mode flag.
+// 'auth/invalid-credential' is the modern consolidated code Firebase now returns for both
+// wrong-password and no-such-user on sign-in, specifically to avoid revealing which one it
+// was — the message here deliberately doesn't distinguish them either, for the same reason.
+function mapPasswordAuthError(error: unknown): string {
+  const code = error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : '';
+  switch (code) {
+    case 'auth/invalid-email':
+    case 'auth/missing-email':
+      return 'That email address doesn’t look valid.';
+    case 'auth/weak-password':
+      return 'Please choose a longer password.';
+    case 'auth/invalid-credential':
+    case 'auth/wrong-password':
+    case 'auth/user-not-found':
+      return 'Incorrect email or password.';
+    case 'auth/too-many-requests':
+      return 'Too many attempts. Please wait a moment and try again.';
+    case 'auth/operation-not-allowed':
+      return 'Email/password sign-in isn’t available right now. Please try Google instead.';
+    case 'auth/account-exists-with-different-credential':
+      return 'An account already exists using another sign-in method. Please sign in using the method associated with that account.';
+    default:
+      console.error('Password auth error:', error);
+      return 'Something went wrong. Please try again.';
+  }
+}
+
 // If a link/sign-in attempt fails because the email is already registered, check which
 // providers already own it so we can point the user at the right one instead of a dead
 // end — e.g. someone who originally signed up with Google trying to use a magic link here.
@@ -175,7 +207,7 @@ const ASSESSMENT_FIELDS_GATED_UNDER_DNS_ONLY_LAUNCH = [
 
 // Canonical fresh-account DNS course state — used both as the initial useState value and
 // as what dnsCourse resets to whenever the authenticated uid actually changes (see the
-// auth effect's dnsCourseUidRef check), so a new/different account never starts from a
+// auth effect's userDataUidRef check), so a new/different account never starts from a
 // previous account's in-memory progress.
 const DEFAULT_DNS_COURSE: DnsCourseProgress = { currentDay: 1, lastCompletedDate: '', startedAt: '' };
 
@@ -291,6 +323,7 @@ const SettingsView = ({
   onManageSubscription,
   userInfo,
   onGoogleSignIn,
+  onSetPassword,
   signInLoading,
   signInError,
 }: {
@@ -310,12 +343,22 @@ const SettingsView = ({
   onManageSubscription?: () => Promise<void>;
   userInfo?: { displayName: string | null; photoURL: string | null; email: string | null; isAnonymous: boolean };
   onGoogleSignIn: () => void;
+  onSetPassword: (password: string) => Promise<'ok' | 'requires-recent-login'>;
   signInLoading: boolean;
   signInError: string | null;
 }) => {
   const [portalLoading, setPortalLoading] = useState(false);
   const [portalError, setPortalError] = useState<string | null>(null);
   const portalInFlightRef = useRef(false);
+  // Task 4: existing permanent (Google or magic-link) users setting up a password for
+  // reliable installed-PWA sign-in, via updatePassword (see handleSetPassword in App.tsx —
+  // not linkWithCredential, which was found to misfire for magic-link-only users). On
+  // 'requires-recent-login' the form stays open (with signInError explaining why) rather
+  // than a distinct mode, since it's a retryable failure, not a stable state.
+  const [setPasswordMode, setSetPasswordMode] = useState<'idle' | 'form' | 'done'>('idle');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [setPasswordValidationError, setSetPasswordValidationError] = useState<string | null>(null);
 
   const handleManageSubscription = async () => {
     if (!onManageSubscription || portalInFlightRef.current) return;
@@ -368,7 +411,11 @@ const SettingsView = ({
               <p className="text-sm text-[#6b849e] truncate">{userInfo.email}</p>
             )}
             <p className="text-xs text-[#3a4a5e] mt-0.5">
-              {userInfo?.isAnonymous ? 'Session not saved across devices' : 'Signed in with Google'}
+              {userInfo?.isAnonymous
+                ? 'Session not saved across devices'
+                : userInfo?.email
+                ? `Signed in as ${userInfo.email}`
+                : 'Signed in'}
             </p>
           </div>
         </div>
@@ -446,6 +493,115 @@ const SettingsView = ({
           </div>
           {portalError && <p className="mt-3 text-sm text-[#ff4466]" role="alert">{portalError}</p>}
         </div>
+
+        {/* Set a password — existing Google/magic-link users only. Lets them sign in from
+            an installed PWA where the magic link can't reliably reach them, without
+            touching entitlement/progress: updatePassword mutates the already-signed-in
+            uid's own credential, it never links/creates anything.
+            Gating requires userInfo to actually exist and isAnonymous === false explicitly
+            (rather than `!userInfo?.isAnonymous`, which is also true while userInfo is
+            still undefined/loading) plus a real email, since onSetPassword has nothing to
+            act on without one. */}
+        {userInfo && userInfo.isAnonymous === false && userInfo.email && (
+          <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42]">
+            <h3 className="font-bold text-[#f0f4f8] mb-1">Password sign-in</h3>
+            {setPasswordMode === 'done' ? (
+              <p className="text-sm text-[#00e096]">
+                Password set. You can now sign in directly with your email and password.
+              </p>
+            ) : setPasswordMode === 'form' ? (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  setSetPasswordValidationError(null);
+                  if (newPassword.length < 10) {
+                    setSetPasswordValidationError('Password must be at least 10 characters.');
+                    return;
+                  }
+                  if (newPassword !== confirmNewPassword) {
+                    setSetPasswordValidationError('Passwords don’t match.');
+                    return;
+                  }
+                  try {
+                    const result = await onSetPassword(newPassword);
+                    if (result === 'ok') {
+                      setSetPasswordMode('done');
+                      setNewPassword('');
+                      setConfirmNewPassword('');
+                    } else {
+                      // requires-recent-login — a retryable failure, not a stable state;
+                      // stay on the form (signInError below explains why) but don't leave
+                      // the typed password sitting in state.
+                      setNewPassword('');
+                      setConfirmNewPassword('');
+                    }
+                  } catch {
+                    // Any other failure — surfaced via signInError below. Clear the typed
+                    // password rather than leaving a secret sitting in component state
+                    // after a failed attempt.
+                    setNewPassword('');
+                    setConfirmNewPassword('');
+                  }
+                }}
+                className="space-y-2 mt-3"
+              >
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder="New password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  required
+                  className="w-full bg-[#080d1a] border border-[#1a2a42] rounded-lg px-3 py-2 text-sm text-[#f0f4f8] placeholder-[#3a4a5e] focus:outline-none focus:border-[#00d4c8]/50"
+                />
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder="Confirm new password"
+                  value={confirmNewPassword}
+                  onChange={(e) => setConfirmNewPassword(e.target.value)}
+                  required
+                  className="w-full bg-[#080d1a] border border-[#1a2a42] rounded-lg px-3 py-2 text-sm text-[#f0f4f8] placeholder-[#3a4a5e] focus:outline-none focus:border-[#00d4c8]/50"
+                />
+                {setPasswordValidationError && (
+                  <p className="text-xs text-red-400">{setPasswordValidationError}</p>
+                )}
+                {signInError && (
+                  <p className="text-xs text-red-400" role="alert">{signInError}</p>
+                )}
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={signInLoading || !newPassword}
+                    className="flex-1 border border-[#00d4c8]/40 text-[#00d4c8] text-sm font-semibold py-2 rounded-lg hover:bg-[#00d4c8]/10 transition-colors disabled:opacity-50"
+                  >
+                    {signInLoading ? 'Setting…' : 'Set password'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setSetPasswordMode('idle'); setSetPasswordValidationError(null); setNewPassword(''); setConfirmNewPassword(''); }}
+                    className="text-[#6b849e] text-sm hover:text-[#f0f4f8] transition-colors px-2"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <>
+                <p className="text-sm text-[#6b849e] mb-4">
+                  Add a password to your NeuroActive account so you can sign in directly with your email and
+                  password. This can be especially useful when using NeuroActive from your Home Screen.
+                </p>
+                <button
+                  onClick={() => setSetPasswordMode('form')}
+                  className="w-full border border-[#00d4c8]/40 text-[#00d4c8] text-sm font-semibold py-2 rounded-lg hover:bg-[#00d4c8]/10 transition-colors"
+                >
+                  Set a password
+                </button>
+              </>
+            )}
+          </div>
+        )}
 
         {/* Install NeuroActive — shows an "installed" confirmation in standalone mode,
             install/instructions otherwise, or hides itself on an unsupported browser
@@ -922,10 +1078,16 @@ export default function App() {
   const [paymentMessage, setPaymentMessage] = useState<{ type: 'success' | 'canceled'; text: string } | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [dnsCourse, setDnsCourse] = useState<DnsCourseProgress>(DEFAULT_DNS_COURSE);
-  // Tracks whose dnsCourse the state above currently reflects, mirroring
-  // entitlementUidRef below — lets the auth effect tell "uid actually changed, reset
-  // progress before hydrating" apart from "same uid, listener re-fired."
-  const dnsCourseUidRef = useRef<string | null>(null);
+  // Tracks whose userData/main-derived state (dnsCourse plus every other UID-scoped field
+  // below) currently reflects, mirroring entitlementUidRef below — lets the auth effect
+  // tell "uid actually changed, reset before hydrating" apart from "same uid, listener
+  // re-fired." Originally only guarded dnsCourse; expanded (Codex review, Auth Phase A) to
+  // guard the whole UserData-shaped state group after finding several fields used a
+  // conditional-hydration pattern (`if (typeof data.x !== 'undefined') setX(...)`) that
+  // never resets a field the destination user's document happens to lack — leaving the
+  // previous uid's value rendered, and readable by saveUserData's merge writes, under the
+  // new uid. Renamed accordingly.
+  const userDataUidRef = useRef<string | null>(null);
 
   // Captured once at mount, before anything has a chance to clear the flag — tells us
   // whether this page load is potentially the return leg of a redirect sign-in.
@@ -1172,16 +1334,31 @@ export default function App() {
           }).catch((err) => console.warn('[Stripe] customer doc check failed:', err));
         }
 
-        if (dnsCourseUidRef.current !== user.uid) {
-          // uid actually changed — reset dnsCourse to the fresh default BEFORE this
-          // uid's userData listener has any chance to hydrate it, so a different
-          // account never starts out showing (or later persisting) the previous
-          // account's in-memory course progress. If the destination uid's document has
-          // no dnsCourse field, this default is simply what stays. Linking a new
-          // Google/email identity onto an existing (anonymous) session keeps the same
-          // uid, so this branch doesn't fire and progress is left untouched.
-          dnsCourseUidRef.current = user.uid;
+        if (userDataUidRef.current !== user.uid) {
+          // uid actually changed — synchronously reset every UID-scoped field to its safe
+          // default BEFORE this uid's userData listener has any chance to hydrate it, so a
+          // different account never starts out showing (or later persisting, via
+          // saveUserData's merge writes) the previous account's in-memory state. If the
+          // destination uid's document lacks any of these fields, the default is simply
+          // what stays — several of these (activeJourney, activePrescriptions, history,
+          // currentNodeId, isPremium, painLog, hasAgreedToTerms) previously used a
+          // conditional-hydration pattern in the listener below (only set if the field was
+          // actually present on the new doc) that left the OLD uid's value on screen
+          // whenever the new doc lacked that field — this closes that gap. Linking a new
+          // Google/email identity onto an existing (anonymous) session keeps the same uid,
+          // so this branch doesn't fire and progress is left untouched, same as before.
+          userDataUidRef.current = user.uid;
           setDnsCourse(DEFAULT_DNS_COURSE);
+          setActiveJourney(null);
+          setActivePrescriptions([]);
+          setHistory([]);
+          setCurrentNodeId('start');
+          setIsPremium(false);
+          setPainLog([]);
+          setHasAgreedToTerms(false);
+          setTroubleshootingAttempts(0);
+          setHasWatchedWelcome(false);
+          setHasWatchedAssessmentIntro(false);
         }
 
         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'userData', 'main');
@@ -1289,8 +1466,22 @@ export default function App() {
         entitlementUidRef.current = null;
         setDnsEntitlementState('loading');
         setDnsEntitlementSource(null);
-        dnsCourseUidRef.current = null;
+        userDataUidRef.current = null;
         setDnsCourse(DEFAULT_DNS_COURSE);
+        // Symmetric with the userDataUidRef reset in the `if (user)` branch above — closes
+        // the same staleness gap for the brief window between sign-out and the fresh
+        // anonymous sign-in below resolving, rather than relying solely on the uid-changed
+        // check to catch it once the new anonymous user's onAuthStateChanged fires.
+        setActiveJourney(null);
+        setActivePrescriptions([]);
+        setHistory([]);
+        setCurrentNodeId('start');
+        setIsPremium(false);
+        setPainLog([]);
+        setHasAgreedToTerms(false);
+        setTroubleshootingAttempts(0);
+        setHasWatchedWelcome(false);
+        setHasWatchedAssessmentIntro(false);
         // No session at all — sign in anonymously in the background so guest access is
         // frictionless. The user stays on whatever view they're on (default: landing);
         // no separate sign-in screen or explicit "continue as guest" click required.
@@ -1366,12 +1557,15 @@ export default function App() {
     entitlementUidRef.current = null;
     setDnsEntitlementState('loading');
     setDnsEntitlementSource(null);
-    dnsCourseUidRef.current = null;
+    userDataUidRef.current = null;
     setDnsCourse(DEFAULT_DNS_COURSE);
     setPainLog([]);
     // setPhaseLocks({});
     // setLastCheckInAt(null);
     setHasAgreedToTerms(false);
+    setTroubleshootingAttempts(0);
+    setHasWatchedWelcome(false);
+    setHasWatchedAssessmentIntro(false);
     setAuthUser(null);
     setCurrentView('landing');
     setAutoplayToken(null);
@@ -1499,6 +1693,144 @@ export default function App() {
       window.history.replaceState({}, '', clean.toString());
     } catch (error) {
       setSignInError(mapEmailAuthError(error));
+    } finally {
+      setSignInLoading(false);
+    }
+  };
+
+  // AUTH PHASE A — reliable installed-PWA credential, alongside (not replacing) Google and
+  // the magic link. All three password handlers below deliberately never call
+  // fetchSignInMethodsForEmail (deprecated/silently degraded under email-enumeration
+  // protection, per the investigation) — collisions are detected only from the auth error
+  // Firebase itself throws.
+
+  // Anonymous → permanent upgrade via linkWithCredential, mirroring handleGoogleSignIn's
+  // linkWithRedirect and completeEmailLinkSignIn's linkWithCredential(credentialWithLink):
+  // the SAME uid gets the new credential, so existing local progress/entitlement (both
+  // keyed by uid, not email) is never disturbed. Deliberately does not fall back to
+  // createUserWithEmailAndPassword — the app's auto-anonymous-sign-in effect guarantees
+  // auth.currentUser is always set by the time this can be called from the UI, and a
+  // fallback here would be an easy way to accidentally create a duplicate account instead
+  // of linking. Returns 'account-exists' (rather than throwing) for the one collision case
+  // the caller needs to react to in the UI — every other failure still throws/sets
+  // signInError the same way the other handlers do.
+  const handleCreatePasswordAccount = async (
+    email: string,
+    password: string
+  ): Promise<'ok' | 'account-exists'> => {
+    if (!auth) return 'ok';
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      setSignInError('Something went wrong. Please try again.');
+      return 'ok';
+    }
+    setSignInLoading(true);
+    setSignInError(null);
+    try {
+      const credential = EmailAuthProvider.credential(email, password);
+      await linkWithCredential(currentUser, credential);
+      return 'ok';
+    } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? (error as { code: unknown }).code : undefined;
+      // All three collision shapes Firebase can return here mean the same thing from the
+      // user's perspective — this email already belongs to an account — and get the same
+      // safe treatment: no duplicate, no auto-switch, generic guidance (never naming which
+      // provider that account uses, so this can't be turned into an email-enumeration
+      // oracle the way a provider-specific message would).
+      if (
+        code === 'auth/email-already-in-use' ||
+        code === 'auth/credential-already-in-use' ||
+        code === 'auth/account-exists-with-different-credential'
+      ) {
+        // Do NOT fall back to signing in automatically here — Task 2 requires the
+        // anonymous session to stay untouched until the user deliberately signs in. The
+        // caller (Paywall) switches its own local form to sign-in mode with the email
+        // prefilled; nothing about auth.currentUser changes until they submit that form.
+        setSignInError('An account with this email already exists.');
+        return 'account-exists';
+      }
+      setSignInError(mapPasswordAuthError(error));
+      throw error;
+    } finally {
+      setSignInLoading(false);
+    }
+  };
+
+  // Returning password user. A plain sign-in (not a link attempt) — the user is explicitly
+  // asserting "I already have an account", so unlike the create-account path this always
+  // ends by replacing auth.currentUser with the pre-existing permanent uid, the same shape
+  // as the existing "switch accounts" branches in handleGoogleSignIn/completeEmailLinkSignIn.
+  // Only prompts for confirmation first if there's something real to lose — an anonymous
+  // session that hasn't actually started the course/logged anything yet is dropped silently,
+  // same as it would be by simply reloading the page.
+  const handleSignInWithPassword = async (email: string, password: string) => {
+    if (!auth) return;
+    const currentUser = auth.currentUser;
+    const isAbandoningRealAccount = !!currentUser && !currentUser.isAnonymous;
+    const isAbandoningAnonymousProgress =
+      !!currentUser?.isAnonymous && (!!dnsCourse.startedAt || painLog.length > 0 || !!activeJourney);
+    if (isAbandoningRealAccount || isAbandoningAnonymousProgress) {
+      const proceed = window.confirm(
+        'Signing in will switch your active account, and any progress from this session will not transfer. Continue?'
+      );
+      if (!proceed) return;
+    }
+    setSignInLoading(true);
+    setSignInError(null);
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch (error) {
+      setSignInError(mapPasswordAuthError(error));
+    } finally {
+      setSignInLoading(false);
+    }
+  };
+
+  // Settings-only: lets an already-authenticated permanent user (Google or magic-link
+  // origin, doesn't matter which) set a password on their own current uid, so they can sign
+  // in with it later from an installed PWA where the magic link can't reliably reach them.
+  // Requires an actual signed-in, non-anonymous user with a real email — there is no
+  // email-matching path here (updatePassword takes no email argument at all), auth.currentUser
+  // is the sole authority.
+  //
+  // Uses updatePassword(currentUser, password), NOT linkWithCredential +
+  // EmailAuthProvider.credential. Codex review caught that linkWithCredential was wrong here:
+  // Firebase's email-link and email/password sign-in methods share the same underlying
+  // 'password' provider, so an existing magic-link-only user already has a 'password'
+  // provider entry — linkWithCredential would throw auth/provider-already-linked for them
+  // even though they have no actual usable password, and the previous version of this
+  // handler misread that as "already has a password," silently defeating the whole
+  // migration use case this Settings action exists for. updatePassword instead mutates the
+  // already-authenticated user's own credential in place — it doesn't add/link a new
+  // provider, can't collide with an existing one, can't touch a different account, and
+  // can't change uid (verified against Firebase's current "Manage Users" docs — this is the
+  // documented primitive for "set a signed-in user's password").
+  //
+  // updatePassword requires a recent sign-in (a Firebase-enforced sensitivity requirement,
+  // not something this app can bypass) — a session that authenticated more than roughly 5
+  // minutes ago throws auth/requires-recent-login. Fails closed here: no reauthentication
+  // flow is attempted, the error is surfaced plainly, and the caller stays on the form so
+  // the user can sign out/in again and retry.
+  const handleSetPassword = async (password: string): Promise<'ok' | 'requires-recent-login'> => {
+    if (!auth) return 'ok';
+    const currentUser = auth.currentUser;
+    if (!currentUser || currentUser.isAnonymous || !currentUser.email) {
+      setSignInError('Something went wrong. Please try again.');
+      return 'ok';
+    }
+    setSignInLoading(true);
+    setSignInError(null);
+    try {
+      await updatePassword(currentUser, password);
+      return 'ok';
+    } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? (error as { code: unknown }).code : undefined;
+      if (code === 'auth/requires-recent-login') {
+        setSignInError('For your security, please sign out and sign back in, then try again.');
+        return 'requires-recent-login';
+      }
+      setSignInError(mapPasswordAuthError(error));
+      throw error;
     } finally {
       setSignInLoading(false);
     }
@@ -2131,6 +2463,8 @@ export default function App() {
           onOpenSettings={() => setCurrentView('settings')}
           onGoogleSignIn={handleGoogleSignIn}
           onSendSignInLink={handleSendSignInLink}
+          onCreatePasswordAccount={handleCreatePasswordAccount}
+          onSignInWithPassword={handleSignInWithPassword}
           signInLoading={signInLoading}
           signInError={signInError}
           isInAppBrowser={isInAppBrowser}
@@ -2166,6 +2500,8 @@ export default function App() {
             onOpenSettings={() => setCurrentView('settings')}
             onGoogleSignIn={handleGoogleSignIn}
             onSendSignInLink={handleSendSignInLink}
+            onCreatePasswordAccount={handleCreatePasswordAccount}
+            onSignInWithPassword={handleSignInWithPassword}
             signInLoading={signInLoading}
             signInError={signInError}
             isInAppBrowser={isInAppBrowser}
@@ -2455,6 +2791,8 @@ export default function App() {
           onOpenSettings={() => setCurrentView('settings')}
           onGoogleSignIn={handleGoogleSignIn}
           onSendSignInLink={handleSendSignInLink}
+          onCreatePasswordAccount={handleCreatePasswordAccount}
+          onSignInWithPassword={handleSignInWithPassword}
           signInLoading={signInLoading}
           signInError={signInError}
           isInAppBrowser={isInAppBrowser}
@@ -2475,6 +2813,8 @@ export default function App() {
           setCheckoutLoading={setCheckoutLoading}
           onGoogleSignIn={handleGoogleSignIn}
           onSendSignInLink={handleSendSignInLink}
+          onCreatePasswordAccount={handleCreatePasswordAccount}
+          onSignInWithPassword={handleSignInWithPassword}
           signInLoading={signInLoading}
           signInError={signInError}
           isInAppBrowser={isInAppBrowser}
@@ -2501,6 +2841,7 @@ export default function App() {
           }}
           userInfo={authUser ?? undefined}
           onGoogleSignIn={handleGoogleSignIn}
+          onSetPassword={handleSetPassword}
           signInLoading={signInLoading}
           signInError={signInError}
         />
