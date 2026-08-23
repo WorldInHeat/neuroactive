@@ -11,6 +11,15 @@ import { DNS_COURSE_DAY_MEDIA } from './dnsCourseDayMedia';
 import { applyDnsEntitlementBasis, hasDnsEntitlement, paymentGrantsDnsFoundations } from './dnsEntitlement';
 
 export { createDnsCheckoutSession, handleDnsNoCostCheckout, handleDnsRefund } from './dnsCheckout';
+export {
+  initializePushInstallation,
+  reclaimPushInstallation,
+  registerPushInstallation,
+  revokePushInstallation,
+  preparePushInstallationTransfer,
+  claimPushInstallationTransfer,
+  cancelPushInstallationTransfer,
+} from './pushInstallations';
 
 if (getApps().length === 0) initializeApp();
 const db = getFirestore();

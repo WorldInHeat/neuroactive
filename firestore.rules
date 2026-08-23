@@ -7,6 +7,43 @@ service cloud.firestore {
       allow read, write: if request.auth != null && request.auth.uid == uid;
     }
 
+    // Push-notification device installation ownership (Phase 3A-1, third repair).
+    // Authoritative and server-written ONLY — see functions/src/pushInstallations.ts
+    // (initializePushInstallation / registerPushInstallation / revokePushInstallation /
+    // preparePushInstallationTransfer / claimPushInstallationTransfer /
+    // cancelPushInstallationTransfer), which bypass these rules entirely via the Admin SDK.
+    // Keyed purely by installationId (no uid segment in the path at all), so there is
+    // structurally only ever one document per installation — dual ownership under two
+    // different uids is not just disallowed, it's impossible to represent in this schema.
+    // Clients never write this collection directly: mutating an ALREADY-ACTIVE installation
+    // requires possession of a server-issued, per-installation random lease that only the
+    // callables above ever verify or rotate — a client-side rule has no way to express
+    // "hash the presented credential and compare it to a previously stored hash inside an
+    // atomic transaction" the way the callables' Firestore transactions do. No client read
+    // is needed either — the Settings UI derives its state entirely from each callable's own
+    // return value (including the lease/transfer credential itself, returned once, directly
+    // to the caller entitled to hold it) plus local Notification.permission/auth state,
+    // never from reading this collection back.
+    match /artifacts/{appId}/pushInstallations/{installationId} {
+      allow read, write: if false;
+    }
+
+    // Per-uid abuse-control counters (active-installation cap + initialize cooldown) for the
+    // callables above. Server-written only, for the same reason as pushInstallations —
+    // trusting a client-supplied count would defeat the entire point of the cap.
+    match /artifacts/{appId}/pushInstallationRateLimits/{uid} {
+      allow read, write: if false;
+    }
+
+    // FCM-token uniqueness index — keyed by a hash of the token, never the raw token — that
+    // ensures one push endpoint can never be authoritatively active for more than one
+    // installation (or, transitively, more than one uid) at a time. Enforced entirely inside
+    // registerPushInstallation's transaction (see functions/src/pushInstallations.ts);
+    // server-written only, same as the other two collections above.
+    match /artifacts/{appId}/pushTokenClaims/{tokenHash} {
+      allow read, write: if false;
+    }
+
     // Server-controlled entitlement (e.g. DNS Foundations access). Only Cloud Functions,
     // via the Admin SDK (which bypasses these rules entirely), ever write this — the
     // owner may read their own entitlement but can never write or forge it.

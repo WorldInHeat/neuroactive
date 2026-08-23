@@ -28,9 +28,7 @@ import {
   Dumbbell,
 } from 'lucide-react';
 
-import { initializeApp } from 'firebase/app';
 import {
-  getAuth,
   GoogleAuthProvider,
   EmailAuthProvider,
   signInWithRedirect,
@@ -48,7 +46,7 @@ import {
   signOut,
   type Auth,
 } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, type Firestore } from 'firebase/firestore';
+import { doc, setDoc, getDoc, onSnapshot, collection } from 'firebase/firestore';
 
 import { DECISION_TREE } from './data/decisionTree';
 import type { PainLogEntry, UserData, DnsCourseProgress } from './state/types';
@@ -57,34 +55,23 @@ import SessionSummary from './components/SessionSummary';
 import Paywall from './components/Paywall';
 import DNSCourseView from './components/DNSCourseView';
 import InstallSettingsCard from './components/InstallSettingsCard';
+import NotificationSettingsCard from './components/NotificationSettingsCard';
+import { useNotifications, type NotificationStatus } from './hooks/useNotifications';
+import { auth, db, appId } from './services/firebase';
 import { createPortalLink, type PriceKey } from './services/stripe';
 import { DNS_ONLY_LAUNCH } from './config/launchConfig';
 
-// --- Firebase Configuration ---
-const firebaseConfig = {
-  apiKey: 'AIzaSyBlNWkezjbXlOZ7SQCuN9FWO0ScV4zuTc8',
-  authDomain: 'neuroactivehealth.com',
-  projectId: 'neuroactive',
-  storageBucket: 'neuroactive.firebasestorage.app',
-  messagingSenderId: '1010503840940',
-  appId: '1:1010503840940:web:90874fb37a70c9c7115b09',
-  measurementId: 'G-4X86RF0RQT',
-};
-
-// This helps organize data in the database
-const appId = 'neuroactive-prod';
-
-let auth: Auth | null = null;
-let db: Firestore | null = null;
-
-// Initialize Firebase
-try {
-  const app = initializeApp(firebaseConfig);
-  auth = getAuth(app);
-  db = getFirestore(app);
-} catch (error) {
-  console.error('Firebase Initialization Error:', error);
-}
+// Firebase itself is initialized exactly once, in src/services/firebase.ts — imported above,
+// not re-initialized here. This file previously performed its OWN separate
+// initializeApp(firebaseConfig) call with this same config; since useNotifications (imported
+// above) transitively imports services/firebase.ts, and ES module imports are evaluated
+// before this module's own top-level code runs, services/firebase.ts's initialization
+// ALWAYS executed first — meaning this file's own initializeApp() call was unconditionally
+// throwing app/duplicate-app on every load, silently caught, leaving auth/db here as null
+// for the entire app's lifetime. Build/typecheck never exercises this runtime-only path,
+// which is why it went unnoticed. Fixed by having this file import the SAME auth/db/appId
+// services/firebase.ts already exports (which itself guards against double-initialization
+// via getApps()/getApp(), so it's safe regardless of which module actually evaluates first).
 
 const googleProvider = new GoogleAuthProvider();
 const isInAppBrowser = /Instagram|FBAN|FBAV|TikTok/i.test(navigator.userAgent);
@@ -326,6 +313,9 @@ const SettingsView = ({
   onSetPassword,
   signInLoading,
   signInError,
+  notificationStatus,
+  notificationError,
+  onEnableNotifications,
 }: {
   isPremium: boolean;
   // DNS_ONLY_LAUNCH-only account status, computed in App() from the server-authoritative
@@ -346,6 +336,9 @@ const SettingsView = ({
   onSetPassword: (password: string) => Promise<'ok' | 'requires-recent-login'>;
   signInLoading: boolean;
   signInError: string | null;
+  notificationStatus: NotificationStatus;
+  notificationError: string | null;
+  onEnableNotifications: () => void;
 }) => {
   const [portalLoading, setPortalLoading] = useState(false);
   const [portalError, setPortalError] = useState<string | null>(null);
@@ -607,6 +600,17 @@ const SettingsView = ({
             install/instructions otherwise, or hides itself on an unsupported browser
             with no install path available. */}
         <InstallSettingsCard />
+
+        {/* Notifications — Phase 3A-1, device registration only. Same gating as the
+            password card above: only shown for an authenticated, non-anonymous user, since
+            a push token is registered under a real uid, never an anonymous session. */}
+        {userInfo && userInfo.isAnonymous === false && (
+          <NotificationSettingsCard
+            status={notificationStatus}
+            error={notificationError}
+            onEnable={onEnableNotifications}
+          />
+        )}
 
         {/* Support */}
         <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] space-y-1">
@@ -1074,6 +1078,13 @@ export default function App() {
   const [authUser, setAuthUser] = useState<{ displayName: string | null; photoURL: string | null; email: string | null; isAnonymous: boolean } | null>(null);
   const [signInLoading, setSignInLoading] = useState(false);
   const [signInError, setSignInError] = useState<string | null>(null);
+  // Phase 3A-1: device push registration only (no send-side code exists yet). Ownership
+  // transfer on account switching now goes through the server-side lease/transfer protocol
+  // in functions/src/pushInstallations.ts (see useNotifications.ts) — this hook lives here,
+  // not inside SettingsView, so handleLogout and every account-switching auth handler below
+  // can call prepareForAccountSwitch/recoverFromFailedSwitch/unregisterThisDevice regardless
+  // of which view is currently active.
+  const notifications = useNotifications();
   const [checkoutLoading, setCheckoutLoading] = useState<PriceKey | null>(null);
   const [paymentMessage, setPaymentMessage] = useState<{ type: 'success' | 'canceled'; text: string } | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -1547,6 +1558,12 @@ export default function App() {
 
   const handleLogout = async () => {
     if (!auth) return;
+    // Best-effort — revokes (tombstones) this device's installation server-side before
+    // signing out, so it's immediately ineligible as a future send target. Logout is never
+    // blocked on this: if it fails, the record simply stays active under the outgoing uid
+    // until a future claim supersedes it through the lease/transfer protocol, never through
+    // a bare takeover (see useNotifications.ts's unregisterThisDevice).
+    await notifications.unregisterThisDevice();
     await signOut(auth);
 
     setActiveJourney(null);
@@ -1590,10 +1607,36 @@ export default function App() {
       if (currentUser && currentUser.isAnonymous) {
         await withRedirectTimeout(linkWithRedirect(currentUser, googleProvider));
       } else {
+        // currentUser is either null or already a different permanent uid — signInWithRedirect
+        // can replace it with a different account entirely.
+        if (notifications.isAccountSwitchBusy()) {
+          sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+          setSignInError('An account change is already in progress on this device. Please wait a moment and try again.');
+          return;
+        }
+        // Must prepare the notification transfer BEFORE the redirect navigates away: this is
+        // the last point at which auth.currentUser still proves ownership of the outgoing
+        // uid's installation. If prepare fails, the switch must NOT proceed — A stays
+        // authenticated and unaffected, rather than silently losing the ability to ever
+        // transfer this device's registration. 'not-applicable' (nothing registered here)
+        // proceeds immediately with no notification-related blocking at all.
+        const prepareResult = await notifications.prepareForAccountSwitch();
+        if (prepareResult === 'blocked') {
+          sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+          setSignInError('Could not prepare this device for an account change. Please check your connection and try again.');
+          return;
+        }
+        // The actual claim (or cancellation, if the redirect fails/is canceled) happens on
+        // whatever page load follows — see useNotifications.ts's reconciliation effect,
+        // which persists across the redirect via localStorage.
         await withRedirectTimeout(signInWithRedirect(auth, googleProvider));
       }
     } catch (error: any) {
       sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+      // Covers the (rare) case where signInWithRedirect throws before actually navigating
+      // away — no page reload happens, so the reconciliation effect won't naturally re-fire
+      // on its own; this is what picks up and cancels the just-prepared transfer instead.
+      await notifications.recoverFromFailedSwitch();
       if (error?.message === 'redirect-timeout') {
         setSignInError('Sign-in is taking longer than expected. Please check your connection and try again.');
       } else {
@@ -1684,6 +1727,20 @@ export default function App() {
           'Signing in with this email will switch your active account, and any progress from this session will not transfer. Continue?'
         );
         if (!proceed) return;
+        // currentUser here is null or already a different permanent uid — this call replaces
+        // it directly (no redirect involved).
+        if (notifications.isAccountSwitchBusy()) {
+          setSignInError('An account change is already in progress on this device. Please wait a moment and try again.');
+          return;
+        }
+        // Prepare the notification transfer first, while still authenticated as the outgoing
+        // uid. If it fails, do NOT proceed with the switch — stay signed in as the outgoing
+        // account rather than silently losing the ability to transfer this device later.
+        const prepareResult = await notifications.prepareForAccountSwitch();
+        if (prepareResult === 'blocked') {
+          setSignInError('Could not prepare this device for an account change. Please check your connection and try again.');
+          return;
+        }
         await signInWithEmailLink(auth, email, window.location.href);
       }
 
@@ -1693,6 +1750,9 @@ export default function App() {
       window.history.replaceState({}, '', clean.toString());
     } catch (error) {
       setSignInError(mapEmailAuthError(error));
+      // No page reload happens on this path (unlike the Google redirect), so nothing else
+      // would naturally pick up and cancel a transfer that was prepared but never completed.
+      await notifications.recoverFromFailedSwitch();
     } finally {
       setSignInLoading(false);
     }
@@ -1775,12 +1835,29 @@ export default function App() {
       );
       if (!proceed) return;
     }
+    if (isAbandoningRealAccount && notifications.isAccountSwitchBusy()) {
+      setSignInError('An account change is already in progress on this device. Please wait a moment and try again.');
+      return;
+    }
     setSignInLoading(true);
     setSignInError(null);
     try {
+      if (isAbandoningRealAccount) {
+        // Replacing an already-signed-in permanent uid directly (no redirect involved) —
+        // prepare the notification transfer first, while still authenticated as it. If it
+        // fails, do NOT proceed with the switch — stay signed in as the outgoing account.
+        const prepareResult = await notifications.prepareForAccountSwitch();
+        if (prepareResult === 'blocked') {
+          setSignInError('Could not prepare this device for an account change. Please check your connection and try again.');
+          return;
+        }
+      }
       await signInWithEmailAndPassword(auth, email, password);
     } catch (error) {
       setSignInError(mapPasswordAuthError(error));
+      // No page reload happens on this path, so nothing else would naturally pick up and
+      // cancel a transfer that was prepared but never completed.
+      await notifications.recoverFromFailedSwitch();
     } finally {
       setSignInLoading(false);
     }
@@ -2844,6 +2921,9 @@ export default function App() {
           onSetPassword={handleSetPassword}
           signInLoading={signInLoading}
           signInError={signInError}
+          notificationStatus={notifications.status}
+          notificationError={notifications.error}
+          onEnableNotifications={() => { void notifications.enable(); }}
         />
       )}
       {currentView === 'library' && (
