@@ -20,6 +20,7 @@ export {
   claimPushInstallationTransfer,
   cancelPushInstallationTransfer,
 } from './pushInstallations';
+export { updateNotificationPreferences, refreshNotificationTimezone } from './notificationPreferences';
 
 if (getApps().length === 0) initializeApp();
 const db = getFirestore();

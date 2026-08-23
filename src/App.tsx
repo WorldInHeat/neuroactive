@@ -57,6 +57,7 @@ import DNSCourseView from './components/DNSCourseView';
 import InstallSettingsCard from './components/InstallSettingsCard';
 import NotificationSettingsCard from './components/NotificationSettingsCard';
 import { useNotifications, type NotificationStatus } from './hooks/useNotifications';
+import { useNotificationPreferences, type NotificationPreferences } from './hooks/useNotificationPreferences';
 import { auth, db, appId } from './services/firebase';
 import { createPortalLink, type PriceKey } from './services/stripe';
 import { DNS_ONLY_LAUNCH } from './config/launchConfig';
@@ -316,6 +317,17 @@ const SettingsView = ({
   notificationStatus,
   notificationError,
   onEnableNotifications,
+  preferencesUid,
+  preferencesLoaded,
+  preferences,
+  preferencesReadError,
+  preferencesCorrupt,
+  defaultPreferences,
+  preferencesSaving,
+  preferencesError,
+  preferencesConflictMessage,
+  preferencesConflictToken,
+  onSavePreferences,
 }: {
   isPremium: boolean;
   // DNS_ONLY_LAUNCH-only account status, computed in App() from the server-authoritative
@@ -339,6 +351,17 @@ const SettingsView = ({
   notificationStatus: NotificationStatus;
   notificationError: string | null;
   onEnableNotifications: () => void;
+  preferencesUid: string | null;
+  preferencesLoaded: boolean;
+  preferences: NotificationPreferences | null;
+  preferencesReadError: boolean;
+  preferencesCorrupt: boolean;
+  defaultPreferences: NotificationPreferences;
+  preferencesSaving: boolean;
+  preferencesError: string | null;
+  preferencesConflictMessage: string | null;
+  preferencesConflictToken: number;
+  onSavePreferences: (next: NotificationPreferences) => Promise<boolean>;
 }) => {
   const [portalLoading, setPortalLoading] = useState(false);
   const [portalError, setPortalError] = useState<string | null>(null);
@@ -609,6 +632,17 @@ const SettingsView = ({
             status={notificationStatus}
             error={notificationError}
             onEnable={onEnableNotifications}
+            preferencesUid={preferencesUid}
+            preferencesLoaded={preferencesLoaded}
+            preferences={preferences}
+            preferencesReadError={preferencesReadError}
+            preferencesCorrupt={preferencesCorrupt}
+            defaultPreferences={defaultPreferences}
+            preferencesSaving={preferencesSaving}
+            preferencesError={preferencesError}
+            preferencesConflictMessage={preferencesConflictMessage}
+            preferencesConflictToken={preferencesConflictToken}
+            onSavePreferences={onSavePreferences}
           />
         )}
 
@@ -1085,6 +1119,7 @@ export default function App() {
   // can call prepareForAccountSwitch/recoverFromFailedSwitch/unregisterThisDevice regardless
   // of which view is currently active.
   const notifications = useNotifications();
+  const notificationPreferences = useNotificationPreferences();
   const [checkoutLoading, setCheckoutLoading] = useState<PriceKey | null>(null);
   const [paymentMessage, setPaymentMessage] = useState<{ type: 'success' | 'canceled'; text: string } | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -2924,6 +2959,17 @@ export default function App() {
           notificationStatus={notifications.status}
           notificationError={notifications.error}
           onEnableNotifications={() => { void notifications.enable(); }}
+          preferencesUid={notificationPreferences.uid}
+          preferencesLoaded={notificationPreferences.loaded}
+          preferences={notificationPreferences.preferences}
+          preferencesReadError={notificationPreferences.readError}
+          preferencesCorrupt={notificationPreferences.corrupt}
+          defaultPreferences={notificationPreferences.defaultPreferences}
+          preferencesSaving={notificationPreferences.saving}
+          preferencesError={notificationPreferences.error}
+          preferencesConflictMessage={notificationPreferences.conflictMessage}
+          preferencesConflictToken={notificationPreferences.conflictToken}
+          onSavePreferences={notificationPreferences.save}
         />
       )}
       {currentView === 'library' && (
