@@ -70,11 +70,47 @@
 // Records are TOMBSTONED, not deleted, on revoke — deletion would let a delayed/duplicate
 // initialize-style request treat a just-revoked installation as brand new and race back in
 // under a stale intent.
+//
+// PUSH INSTALLATION EPOCH HARDENING (Phase 3A-3 Step 3A, final migration-boundary repair
+// round) — this file writes three server-owned epoch-related fields, all defined and
+// normalized in pushInstallationEpochLogic.ts (a zero-Firebase-import pure-logic module —
+// see that file's header for the full contract):
+//   - `generation`:              ownership/credential epoch (already existed).
+//   - `epochSchemaVersion`:      durable migration-boundary marker (new).
+//   - `tokenVersion`:            stored FCM token identity epoch (new; monotonic).
+//   - `installationAudienceId`:  opaque foreground ownership/audience epoch (new;
+//                                random, non-monotonic).
+//
+// CLOSED RUNTIME BOUNDARY — this file NEVER performs legacy epoch normalization. Every
+// call into decideRuntimeEpochOnEstablish either finds a record already in the exact
+// migrated shape (epochSchemaVersion === 1 AND a valid tokenVersion) or fails closed —
+// there is no "this might be a pre-Step-3A legacy record" branch anywhere below, and the
+// pure logic module's runtime-facing API has no outcome that could produce one (see
+// pushInstallationEpochLogic.ts's RuntimeEpochDecision type). The ONLY code ever
+// permitted to establish epoch fields on a genuinely legacy record is the one-time,
+// reviewed, non-deployed migration tool at
+// functions/maintenance/migratePushInstallationEpochs.js, run once, before any record
+// reaching this file's establishment paths could still be in the legacy shape. This file
+// must never import anything from pushInstallationEpochLogic.ts's MIGRATION-ONLY section
+// (anything with a `ForMigration` suffix) — doing so would be a review red flag.
+//
+// Neither epoch field has any sender/delivery code consuming it yet — that is explicitly
+// out of scope for this round (Step 3A is lifecycle hardening only; see the
+// implementation report). No FCM send/delivery logic, no reminder-scheduler change, and
+// no client change was made as part of this round.
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getMessaging } from 'firebase-admin/messaging';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import {
+  EPOCH_SCHEMA_VERSION,
+  readFieldPresence,
+  decideRuntimeEpochOnEstablish,
+  decideRuntimeEpochOnRevoke,
+  decideAudienceIdForSameOwnerTransaction,
+  generateAudienceId,
+} from './pushInstallationEpochLogic';
 
 const APP_ID = 'neuroactive-prod';
 
@@ -339,6 +375,14 @@ export const initializePushInstallation = onCall(CALLABLE_OPTIONS, async (reques
       platform,
       state: 'activation-pending',
       generation: 1,
+      // Step 3A: a brand-new installation always starts all three epoch fields at their
+      // fresh baseline — see pushInstallationEpochLogic.ts for why these are separate
+      // fields with separate normalization policies, and why epochSchemaVersion exists
+      // as its own durable marker rather than inferring "current schema" from
+      // tokenVersion's mere presence.
+      epochSchemaVersion: EPOCH_SCHEMA_VERSION,
+      tokenVersion: 1,
+      installationAudienceId: generateAudienceId(),
       leaseHash: hashCredential(lease),
       transferHash: null,
       transferOriginUid: null,
@@ -412,6 +456,27 @@ export const reclaimPushInstallation = onCall(CALLABLE_OPTIONS, async (request) 
       );
     }
 
+    // Step 3A (closed runtime boundary): reclaiming a revoked tombstone always
+    // establishes a brand-new token identity (the record's token was cleared to null by
+    // revoke) — tokenIdentityChanged is computed, not hardcoded, purely for consistency
+    // with the other two call sites that share this same decision function; it is always
+    // true here in practice. This runtime decision NEVER self-normalizes a legacy
+    // tombstone (marker/tokenVersion physically absent) — that shape now fails closed
+    // here, exactly like any other inconsistency. A pre-Step-3A revoked tombstone must
+    // already have been migrated (by the one-time migration tool, using
+    // proveLegacyRevokedTombstoneForMigration) before it can ever be reclaimed again.
+    const epochDecision = decideRuntimeEpochOnEstablish(
+      readFieldPresence(existing, 'epochSchemaVersion'),
+      readFieldPresence(existing, 'tokenVersion'),
+      existing.token !== token
+    );
+    if (epochDecision.outcome === 'fail-closed') {
+      throw new HttpsError(
+        'failed-precondition',
+        `This installation cannot be reclaimed (${epochDecision.reason}) and requires operator review.`
+      );
+    }
+
     const lease = generateCredential();
     transaction.set(ref, {
       uid,
@@ -419,6 +484,16 @@ export const reclaimPushInstallation = onCall(CALLABLE_OPTIONS, async (request) 
       platform,
       state: 'activation-pending',
       generation: ((existing.generation as number) ?? 0) + 1,
+      // epochSchemaVersion is re-written explicitly (not merely relied upon from the
+      // existing document) for clarity — it can only ever be EPOCH_SCHEMA_VERSION here,
+      // since decideRuntimeEpochOnEstablish only reaches a non-fail-closed outcome when
+      // the marker is already exactly current.
+      epochSchemaVersion: EPOCH_SCHEMA_VERSION,
+      tokenVersion: epochDecision.tokenVersion,
+      // A reclaim always begins a NEW ownership epoch — never preserve the prior
+      // audience id, regardless of what it was (missing, valid, or malformed all get
+      // replaced identically; see pushInstallationEpochLogic.ts).
+      installationAudienceId: generateAudienceId(),
       leaseHash: hashCredential(lease),
       transferHash: null,
       transferOriginUid: null,
@@ -509,9 +584,47 @@ export const registerPushInstallation = onCall(CALLABLE_OPTIONS, async (request)
     const oldClaimRef = tokenChanged && oldToken ? tokenClaimRef(hashCredential(oldToken)) : null;
     const oldClaimSnap = oldClaimRef ? await transaction.get(oldClaimRef) : null;
 
+    // Step 3A (closed runtime boundary): this decision NEVER self-normalizes a legacy
+    // record (epochSchemaVersion/tokenVersion physically absent) — that shape now fails
+    // closed, exactly like any other inconsistency, regardless of whether the token is
+    // changing or being reconfirmed. A pre-Step-3A legacy installation must already have
+    // been migrated (by the one-time migration tool) before it can successfully register
+    // again; see pushInstallationEpochLogic.ts's "TWO-PHASE MIGRATION ARCHITECTURE" note
+    // for why runtime carries no compatibility branch for this at all.
+    const epochDecision = decideRuntimeEpochOnEstablish(
+      readFieldPresence(existing, 'epochSchemaVersion'),
+      readFieldPresence(existing, 'tokenVersion'),
+      tokenChanged
+    );
+    if (epochDecision.outcome === 'fail-closed') {
+      throw new HttpsError(
+        'failed-precondition',
+        `This installation cannot be registered (${epochDecision.reason}) and requires operator review.`
+      );
+    }
+
+    // Ownership does not change in this call (uid/lease already verified above) in
+    // EITHER the reconfirm or rotation path — the audience epoch is preserved if valid,
+    // or self-normalized (missing/malformed both heal identically, since this is a
+    // random, non-monotonic value — see pushInstallationEpochLogic.ts) now that identity
+    // has already been fully validated for this transaction's own unrelated reasons.
+    const audienceIdDecision = decideAudienceIdForSameOwnerTransaction(existing.installationAudienceId);
+    const installationAudienceId =
+      audienceIdDecision.outcome === 'preserve' ? audienceIdDecision.audienceId : generateAudienceId();
+
     transaction.set(
       ref,
-      { state: 'active', token, platform, updatedAt: FieldValue.serverTimestamp() },
+      {
+        state: 'active',
+        token,
+        platform,
+        // Re-written explicitly for clarity — can only ever be EPOCH_SCHEMA_VERSION here
+        // (see the comment above decideRuntimeEpochOnEstablish's call site).
+        epochSchemaVersion: EPOCH_SCHEMA_VERSION,
+        tokenVersion: epochDecision.tokenVersion,
+        installationAudienceId,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
       { merge: true }
     );
     transaction.set(
@@ -566,11 +679,34 @@ export const revokePushInstallation = onCall(CALLABLE_OPTIONS, async (request) =
 
     const activeCount = limitSnap.exists ? ((limitSnap.data() as RateLimitDoc).activeCount ?? 0) : 0;
 
+    // Step 3A (closed runtime boundary): revoke is the one operation that must never be
+    // blockable by unrelated field corruption (it is the escape hatch — logout must
+    // always work), so unlike registerPushInstallation/reclaimPushInstallation/
+    // claimPushInstallationTransfer it never fails closed. It is now also the SIMPLEST
+    // possible invariant: tokenVersion is only ever touched (best-effort incremented)
+    // when the record is already in the exact migrated shape (epochSchemaVersion === 1
+    // AND a valid tokenVersion) — every other case (absent/null/unsupported marker;
+    // absent/null/malformed tokenVersion) leaves epoch fields completely untouched.
+    // Revoke never stamps epochSchemaVersion under any circumstance — establishing epoch
+    // state on a legacy record is now the exclusive, one-time responsibility of the
+    // migration tool, never of any runtime transaction, including this one. See
+    // decideRuntimeEpochOnRevoke.
+    const epochDecision = decideRuntimeEpochOnRevoke(
+      readFieldPresence(existing, 'epochSchemaVersion'),
+      readFieldPresence(existing, 'tokenVersion')
+    );
+
     const recoveryCredential = generateCredential();
     transaction.set(ref, {
       uid: null,
       state: 'revoked',
       generation: ((existing.generation as number) ?? 0) + 1,
+      ...epochDecision,
+      // The ended ownership epoch's audience id must become unusable, matching the
+      // existing pattern this function already uses for token/leaseHash/transferHash —
+      // null is unambiguous (a locally-held client value is never null) and avoids ever
+      // re-exposing/reusing a historical value later.
+      installationAudienceId: null,
       leaseHash: null,
       token: null,
       transferHash: null,
@@ -615,6 +751,13 @@ export const preparePushInstallationTransfer = onCall(CALLABLE_OPTIONS, async (r
     const limitSnap = await transaction.get(limitRef);
     const activeCount = limitSnap.exists ? ((limitSnap.data() as RateLimitDoc).activeCount ?? 0) : 0;
 
+    // Step 3A: token, tokenVersion, and installationAudienceId are all deliberately left
+    // untouched here — this step doesn't change the stored token at all, and `uid`
+    // itself is not written by this call either (the record remains A's until B actually
+    // claims it), so no token identity or ownership epoch event has occurred yet. The
+    // record is also no longer 'active' after this write, so it is not send-eligible
+    // regardless of what these fields currently hold; the audience id only becomes
+    // meaningful again once claimPushInstallationTransfer establishes the new owner.
     const transferCredential = generateCredential();
     transaction.set(ref, {
       state: 'transfer-pending',
@@ -687,6 +830,27 @@ export const claimPushInstallationTransfer = onCall(CALLABLE_OPTIONS, async (req
       );
     }
 
+    // Step 3A (closed runtime boundary): claiming a transfer always presents a fresh
+    // token param (see requireToken above) and always establishes a NEW owner taking
+    // authoritative control — this is exactly "new ownership becomes authoritative" from
+    // the installationAudienceId lifecycle design, so a fresh audience id is generated
+    // unconditionally. This decision NEVER self-normalizes a legacy source record
+    // (marker/tokenVersion physically absent) — that shape fails closed here exactly as
+    // it does for registerPushInstallation/reclaimPushInstallation. A pre-Step-3A legacy
+    // installation must already have been migrated before its ownership can be
+    // transferred; see pushInstallationEpochLogic.ts.
+    const epochDecision = decideRuntimeEpochOnEstablish(
+      readFieldPresence(existing, 'epochSchemaVersion'),
+      readFieldPresence(existing, 'tokenVersion'),
+      existing.token !== token
+    );
+    if (epochDecision.outcome === 'fail-closed') {
+      throw new HttpsError(
+        'failed-precondition',
+        `This transfer cannot be claimed (${epochDecision.reason}) and requires operator review.`
+      );
+    }
+
     const lease = generateCredential();
     transaction.set(ref, {
       uid,
@@ -694,6 +858,10 @@ export const claimPushInstallationTransfer = onCall(CALLABLE_OPTIONS, async (req
       platform,
       state: 'activation-pending',
       generation: ((existing.generation as number) ?? 0) + 1,
+      // Re-written explicitly — can only ever be EPOCH_SCHEMA_VERSION here.
+      epochSchemaVersion: EPOCH_SCHEMA_VERSION,
+      tokenVersion: epochDecision.tokenVersion,
+      installationAudienceId: generateAudienceId(),
       leaseHash: hashCredential(lease),
       transferHash: null,
       transferOriginUid: null,
@@ -735,10 +903,24 @@ export const cancelPushInstallationTransfer = onCall(CALLABLE_OPTIONS, async (re
     const limitSnap = await transaction.get(limitRef);
     const activeCount = limitSnap.exists ? ((limitSnap.data() as RateLimitDoc).activeCount ?? 0) : 0;
 
+    // Step 3A: token/tokenVersion are deliberately left untouched — this call has no
+    // token param and does not establish any new token identity. installationAudienceId
+    // IS eligible for same-owner self-normalization here (unlike a genuine transfer):
+    // preparePushInstallationTransfer never writes the `uid` field, so `existing.uid`
+    // is still the ORIGINAL owner's uid throughout transfer-pending, and this
+    // transaction has already independently confirmed `existing.transferOriginUid ===
+    // uid` above — ownership never actually left this uid at the Firestore-field level,
+    // so no new ownership epoch has occurred and the prior audience id remains safe to
+    // preserve (or self-heal if it happened to be missing/malformed).
+    const audienceIdDecision = decideAudienceIdForSameOwnerTransaction(existing.installationAudienceId);
+    const installationAudienceId =
+      audienceIdDecision.outcome === 'preserve' ? audienceIdDecision.audienceId : generateAudienceId();
+
     const lease = generateCredential();
     transaction.set(ref, {
       state: 'activation-pending',
       generation: ((existing.generation as number) ?? 0) + 1,
+      installationAudienceId,
       leaseHash: hashCredential(lease),
       transferHash: null,
       transferOriginUid: null,
