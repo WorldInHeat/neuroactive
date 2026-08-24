@@ -21,6 +21,7 @@ export {
   cancelPushInstallationTransfer,
 } from './pushInstallations';
 export { updateNotificationPreferences, refreshNotificationTimezone } from './notificationPreferences';
+export { notificationReminderSchedulerDryRun } from './reminderScheduler';
 
 if (getApps().length === 0) initializeApp();
 const db = getFirestore();

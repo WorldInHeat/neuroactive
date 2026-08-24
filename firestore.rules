@@ -65,6 +65,16 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Reminder occurrence records (Phase 3A-3, Step 2). Server-written only, by the
+    // scheduled function in functions/src/reminderScheduler.ts (Admin SDK, bypasses
+    // these rules entirely) — no client read UI exists for these yet, so unlike
+    // notificationPreferences/entitlement above there is no concrete reason to grant
+    // owner-read either. Add owner-read later only if/when an in-app reminder-history
+    // feature is actually built. No client write path exists or is intended.
+    match /artifacts/{appId}/reminders/{reminderId} {
+      allow read, write: if false;
+    }
+
     // Stripe customer data (written by the Firebase Stripe extension)
     match /customers/{uid} {
       allow read: if request.auth != null && request.auth.uid == uid;
