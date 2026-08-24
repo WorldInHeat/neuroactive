@@ -54,8 +54,6 @@
 // implementation report for confirmation.
 'use strict';
 
-const path = require('path');
-
 // MEDIUM 4 (Step 2 third repair round): validate the operator-supplied UID BEFORE any
 // Firestore read/write is attempted, using the exact same semantics as the scheduler's
 // isValidUidForPath (functions/src/reminderSchedulerLogic.ts) — hand-duplicated here
@@ -89,13 +87,42 @@ async function main() {
   }
 
   // Loaded lazily, from the already-installed functions/node_modules, so this script
-  // has no separate dependency footprint of its own.
-  const admin = require(path.join(__dirname, '..', 'node_modules', 'firebase-admin'));
+  // has no separate dependency footprint of its own. Modular Admin SDK API (the
+  // installed firebase-admin version exposes only this shape at its root — no `.apps`,
+  // no `.firestore()` method — matching exactly what functions/src/pushInstallations.ts
+  // itself already imports from 'firebase-admin/app' and 'firebase-admin/firestore').
+  // This script binds to its OWN explicitly named Admin app rather than any ambient
+  // default app: an ambient default (or another named) app could exist and point at an
+  // unrelated project, and getFirestore() with no app argument binds to whatever ambient
+  // default happens to be initialized rather than to the exact app this script intends.
+  // getApp(name) throws a FirebaseAppError with code 'app/no-app' (verified against the
+  // installed package) when no app of that name exists yet; that is the only case in
+  // which this script initializes one itself. If a same-named app already exists, its
+  // projectId is re-validated below rather than trusted on name alone.
+  const { getApp, initializeApp } = require('firebase-admin/app');
+  const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 
-  if (admin.apps.length === 0) {
-    admin.initializeApp({ projectId: 'neuroactive' });
+  const PROJECT_ID = 'neuroactive';
+  const MAINTENANCE_APP_NAME = 'neuroactive-maintenance-revision-repair';
+
+  let app;
+  try {
+    app = getApp(MAINTENANCE_APP_NAME);
+  } catch (err) {
+    if (!err || err.code !== 'app/no-app') {
+      throw err;
+    }
+    app = initializeApp({ projectId: PROJECT_ID }, MAINTENANCE_APP_NAME);
   }
-  const db = admin.firestore();
+
+  if (app.options.projectId !== PROJECT_ID) {
+    throw new Error(
+      `Refusing to operate: maintenance Firebase app "${MAINTENANCE_APP_NAME}" is bound to project ` +
+        `${JSON.stringify(app.options.projectId)}, not the expected ${JSON.stringify(PROJECT_ID)}. No Firestore access was attempted.`
+    );
+  }
+
+  const db = getFirestore(app);
 
   const APP_ID = 'neuroactive-prod';
   const ref = db.doc(`artifacts/${APP_ID}/users/${uid}/notificationPreferences/main`);
@@ -144,7 +171,7 @@ async function main() {
     timezone: 'UTC',
     revision: 1,
     nextReminderDueAt: null,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
   };
 
   await ref.set(knownValidReplacement);

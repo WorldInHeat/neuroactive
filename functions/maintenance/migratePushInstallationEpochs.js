@@ -100,11 +100,40 @@ async function main() {
     isValidAudienceId,
   } = epochLogic;
 
-  const admin = require(path.join(__dirname, '..', 'node_modules', 'firebase-admin'));
-  if (admin.apps.length === 0) {
-    admin.initializeApp({ projectId: PROJECT_ID });
+  // Modular Admin SDK API (the installed firebase-admin version exposes only this
+  // shape at its root — no `.apps`, no `.firestore()` method — matching exactly what
+  // functions/src/pushInstallations.ts itself already imports from 'firebase-admin/app'
+  // and 'firebase-admin/firestore'). This script binds to its OWN explicitly named Admin
+  // app rather than any ambient default app: an ambient default (or another named) app
+  // could exist and point at an unrelated project, and getFirestore() with no app
+  // argument binds to whatever ambient default happens to be initialized rather than to
+  // the exact app this script intends. getApp(name) throws a FirebaseAppError with code
+  // 'app/no-app' (verified against the installed package) when no app of that name
+  // exists yet; that is the only case in which this script initializes one itself. If a
+  // same-named app already exists (e.g. this module was required twice in one process),
+  // its projectId is re-validated below rather than trusted on name alone.
+  const { getApp, initializeApp } = require('firebase-admin/app');
+  const { getFirestore } = require('firebase-admin/firestore');
+  const MAINTENANCE_APP_NAME = 'neuroactive-maintenance-epoch-migration';
+
+  let app;
+  try {
+    app = getApp(MAINTENANCE_APP_NAME);
+  } catch (err) {
+    if (!err || err.code !== 'app/no-app') {
+      throw err;
+    }
+    app = initializeApp({ projectId: PROJECT_ID }, MAINTENANCE_APP_NAME);
   }
-  const db = admin.firestore();
+
+  if (app.options.projectId !== PROJECT_ID) {
+    throw new Error(
+      `Refusing to operate: maintenance Firebase app "${MAINTENANCE_APP_NAME}" is bound to project ` +
+        `${JSON.stringify(app.options.projectId)}, not the expected ${JSON.stringify(PROJECT_ID)}. No Firestore access was attempted.`
+    );
+  }
+
+  const db = getFirestore(app);
 
   const installationsCollection = db.collection(`artifacts/${APP_ID}/pushInstallations`);
   function tokenClaimRef(hash) {
