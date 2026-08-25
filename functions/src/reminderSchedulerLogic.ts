@@ -588,6 +588,17 @@ export async function processWithBoundedConcurrency<T>(
 // All transitions validated against this SAME table by production mutation code.
 // ---------------------------------------------------------------------------------------
 
+// Phase 3A-3 Step 3C-2 (Codex repair round, L1) — 'delivery-fanned-out' added as the
+// eighth recognized status. Used by the not-yet-deployed Firestore orchestration in
+// reminderDeliveryWorker.ts (functions/src/reminderDeliveryWorker.ts is NOT exported from
+// index.ts and reminderScheduler.ts does not call it — see that file's own header) to
+// terminalize a 'processing' reminder once fanout has run, disambiguated further by that
+// worker's own `deliveryFanoutState`/`targetingFailureReason` fields (not part of this
+// status model). Added here, rather than left recognized only by the worker's own local
+// fence check, so that Step 2's shared status/work-state model — and, critically, its
+// queue-poisoning defenses (decideQueueOutcome/classifyWorkTuple) — correctly repair a
+// hypothetically-corrupted, queue-visible 'delivery-fanned-out' parent instead of routing
+// it through the unrecognized-status neutralization path.
 export const REMINDER_STATUSES = [
   'claimed',
   'processing',
@@ -596,6 +607,7 @@ export const REMINDER_STATUSES = [
   'invalid-progress',
   'course-complete',
   'invalid-reminder',
+  'delivery-fanned-out',
 ] as const;
 export type ReminderStatus = (typeof REMINDER_STATUSES)[number];
 
@@ -605,6 +617,7 @@ const TERMINAL_STATUSES = new Set<ReminderStatus>([
   'invalid-progress',
   'course-complete',
   'invalid-reminder',
+  'delivery-fanned-out',
 ]);
 
 export function isTerminalStatus(status: string): boolean {
@@ -613,12 +626,21 @@ export function isTerminalStatus(status: string): boolean {
 
 const ALLOWED_TRANSITIONS: Record<ReminderStatus, ReminderStatus[]> = {
   claimed: ['processing', 'invalid-reminder'],
-  processing: ['processing', 'dry-run-complete', 'cancelled', 'invalid-progress', 'course-complete', 'invalid-reminder'],
+  processing: [
+    'processing',
+    'dry-run-complete',
+    'cancelled',
+    'invalid-progress',
+    'course-complete',
+    'invalid-reminder',
+    'delivery-fanned-out',
+  ],
   'dry-run-complete': [],
   cancelled: [],
   'invalid-progress': [],
   'course-complete': [],
   'invalid-reminder': [],
+  'delivery-fanned-out': [],
 };
 
 export function isAllowedTransition(from: string, to: string): boolean {

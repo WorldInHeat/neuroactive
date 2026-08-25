@@ -75,6 +75,18 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Reminder delivery-attempt records (Phase 3A-3 Step 3C-2). Server-written only, by
+    // future delivery orchestration (functions/src/reminderDeliveryWorker.ts, Admin SDK,
+    // bypasses these rules entirely — NOT wired to any deployed Cloud Function yet). NOT
+    // covered by the parent `reminders/{reminderId}` match above: Firestore rule matches
+    // are not recursive into subcollections unless a `{document=**}` wildcard is used, so
+    // an explicit deny is added here for the same audit-clarity reasons every other
+    // server-only collection in this file has one, even though an unmatched path is
+    // already denied by Firestore's own default-deny behavior.
+    match /artifacts/{appId}/reminders/{reminderId}/deliveries/{installationId} {
+      allow read, write: if false;
+    }
+
     // Stripe customer data (written by the Firebase Stripe extension)
     match /customers/{uid} {
       allow read: if request.auth != null && request.auth.uid == uid;

@@ -51,6 +51,7 @@ import {
   requireAllowedTransition,
   TOTAL_DNS_COURSE_DAYS,
   COURSE_COMPLETE_DAY,
+  REMINDER_STATUSES,
   type ScheduleSnapshot,
 } from './reminderSchedulerLogic';
 
@@ -612,6 +613,57 @@ check('invalid-reminder is terminal', isTerminalStatus('invalid-reminder'));
 check('claimed is NOT terminal', !isTerminalStatus('claimed'));
 check('requireAllowedTransition does not throw for a valid transition', (() => { try { requireAllowedTransition('claimed', 'processing'); return true; } catch { return false; } })());
 check('requireAllowedTransition throws for an invalid transition', (() => { try { requireAllowedTransition('dry-run-complete', 'processing'); return false; } catch { return true; } })());
+
+// ============================================================================
+// Phase 3A-3 Step 3C-2 Codex repair round (L1) — 'delivery-fanned-out' recognized by the
+// shared status/work-state model, for the not-yet-deployed Firestore delivery worker
+// (reminderDeliveryWorker.ts). This section proves: (1) the new status is a real member of
+// REMINDER_STATUSES; (2) it maps to workState 'terminal'; (3) exactly the one legal
+// transition (processing -> delivery-fanned-out) exists, with zero legal outgoing
+// transitions from it; (4) Step 2's own queue-poisoning defense (decideQueueOutcome)
+// correctly REPAIRS a hypothetically-corrupted, queue-visible 'delivery-fanned-out' parent
+// instead of misclassifying it as an unrecognized status.
+console.log("\n=== 'delivery-fanned-out' status recognition (Step 3C-2 Codex repair, L1) ===");
+check("REMINDER_STATUSES includes 'delivery-fanned-out'", (REMINDER_STATUSES as readonly string[]).includes('delivery-fanned-out'));
+check("expectedWorkStateForStatus('delivery-fanned-out') -> terminal", expectedWorkStateForStatus('delivery-fanned-out') === 'terminal');
+check("isTerminalStatus('delivery-fanned-out') is true", isTerminalStatus('delivery-fanned-out'));
+check("processing -> delivery-fanned-out allowed", isAllowedTransition('processing', 'delivery-fanned-out'));
+check(
+  "delivery-fanned-out has ZERO legal outgoing transitions (to any recognized status)",
+  REMINDER_STATUSES.every((to) => !isAllowedTransition('delivery-fanned-out', to))
+);
+check(
+  "no OTHER recognized status may transition directly to delivery-fanned-out (processing is the sole legal source)",
+  REMINDER_STATUSES.filter((s) => s !== 'processing').every((from) => !isAllowedTransition(from, 'delivery-fanned-out'))
+);
+check(
+  "requireAllowedTransition does not throw for processing -> delivery-fanned-out",
+  (() => {
+    try {
+      requireAllowedTransition('processing', 'delivery-fanned-out');
+      return true;
+    } catch {
+      return false;
+    }
+  })()
+);
+{
+  const now = Date.now();
+  const validSchema = validateReminderSchema(validReminderBase);
+  // A queue-visible, corrupted 'delivery-fanned-out' parent (workState still 'queued',
+  // exactly the poisoning shape Step 2's fifth repair round exists to defend against) must
+  // be REPAIRED (queue fields only, status/business outcome untouched) — the same
+  // treatment every other recognized terminal status already receives — never
+  // misclassified as an unrecognized status.
+  check(
+    "decideQueueOutcome('delivery-fanned-out', 'queued', past, null) -> repair-terminal-queue-state (not neutralize-unknown-status)",
+    decideQueueOutcome('delivery-fanned-out', 'queued', now - 1000, null, validSchema, now).action === 'repair-terminal-queue-state'
+  );
+  check(
+    "decideQueueOutcome('delivery-fanned-out', 'terminal', null, null) -> already-terminal-correct",
+    decideQueueOutcome('delivery-fanned-out', 'terminal', null, null, validSchema, now).action === 'already-terminal-correct'
+  );
+}
 
 // ============================================================================
 // Bounded concurrency worker pool (unchanged).
