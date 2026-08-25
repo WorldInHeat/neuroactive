@@ -22,11 +22,17 @@ import {
   prepareAndFinalizeDelivery,
   acquireOAuthAccessToken,
   decideFinalAuthorizationRolloutDisposition,
-  REAL_DELIVERY_ENABLED,
+  REAL_DELIVERY_STAGE,
   type AccessTokenProvider,
   type FinalAuthorizationResult,
 } from './reminderDeliveryAuth';
 import { OPAQUE_ID_LENGTH } from './reminderDeliveryLogic';
+
+// A well-formed OAuth token, used as the 4th `accessToken` argument every
+// finalizeDeliveryAuthorization call site below now requires (Step 3C-4). Never asserted
+// to appear in any persisted document except within the dedicated secrecy tests further
+// down, which use their own distinct marker value instead.
+const TEST_ACCESS_TOKEN = 'ya29.test-access-token-fixture-value';
 
 let pass = 0;
 let fail = 0;
@@ -235,11 +241,18 @@ function seedHappyPath(
   });
 
   if (overrides.delivery !== null) {
+    // CODEX REPAIR ROUND (test-isolation fix) — a single captured timestamp, not two
+    // independent Date.now() calls. Production (classifyDeliveryWorkTuple) requires
+    // workAvailableAt === leaseExpiresAt EXACTLY for a 'preparing' record (same instant by
+    // construction); two separate Date.now() calls can occasionally straddle a clock tick
+    // and produce two off-by-one-millisecond values, making the fixture itself malformed
+    // and failing an unrelated assertion before the real test logic is ever reached.
+    const leaseTimestampMs = Date.now() + 5 * 60 * 1000;
     seedDoc(store, deliveryPath(reminderId, installationId), {
       state: 'preparing',
       workState: 'queued',
-      workAvailableAt: Timestamp.fromMillis(Date.now() + 5 * 60 * 1000),
-      leaseExpiresAt: Timestamp.fromMillis(Date.now() + 5 * 60 * 1000),
+      workAvailableAt: Timestamp.fromMillis(leaseTimestampMs),
+      leaseExpiresAt: Timestamp.fromMillis(leaseTimestampMs),
       uid,
       installationId,
       deliveryPublicId: 'A'.repeat(43),
@@ -291,7 +304,7 @@ function seedHappyPath(
 async function runHappyPath(overrides: Parameters<typeof seedHappyPath>[2] = {}): Promise<FinalAuthorizationResult> {
   const { db, store } = makeFakeDb();
   const fixture = seedHappyPath(db, store, overrides);
-  return finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1);
+  return finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
 }
 
 async function main(): Promise<void> {
@@ -299,7 +312,7 @@ async function main(): Promise<void> {
   // SECTION 33 — FINAL AUTHORIZATION
   // =======================================================================================
 
-  check('source-level lock: REAL_DELIVERY_ENABLED is false', REAL_DELIVERY_ENABLED === false);
+  check('source-level lock: REAL_DELIVERY_STAGE is "disabled"', REAL_DELIVERY_STAGE === 'disabled');
 
   await checkAsync('happy dry-run -> dry-run-validated', async () => {
     const result = await runHappyPath();
@@ -310,7 +323,7 @@ async function main(): Promise<void> {
     const { db, store } = makeFakeDb();
     const fixture = seedHappyPath(db, store, { delivery: { processingAttemptCount: 2 } });
     const before = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId));
-    const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1);
+    const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
     if (result.outcome !== 'stale-fence' || result.reason !== 'stale-processing-fence') return false;
     const after = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId));
     return JSON.stringify(before) === JSON.stringify(after);
@@ -326,11 +339,13 @@ async function main(): Promise<void> {
     const uid = 'user-1';
     const reminderId = `${uid}_missing`;
     const installationId = hex32(2);
+    // Same single-captured-timestamp fix as seedHappyPath above (Codex test-isolation repair round).
+    const leaseTimestampMs = Date.now() + 5 * 60 * 1000;
     seedDoc(store, deliveryPath(reminderId, installationId), {
       state: 'preparing',
       workState: 'queued',
-      workAvailableAt: Timestamp.fromMillis(Date.now() + 5 * 60 * 1000),
-      leaseExpiresAt: Timestamp.fromMillis(Date.now() + 5 * 60 * 1000),
+      workAvailableAt: Timestamp.fromMillis(leaseTimestampMs),
+      leaseExpiresAt: Timestamp.fromMillis(leaseTimestampMs),
       uid,
       installationId,
       deliveryPublicId: 'A'.repeat(43),
@@ -340,7 +355,7 @@ async function main(): Promise<void> {
       attemptHistory: [],
       targetSnapshot: { generation: 1, tokenVersion: 1, installationAudienceId: 'A'.repeat(16) },
     });
-    const finalResult = await finalizeDeliveryAuthorization(db, db.doc(deliveryPath(reminderId, installationId)), 1);
+    const finalResult = await finalizeDeliveryAuthorization(db, db.doc(deliveryPath(reminderId, installationId)), 1, TEST_ACCESS_TOKEN);
     return finalResult.outcome === 'cancelled' && finalResult.reason === 'parent-invalid';
   });
 
@@ -396,14 +411,37 @@ async function main(): Promise<void> {
     return result.outcome === 'dry-run-validated';
   });
 
-  await checkAsync('rollout allowlisted-real-send -> rejected by phase lock (rollout-mode-not-supported-in-this-phase)', async () => {
+  // Step 3C-4: with REAL_DELIVERY_STAGE === 'disabled', BOTH real-send rollout modes now
+  // fail closed via the staged gate specifically (reason 'rollout-real-send-stage-disabled'),
+  // not the old, now-removed 'rollout-mode-not-supported-in-this-phase' catch-all — even
+  // an allowlisted uid under 'allowlisted-real-send' is rejected, proving the stage check
+  // runs BEFORE allowlist membership is ever consulted.
+  await checkAsync('[3C-4] rollout allowlisted-real-send, uid ON the allowlist -> still cancelled (stage disabled overrides allowlist membership)', async () => {
     const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] } });
-    return result.outcome === 'cancelled' && result.reason === 'rollout-mode-not-supported-in-this-phase';
+    return result.outcome === 'cancelled' && result.reason === 'rollout-real-send-stage-disabled';
   });
 
-  await checkAsync('rollout general-real-send -> rejected by phase lock (rollout-mode-not-supported-in-this-phase)', async () => {
+  await checkAsync('[3C-4] rollout allowlisted-real-send, uid NOT on the allowlist -> cancelled (stage disabled, same reason as above — stage check runs first)', async () => {
+    const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['someone-else'] } });
+    return result.outcome === 'cancelled' && result.reason === 'rollout-real-send-stage-disabled';
+  });
+
+  await checkAsync('[3C-4] rollout general-real-send -> cancelled rollout-real-send-stage-disabled', async () => {
     const result = await runHappyPath({ rollout: { mode: 'general-real-send' } });
-    return result.outcome === 'cancelled' && result.reason === 'rollout-mode-not-supported-in-this-phase';
+    return result.outcome === 'cancelled' && result.reason === 'rollout-real-send-stage-disabled';
+  });
+
+  await checkAsync('[3C-4] disabled-stage cancellation writes zero send-intent fields (state stays cancelled, not sending)', async () => {
+    const { db, store } = makeFakeDb();
+    const fixture = seedHappyPath(db, store, { rollout: { mode: 'general-real-send' } });
+    await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+    const after = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!;
+    return (
+      after.state === 'cancelled' &&
+      !Object.prototype.hasOwnProperty.call(after, 'sendExecutionId') &&
+      !Object.prototype.hasOwnProperty.call(after, 'sendIntentAtMs') &&
+      after.sendAttemptCount === 0
+    );
   });
 
   await checkAsync('installation missing -> cancelled installation-missing', async () => {
@@ -499,7 +537,7 @@ async function main(): Promise<void> {
   await checkAsync('successful dry-run writes exact terminal state fields', async () => {
     const { db, store } = makeFakeDb();
     const fixture = seedHappyPath(db, store);
-    await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1);
+    await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
     const after = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!;
     return (
       after.state === 'dry-run-validated' &&
@@ -512,7 +550,7 @@ async function main(): Promise<void> {
   await checkAsync('sendAttemptCount unchanged after successful dry-run', async () => {
     const { db, store } = makeFakeDb();
     const fixture = seedHappyPath(db, store, { delivery: { sendAttemptCount: 0 } });
-    await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1);
+    await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
     const after = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!;
     return after.sendAttemptCount === 0;
   });
@@ -520,7 +558,7 @@ async function main(): Promise<void> {
   await checkAsync('no raw token persisted anywhere on the delivery document after dry-run success', async () => {
     const { db, store } = makeFakeDb();
     const fixture = seedHappyPath(db, store);
-    await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1);
+    await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
     const after = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!;
     return !JSON.stringify(after).includes(RAW_TOKEN);
   });
@@ -538,14 +576,14 @@ async function main(): Promise<void> {
   await checkAsync('cancellation writes carry only a fixed reason enum, never a raw field value', async () => {
     const { db, store } = makeFakeDb();
     const fixture = seedHappyPath(db, store, { installation: { generation: 12345 } });
-    await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1);
+    await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
     const after = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!;
     return after.cancelReason === 'installation-generation-changed' && !JSON.stringify(after).includes('12345');
   });
 
   await checkAsync('delivery not found -> delivery-not-found, no crash', async () => {
     const { db } = makeFakeDb();
-    const result = await finalizeDeliveryAuthorization(db, db.doc(deliveryPath('nonexistent_1', hex32(5))), 1);
+    const result = await finalizeDeliveryAuthorization(db, db.doc(deliveryPath('nonexistent_1', hex32(5))), 1, TEST_ACCESS_TOKEN);
     return result.outcome === 'delivery-not-found';
   });
 
@@ -553,22 +591,52 @@ async function main(): Promise<void> {
     const { db, store } = makeFakeDb();
     const fixture = seedHappyPath(db, store);
     const before = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId));
-    const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 'not-a-number' as unknown);
+    const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 'not-a-number' as unknown, TEST_ACCESS_TOKEN);
     if (result.outcome !== 'stale-fence') return false;
     const after = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId));
     return JSON.stringify(before) === JSON.stringify(after);
   });
 
   check('decideFinalAuthorizationRolloutDisposition: paused -> cancel rollout-paused', (() => {
-    const d = decideFinalAuthorizationRolloutDisposition({ mode: 'paused' });
+    const d = decideFinalAuthorizationRolloutDisposition({ mode: 'paused' }, 'user-1');
     return d.decision === 'cancel' && d.reason === 'rollout-paused';
   })());
-  check('decideFinalAuthorizationRolloutDisposition: dry-run -> proceed-dry-run', decideFinalAuthorizationRolloutDisposition({ mode: 'dry-run' }).decision === 'proceed-dry-run');
+  check(
+    'decideFinalAuthorizationRolloutDisposition: dry-run -> proceed-dry-run',
+    decideFinalAuthorizationRolloutDisposition({ mode: 'dry-run' }, 'user-1').decision === 'proceed-dry-run'
+  );
   check(
     'decideFinalAuthorizationRolloutDisposition: malformed input -> cancel rollout-paused (fail closed)',
     (() => {
-      const d = decideFinalAuthorizationRolloutDisposition('garbage');
+      const d = decideFinalAuthorizationRolloutDisposition('garbage', 'user-1');
       return d.decision === 'cancel' && d.reason === 'rollout-paused';
+    })()
+  );
+  // Step 3C-4: with this file's REAL_DELIVERY_STAGE hardcoded to 'disabled', BOTH
+  // real-send modes cancel via the staged gate — 'proceed-real-send' is provably
+  // unreachable through this exported function as compiled today, regardless of uid or
+  // allowlist content. The 'allowlisted-only'/'general' stage behaviors themselves are
+  // exhaustively covered directly against decideStagedRealSendAuthorization in
+  // reminderDeliveryLogic.test.ts, which is NOT hardcoded to any one stage.
+  check(
+    'decideFinalAuthorizationRolloutDisposition: allowlisted-real-send, uid on allowlist -> still cancel (stage disabled)',
+    (() => {
+      const d = decideFinalAuthorizationRolloutDisposition({ mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, 'user-1');
+      return d.decision === 'cancel' && d.reason === 'rollout-real-send-stage-disabled';
+    })()
+  );
+  check(
+    'decideFinalAuthorizationRolloutDisposition: general-real-send -> cancel (stage disabled)',
+    (() => {
+      const d = decideFinalAuthorizationRolloutDisposition({ mode: 'general-real-send' }, 'user-1');
+      return d.decision === 'cancel' && d.reason === 'rollout-real-send-stage-disabled';
+    })()
+  );
+  check(
+    'decideFinalAuthorizationRolloutDisposition: general-real-send with malformed uid -> still cancel (stage-disabled reason wins; stage check runs before uid validation)',
+    (() => {
+      const d = decideFinalAuthorizationRolloutDisposition({ mode: 'general-real-send' }, { not: 'a string' });
+      return d.decision === 'cancel' && d.reason === 'rollout-real-send-stage-disabled';
     })()
   );
 
@@ -578,9 +646,9 @@ async function main(): Promise<void> {
     });
     return result.outcome === 'failed' && result.reason === 'oauth-preparation-failed' && !JSON.stringify(result).includes('SHOULD-NEVER-APPEAR');
   });
-  await checkAsync('acquireOAuthAccessToken: succeeding provider classifies as succeeded, token not in result', async () => {
+  await checkAsync('[3C-4] acquireOAuthAccessToken: succeeding provider classifies as succeeded AND now returns the token itself (Step 3C-4 — previously always discarded)', async () => {
     const result = await acquireOAuthAccessToken(async () => 'ya29.some-fake-token');
-    return result.outcome === 'succeeded' && !JSON.stringify(result).includes('ya29');
+    return result.outcome === 'succeeded' && result.accessToken === 'ya29.some-fake-token';
   });
 
   await checkAsync('acquireOAuthAccessToken: whitespace-only token classifies as failed (Codex repair round, L2)', async () => {
@@ -627,7 +695,7 @@ async function main(): Promise<void> {
       const existing = readDoc(store, path)!;
       delete (existing as Record<string, unknown>).fanoutExecutionIdAtCreation;
       store.set(path, existing);
-      const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1);
+      const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
       return result.outcome === 'invalid-delivery' && result.reason === 'invalid-fanout-execution-id-format';
     }
   );
@@ -647,7 +715,7 @@ async function main(): Promise<void> {
     const existing = readDoc(store, path)!;
     delete (existing as Record<string, unknown>).fanoutExecutionId;
     store.set(path, existing);
-    const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1);
+    const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
     return result.outcome === 'cancelled' && result.reason === 'parent-fanout-not-completed';
   });
 
@@ -744,7 +812,7 @@ async function main(): Promise<void> {
     async () => {
       const { db, store } = makeFakeDb();
       const fixture = seedHappyPath(db, store, { delivery: { deliveryPublicId: 'RAW-CORRUPTED-VALUE-SHOULD-NEVER-SURVIVE-999999' } });
-      await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1);
+      await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
       const after = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!;
       return (
         after.state === 'invalid-delivery' &&
@@ -770,26 +838,66 @@ async function main(): Promise<void> {
   check("reminderDeliveryAuth.ts never imports 'node:https'", !codeOnly.includes('node:https'));
   check('reminderDeliveryAuth.ts never calls fetch(', !codeOnly.includes('fetch('));
   check('reminderDeliveryAuth.ts never references globalThis.fetch', !codeOnly.includes('globalThis.fetch'));
-  check("reminderDeliveryAuth.ts never writes the literal delivery state 'sending'", !codeOnly.includes("'sending'"));
+  // Step 3C-4: this file now DOES write 'sending' (the intent-commit branch) but must
+  // still never reference either send-OUTCOME terminal state — those are
+  // reminderDeliverySender.ts's exclusive responsibility, reached only after an actual
+  // transport attempt this file never makes.
   check("reminderDeliveryAuth.ts never references 'accepted-by-fcm'/'rejected-final' (send-outcome states)", !codeOnly.includes("'accepted-by-fcm'") && !codeOnly.includes("'rejected-final'"));
-  check('reminderDeliveryAuth.ts never references sendAttemptCount at all (no increment possible)', !codeOnly.includes('sendAttemptCount'));
   check('reminderDeliveryAuth.ts contains no console.log/console.error/console.warn calls', !/console\.(log|error|warn|info|debug)\(/.test(authSource));
   check(
-    "reminderDeliveryAuth.ts contains exactly one production writable transition to 'dry-run-validated' and 'cancelled' each",
-    (codeOnly.match(/state: 'dry-run-validated'/g) || []).length === 1 && (codeOnly.match(/state: 'cancelled'/g) || []).length === 1
+    "reminderDeliveryAuth.ts contains exactly one production writable transition each to 'dry-run-validated', 'cancelled', and (Step 3C-4) 'sending'",
+    (codeOnly.match(/state: 'dry-run-validated'/g) || []).length === 1 &&
+      (codeOnly.match(/state: 'cancelled'/g) || []).length === 1 &&
+      (codeOnly.match(/requireAllowedDeliveryTransition\('preparing', 'sending'\)/g) || []).length === 1
   );
   check(
     "reminderDeliveryAuth.ts's OAuth scope is the real FCM HTTP v1 scope, not a broader one",
     codeOnly.includes("'https://www.googleapis.com/auth/firebase.messaging'")
   );
   check(
-    'reminderDeliveryAuth.ts contains exactly two invalid-delivery quarantine write call sites (schema corruption + preparing-work-tuple corruption), both via buildDeliveryQuarantineUpdate — no other path writes invalid-delivery',
-    (codeOnly.match(/\.\.\.buildDeliveryQuarantineUpdate\(/g) || []).length === 2
+    'reminderDeliveryAuth.ts contains exactly three invalid-delivery quarantine write call sites (schema corruption + preparing-work-tuple corruption + Step 3C-4 send-attempt-count-exhausted), all via buildDeliveryQuarantineUpdate — no other path writes invalid-delivery',
+    (codeOnly.match(/\.\.\.buildDeliveryQuarantineUpdate\(/g) || []).length === 3
   );
   check(
     "reminderDeliveryAuth.ts's H1 provenance equality check compares fanoutExecutionIdAtCreation to the parent's own fanoutExecutionId via strict !== (exact equality required, not a weaker comparison)",
     codeOnly.includes('fanoutExecutionIdAtCreation !== fanoutTupleValidation.outcome.fanoutExecutionId')
   );
+
+  // =======================================================================================
+  // STEP 3C-4 — STAGED REAL-SEND LOCK, SENDING-INTENT COMMIT, AND SECRET HANDOFF.
+  // =======================================================================================
+
+  check(
+    'reminderDeliveryAuth.ts asserts REAL_DELIVERY_STAGE !== "disabled" throws, BEFORE any Firestore access (layer A structural lock, mirrors the exact pre-3C-4 REAL_DELIVERY_ENABLED pattern)',
+    codeOnly.includes("if (REAL_DELIVERY_STAGE !== 'disabled')") && codeOnly.includes('must remain "disabled"')
+  );
+  check(
+    'reminderDeliveryAuth.ts consults decideStagedRealSendAuthorization (layer B) inside decideFinalAuthorizationRolloutDisposition, never bypassing it for a real-send rollout mode',
+    codeOnly.includes('decideStagedRealSendAuthorization(REAL_DELIVERY_STAGE')
+  );
+  check(
+    'reminderDeliveryAuth.ts generates sendExecutionId via randomBytes(OPAQUE_ID_BYTE_LENGTH) exactly once, outside db.runTransaction (mirrors fanoutExecutionId precedent)',
+    (codeOnly.match(/randomBytes\(OPAQUE_ID_BYTE_LENGTH\)/g) || []).length === 1 && !/db\.runTransaction\([\s\S]*randomBytes/.test(codeOnly)
+  );
+  check(
+    'reminderDeliveryAuth.ts exports no function accepting a caller-supplied sendExecutionId (finalizeDeliveryAuthorizationInner is not exported)',
+    !codeOnly.includes('export function finalizeDeliveryAuthorizationInner') && !codeOnly.includes('export async function finalizeDeliveryAuthorizationInner')
+  );
+  check(
+    'reminderDeliveryAuth.ts commits sendAttemptCount/sendExecutionId/sendIntentAtMs atomically with the sending state (single buildDeliverySendingIntentFields spread, single transaction.update call)',
+    codeOnly.includes('...buildDeliverySendingIntentFields(sendExecutionId, sendAttemptCountAfterThisIntent, sendIntentAtMs)')
+  );
+  check(
+    'reminderDeliveryAuth.ts never increments sendAttemptCount by more than 1 in a single write (uses "+ 1" exactly once against completeValidation.sendAttemptCount)',
+    (codeOnly.match(/completeValidation\.sendAttemptCount \+ 1/g) || []).length === 1
+  );
+
+  await checkAsync('[3C-4] canAuthorizeNewSendIntent guard: sendAttemptCount already at MAX_SEND_ATTEMPTS on a would-be real-send branch is defensive/unreachable while stage is disabled, but the guard code path itself must exist statically', async () => {
+    // Behaviorally unreachable while REAL_DELIVERY_STAGE === 'disabled' (the rollout check
+    // cancels first) — verified here as a static-source check instead, since no rollout
+    // config can drive execution past the stage gate in this compiled file.
+    return codeOnly.includes('canAuthorizeNewSendIntent(completeValidation.sendAttemptCount)') && codeOnly.includes("'send-attempt-count-exhausted'");
+  });
 
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);

@@ -59,6 +59,13 @@ import {
   type AttemptHistoryEntry,
   type TargetSnapshot,
   type DeliverySendOutcomeKind,
+  // Step 3C-4 additions
+  decideStagedRealSendAuthorization,
+  buildDeliverySendingIntentFields,
+  isMatchingActiveSendIntent,
+  computeDeliveryRetryAvailableAtMs,
+  DELIVERY_RETRY_BACKOFF_MS,
+  type RealDeliveryStage,
 } from './reminderDeliveryLogic';
 
 let pass = 0;
@@ -131,6 +138,17 @@ check('preparing -> invalid-delivery allowed', isAllowedDeliveryTransition('prep
 check('sending -> accepted-by-fcm allowed', isAllowedDeliveryTransition('sending', 'accepted-by-fcm'));
 check('sending -> rejected-final allowed', isAllowedDeliveryTransition('sending', 'rejected-final'));
 check('sending -> unknown-outcome allowed', isAllowedDeliveryTransition('sending', 'unknown-outcome'));
+check(
+  "[3C-4 CODEX REPAIR ROUND] sending -> invalid-delivery is NOT allowed (an earlier round of this repair added it, reasoning it was a safe quarantine of data this worker owns; Codex correctly rejected that — once 'sending' is committed, an FCM request may already have occurred, and rewriting the record to 'invalid-delivery' would erase that durable fact. A post-send persistence failure must instead leave the document in 'sending' untouched — see reminderDeliverySender.ts's commitSendOutcome, which performs zero Firestore mutation on that path)",
+  !isAllowedDeliveryTransition('sending', 'invalid-delivery') && throws(() => requireAllowedDeliveryTransition('sending', 'invalid-delivery'))
+);
+check('[3C-4] sending -> cancelled is NOT allowed (only preparing may cancel)', !isAllowedDeliveryTransition('sending', 'cancelled'));
+check('[3C-4] sending -> dry-run-validated is NOT allowed', !isAllowedDeliveryTransition('sending', 'dry-run-validated'));
+check('[3C-4] sending has EXACTLY the three original Step 3C-1 outgoing transitions — no more, no fewer', (() => {
+  const ALL_STATES = ['queued', 'preparing', 'sending', 'accepted-by-fcm', 'rejected-final', 'unknown-outcome', 'cancelled', 'dry-run-validated', 'invalid-delivery'];
+  const allowedFromSending = ALL_STATES.filter((s) => isAllowedDeliveryTransition('sending', s));
+  return JSON.stringify(allowedFromSending.sort()) === JSON.stringify(['accepted-by-fcm', 'rejected-final', 'unknown-outcome'].sort());
+})());
 check(
   '[3] CRITICAL: sending -> queued is NOT generically authorized (the retry bypass) — requireAllowedDeliveryTransition must throw',
   !isAllowedDeliveryTransition('sending', 'queued') && throws(() => requireAllowedDeliveryTransition('sending', 'queued'))
@@ -985,6 +1003,10 @@ check('[H2] happy path validates and returns fanoutExecutionIdAtCreation unchang
   const r = validatePersistedDeliveryForProcessing(VALID_INSTALLATION_ID, validPersistedDeliveryData());
   return r.valid === true && r.fanoutExecutionIdAtCreation === VALID_FANOUT_EXECUTION_ID;
 })());
+check('[3C-4] happy path also returns sendAttemptCount (needed by authorization to compute the next send intent count)', (() => {
+  const r = validatePersistedDeliveryForProcessing(VALID_INSTALLATION_ID, validPersistedDeliveryData({ sendAttemptCount: 2 }));
+  return r.valid === true && r.sendAttemptCount === 2;
+})());
 check('[H2] missing fanoutExecutionIdAtCreation -> rejected', (() => {
   const data = validPersistedDeliveryData();
   delete (data as Record<string, unknown>).fanoutExecutionIdAtCreation;
@@ -1234,6 +1256,144 @@ check('an inherited `targetingFailureReason` on an otherwise-valid COMPLETED tup
   });
   return validateFanoutTuple(tupleWithInheritedNoise).valid === true;
 })());
+
+// =========================================================================
+// PHASE 3A-3 STEP 3C-4 — STAGED REAL-SEND AUTHORIZATION, SENDING-INTENT COMMIT SHAPE,
+// ACTIVE-SEND-INTENT FENCE, AND RETRY BACKOFF.
+// =========================================================================
+console.log('\n=== decideStagedRealSendAuthorization ===');
+
+// 'disabled' short-circuits BEFORE even parsing the rollout config (a deliberately
+// stronger property than "authorization would fail anyway" — see the file's own comment
+// on decideStagedRealSendAuthorization), so it always reports 'stage-disabled' regardless
+// of what the rollout mode actually is. The OTHER two stages defer to
+// decideRealSendAuthorization's own paused/dry-run-only reasons, since those stages do
+// parse the rollout first.
+const NON_DISABLED_STAGES: RealDeliveryStage[] = ['allowlisted-only', 'general'];
+
+check("[3C-4] stage='disabled': paused rollout -> reason 'stage-disabled' (stage always wins first, regardless of rollout mode)", (() => {
+  const d = decideStagedRealSendAuthorization('disabled', { mode: 'paused' }, 'user-1');
+  return d.authorized === false && d.reason === 'stage-disabled';
+})());
+check("[3C-4] stage='disabled': dry-run rollout -> reason 'stage-disabled' (same — stage always wins first)", (() => {
+  const d = decideStagedRealSendAuthorization('disabled', { mode: 'dry-run' }, 'user-1');
+  return d.authorized === false && d.reason === 'stage-disabled';
+})());
+
+for (const stage of NON_DISABLED_STAGES) {
+  check(`[3C-4] stage=${stage}: paused rollout -> never authorized (reason 'paused')`, (() => {
+    const d = decideStagedRealSendAuthorization(stage, { mode: 'paused' }, 'user-1');
+    return d.authorized === false && d.reason === 'paused';
+  })());
+  check(`[3C-4] stage=${stage}: dry-run rollout -> never authorized (reason 'dry-run-only')`, (() => {
+    const d = decideStagedRealSendAuthorization(stage, { mode: 'dry-run' }, 'user-1');
+    return d.authorized === false && d.reason === 'dry-run-only';
+  })());
+}
+
+check("[3C-4] stage='disabled': allowlisted-real-send, uid ON allowlist -> still never authorized (reason 'stage-disabled', NOT 'not-allowlisted' — stage check runs first)", (() => {
+  const d = decideStagedRealSendAuthorization('disabled', { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, 'user-1');
+  return d.authorized === false && d.reason === 'stage-disabled';
+})());
+check("[3C-4] stage='disabled': general-real-send -> never authorized (reason 'stage-disabled')", (() => {
+  const d = decideStagedRealSendAuthorization('disabled', { mode: 'general-real-send' }, 'user-1');
+  return d.authorized === false && d.reason === 'stage-disabled';
+})());
+check("[3C-4] stage='disabled': malformed rollout entirely -> never authorized (reason 'stage-disabled' — short-circuits before even parsing)", (() => {
+  const d = decideStagedRealSendAuthorization('disabled', 'garbage', 'user-1');
+  return d.authorized === false && d.reason === 'stage-disabled';
+})());
+
+check("[3C-4] stage='allowlisted-only': allowlisted-real-send, uid ON allowlist -> authorized", (() => {
+  const d = decideStagedRealSendAuthorization('allowlisted-only', { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, 'user-1');
+  return d.authorized === true;
+})());
+check("[3C-4] stage='allowlisted-only': allowlisted-real-send, uid NOT on allowlist -> not authorized (reason 'not-allowlisted')", (() => {
+  const d = decideStagedRealSendAuthorization('allowlisted-only', { mode: 'allowlisted-real-send', allowlistUids: ['someone-else'] }, 'user-1');
+  return d.authorized === false && d.reason === 'not-allowlisted';
+})());
+check("[3C-4] stage='allowlisted-only': general-real-send -> NOT authorized even though the underlying rollout mode itself would be authorized at stage='general' (reason 'mode-not-permitted-at-current-stage')", (() => {
+  const d = decideStagedRealSendAuthorization('allowlisted-only', { mode: 'general-real-send' }, 'user-1');
+  return d.authorized === false && d.reason === 'mode-not-permitted-at-current-stage';
+})());
+check("[3C-4] stage='allowlisted-only': malformed uid against an otherwise-valid allowlisted-real-send -> not authorized (reason 'invalid-uid')", (() => {
+  const d = decideStagedRealSendAuthorization('allowlisted-only', { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, { not: 'a string' });
+  return d.authorized === false && d.reason === 'invalid-uid';
+})());
+
+check("[3C-4] stage='general': general-real-send -> authorized", (() => {
+  const d = decideStagedRealSendAuthorization('general', { mode: 'general-real-send' }, 'user-1');
+  return d.authorized === true;
+})());
+check("[3C-4] stage='general': allowlisted-real-send, uid ON allowlist -> STILL authorized (general stage permits allowlisted mode too)", (() => {
+  const d = decideStagedRealSendAuthorization('general', { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, 'user-1');
+  return d.authorized === true;
+})());
+check("[3C-4] stage='general': allowlisted-real-send, uid NOT on allowlist -> not authorized (allowlist membership still enforced even at the most permissive stage)", (() => {
+  const d = decideStagedRealSendAuthorization('general', { mode: 'allowlisted-real-send', allowlistUids: ['someone-else'] }, 'user-1');
+  return d.authorized === false && d.reason === 'not-allowlisted';
+})());
+
+console.log('\n=== buildDeliverySendingIntentFields ===');
+
+check('[3C-4] returns the exact fixed shape: state sending, terminal work tuple, and the three intent fields verbatim', (() => {
+  const fields = buildDeliverySendingIntentFields(VALID_FANOUT_EXECUTION_ID, 2, 1700000000000);
+  return (
+    fields.state === 'sending' &&
+    fields.workState === 'terminal' &&
+    fields.workAvailableAt === null &&
+    fields.leaseExpiresAt === null &&
+    fields.sendExecutionId === VALID_FANOUT_EXECUTION_ID &&
+    fields.sendAttemptCount === 2 &&
+    fields.sendIntentAtMs === 1700000000000
+  );
+})());
+check('[3C-4] returned shape has exactly the expected 7 own keys — no stray fields', (() => {
+  const fields = buildDeliverySendingIntentFields(VALID_FANOUT_EXECUTION_ID, 1, 1700000000000);
+  const keys = Object.keys(fields).sort();
+  return JSON.stringify(keys) === JSON.stringify(['leaseExpiresAt', 'sendAttemptCount', 'sendExecutionId', 'sendIntentAtMs', 'state', 'workAvailableAt', 'workState'].sort());
+})());
+
+console.log('\n=== isMatchingActiveSendIntent ===');
+
+const VALID_SEND_INTENT_AT_MS = 1700000000000;
+
+function activeSendIntentDoc(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { state: 'sending', sendAttemptCount: 1, sendExecutionId: VALID_FANOUT_EXECUTION_ID, sendIntentAtMs: VALID_SEND_INTENT_AT_MS, ...overrides };
+}
+function matches(docOverrides: Record<string, unknown>, expectedCount: unknown = 1, expectedId: unknown = VALID_FANOUT_EXECUTION_ID, expectedIntentAtMs: unknown = VALID_SEND_INTENT_AT_MS): boolean {
+  return isMatchingActiveSendIntent(activeSendIntentDoc(docOverrides), expectedCount, expectedId, expectedIntentAtMs);
+}
+
+check('[3C-4] exact match on state+count+executionId+sendIntentAtMs -> true', matches({}));
+check("[3C-4] state !== 'sending' (e.g. still 'preparing') -> false even with everything else matching", !matches({ state: 'preparing' }));
+check("[3C-4] state !== 'sending' (e.g. already terminal 'accepted-by-fcm') -> false", !matches({ state: 'accepted-by-fcm' }));
+check('[3C-4] sendAttemptCount mismatch (doc has 2, expected 1) -> false — proves a DIFFERENT, later-authorized intent is not silently accepted', !matches({ sendAttemptCount: 2 }));
+check('[3C-4] sendExecutionId mismatch (different opaque ID, same count) -> false', !matches({ sendExecutionId: VALID_FANOUT_EXECUTION_ID_2 }));
+check('[3C-4] malformed expectedSendAttemptCount (0, below the valid 1..MAX_SEND_ATTEMPTS domain) -> false, never coincidentally matches', !matches({ sendAttemptCount: 0 }, 0));
+check('[3C-4] malformed expectedSendExecutionId (not opaque-ID-shaped) -> false, never coincidentally matches', !matches({ sendExecutionId: 'not-opaque' }, 1, 'not-opaque'));
+check('[3C-4] malformed document sendAttemptCount (string) does not coincidentally satisfy strict equality against a valid expected count', !matches({ sendAttemptCount: '1' }));
+
+// CODEX REPAIR ROUND (Step 3C-4, blocker 2) — sendIntentAtMs is now part of the complete
+// fenced identity, not merely the other two fields.
+check('[3C-4] persisted sendIntentAtMs differs by exactly +1ms -> false (proves the fence is exact equality, not a tolerance window)', !matches({ sendIntentAtMs: VALID_SEND_INTENT_AT_MS + 1 }));
+check('[3C-4] persisted sendIntentAtMs malformed (negative) -> false, never coincidentally matches', !matches({ sendIntentAtMs: -1 }));
+check('[3C-4] persisted sendIntentAtMs malformed (non-integer) -> false', !matches({ sendIntentAtMs: 1.5 }));
+check('[3C-4] persisted sendIntentAtMs missing entirely -> false', !matches({ sendIntentAtMs: undefined }));
+check('[3C-4] persisted sendIntentAtMs null -> false', !matches({ sendIntentAtMs: null }));
+check(
+  '[3C-4] expected sendIntentAtMs wrong while state/count/executionId all match the document -> false (proves sendIntentAtMs is independently REQUIRED, not merely checked when the others fail)',
+  !matches({}, 1, VALID_FANOUT_EXECUTION_ID, VALID_SEND_INTENT_AT_MS + 999)
+);
+check('[3C-4] malformed expected sendIntentAtMs (string) -> false', !matches({}, 1, VALID_FANOUT_EXECUTION_ID, 'not-a-number'));
+
+console.log('\n=== computeDeliveryRetryAvailableAtMs / DELIVERY_RETRY_BACKOFF_MS ===');
+
+check('[3C-4] DELIVERY_RETRY_BACKOFF_MS is bounded and nonzero', DELIVERY_RETRY_BACKOFF_MS > 0 && DELIVERY_RETRY_BACKOFF_MS < 5 * 60 * 1000);
+check('[3C-4] computeDeliveryRetryAvailableAtMs(now) === now + DELIVERY_RETRY_BACKOFF_MS exactly', computeDeliveryRetryAvailableAtMs(1700000000000) === 1700000000000 + DELIVERY_RETRY_BACKOFF_MS);
+check('[3C-4] computeDeliveryRetryAvailableAtMs throws on malformed nowMs (negative)', throws(() => computeDeliveryRetryAvailableAtMs(-1)));
+check('[3C-4] computeDeliveryRetryAvailableAtMs throws on malformed nowMs (non-integer)', throws(() => computeDeliveryRetryAvailableAtMs(1.5)));
+check('[3C-4] computeDeliveryRetryAvailableAtMs throws on overflow (nowMs near MAX_SAFE_INTEGER)', throws(() => computeDeliveryRetryAvailableAtMs(Number.MAX_SAFE_INTEGER)));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

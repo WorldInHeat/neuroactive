@@ -3,38 +3,56 @@
 // central security boundary of the entire reminder-delivery pipeline: the ONLY code, ever,
 // permitted to transition a delivery out of 'preparing' toward a durable outcome.
 //
-// ***** STRUCTURALLY INCAPABLE OF SENDING *****
-// This file contains no reference to fcmTransport.ts, sendFcmOnce, getMessaging,
+// ***** STILL NO TRANSPORT IMPORT — BUT NO LONGER "STRUCTURALLY INCAPABLE OF SENDING" ALONE *****
+// This file still contains no reference to fcmTransport.ts, sendFcmOnce, getMessaging,
 // 'firebase-admin/messaging', 'node:https', or fetch. It never constructs an FCM HTTP
-// request and never POSTs a notification. The OAuth access token acquired here is used for
-// NOTHING beyond proving that acquisition itself succeeded — its actual string value is
-// read into a local variable for validation only and is discarded the instant that
-// validation completes; it is never returned, logged, persisted, or threaded into any
-// Firestore write. The deepest reachable outcome in this file is
-// `state: 'dry-run-validated'`. There is no code path — behind a flag or otherwise — that
-// writes `state: 'sending'`.
+// request and never POSTs a notification itself — reminderDeliverySender.ts (Step 3C-4) is
+// the ONLY file, anywhere in this codebase, permitted to import fcmTransport.ts. What CAN
+// happen here now, as of Step 3C-4, is authorizing a `preparing -> sending` commit and
+// handing the immediate caller a narrow, one-shot, in-memory `DeliverySendCapability`
+// (defined below) containing the OAuth token and the installation's current FCM token —
+// but ONLY when ALL of: (a) REAL_DELIVERY_STAGE (below) is not 'disabled', (b) the
+// freshly-re-read rollout config's mode/allowlist authorizes this uid via
+// decideStagedRealSendAuthorization, and (c) every other check this file already performed
+// for the dry-run path (parent/provenance, preference, installation, token claim) also
+// passes. `state: 'dry-run-validated'` remains reachable and unchanged; `state: 'sending'`
+// is the one new reachable terminal-for-this-file outcome.
 //
-// SOURCE-LEVEL REAL-SEND LOCK (Codex-required, section 30) — REAL_DELIVERY_ENABLED below is
-// a compile-time-visible `false` constant, independent of and never overridden by the
-// Firestore-stored rollout config. Even if that config document is accidentally or
-// maliciously set to 'allowlisted-real-send' or 'general-real-send',
-// decideFinalAuthorizationRolloutDisposition ALWAYS treats both modes identically to a
-// disallowed mode in this phase, and finalizeDeliveryAuthorization additionally asserts the
-// constant directly before touching Firestore at all — two independent layers, not one.
-// This constant may change only in a future, separately-reviewed Step 3C-4 round that also
-// implements the actual send path.
+// SOURCE-LEVEL REAL-SEND LOCK (Codex-required, Step 3C-4 adversarial design review) —
+// REAL_DELIVERY_STAGE below replaces the prior single boolean REAL_DELIVERY_ENABLED with a
+// three-value staged lock (see reminderDeliveryLogic.ts's RealDeliveryStage/
+// decideStagedRealSendAuthorization). It is a compile-time-visible constant, independent of
+// and never overridden by the Firestore-stored rollout config. For THIS implementation it
+// MUST remain 'disabled': under 'disabled', decideStagedRealSendAuthorization short-circuits
+// to `authorized: false` before even parsing the rollout config, so NO rollout content —
+// 'paused', 'dry-run', 'allowlisted-real-send' with ANY allowlist, or 'general-real-send' —
+// can ever reach the sending-commit branch below. This is layer A of the three-layer
+// enforcement the design review required; layer B is the fresh rollout+uid re-decision
+// inside THIS transaction (immediately below); layer C is reminderDeliverySender.ts's own,
+// independently-declared REAL_DELIVERY_STAGE constant, asserted immediately adjacent to its
+// sole sendFcmOnce call site — a bug or compromise in either file's constant alone cannot
+// flip the other's. This constant may change only in a future, separately-reviewed round.
 //
 // ROLLOUT CONFIG — server-owned, fixed path, Admin-SDK-only (see firestore.rules):
 //   artifacts/{appId}/systemConfig/notificationRollout
-// Parsed via reminderDeliveryLogic.ts's already-approved, pure `parseRolloutConfig`, which
-// fails closed to 'paused' for any missing/malformed document — this file adds no separate
-// "malformed rollout" case because that shape is indistinguishable, by design, from 'paused'.
+// Parsed via reminderDeliveryLogic.ts's already-approved, pure `parseRolloutConfig`
+// (dry-run path) and `decideStagedRealSendAuthorization` (real-send path), both of which
+// fail closed to a non-authorizing outcome for any missing/malformed document — this file
+// adds no separate "malformed rollout" case because that shape is indistinguishable, by
+// design, from 'paused'.
 //
-// TOKEN SECRECY — the OAuth access token and the installation's raw FCM token are each read
-// into a local variable, used only for validation/hashing, and never escape this file: never
-// assigned to a field on any Firestore write, never passed to `logger`/`console`, never
-// included in a thrown error, and never returned from any exported function.
-import { createHash } from 'node:crypto';
+// TOKEN SECRECY — the installation's raw FCM token is read into a local variable, used only
+// for hashing/validation/(as of Step 3C-4) capability construction, and never otherwise
+// escapes this file: never assigned to a field on any Firestore write, never passed to
+// `logger`/`console`, never included in a thrown error, and never returned except as the
+// `installationToken` field of a `DeliverySendCapability` returned ONLY on the
+// newly-authorized `sending` branch — the immediate caller (reminderDeliveryWorker.ts) must
+// hand that capability straight to reminderDeliverySender.ts and never log, persist, or
+// otherwise retain it. The OAuth access token has the identical treatment as of Step 3C-4:
+// acquireOAuthAccessToken now returns it (previously always discarded) specifically so it
+// can be threaded into that same one-shot capability; on every other branch (dry-run,
+// cancelled, invalid-delivery, stale-fence) it is still never read, used, or exposed at all.
+import { randomBytes, createHash } from 'node:crypto';
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { GoogleAuth } from 'google-auth-library';
 import {
@@ -44,9 +62,15 @@ import {
   requireAllowedDeliveryTransition,
   buildDeliveryTerminalWorkStateFields,
   buildDeliveryQuarantineUpdate,
+  buildDeliverySendingIntentFields,
   parseRolloutConfig,
+  decideStagedRealSendAuthorization,
+  canAuthorizeNewSendIntent,
   classifyDeliveryWorkTuple,
   validatePersistedDeliveryForProcessing,
+  OPAQUE_ID_BYTE_LENGTH,
+  isValidOpaqueIdFormat,
+  type RealDeliveryStage,
 } from './reminderDeliveryLogic';
 import { validateReminderSchema, validateSchedule, revalidateConsent, isValidAttemptCount } from './reminderSchedulerLogic';
 import { classifyEpochSchemaMarker, readFieldPresence, isValidTokenVersion, isValidAudienceId } from './pushInstallationEpochLogic';
@@ -54,7 +78,9 @@ import { classifyEpochSchemaMarker, readFieldPresence, isValidTokenVersion, isVa
 const APP_ID = 'neuroactive-prod';
 
 // See file header — this is a structural phase lock, not a rollout-config-driven decision.
-export const REAL_DELIVERY_ENABLED = false as const;
+// MUST remain 'disabled' for this implementation; see the file header's "SOURCE-LEVEL
+// REAL-SEND LOCK" section for the full three-layer enforcement rationale.
+export const REAL_DELIVERY_STAGE: RealDeliveryStage = 'disabled';
 
 // ---------------------------------------------------------------------------------------
 // Path helpers — duplicated locally per this codebase's established per-file convention
@@ -115,7 +141,15 @@ export function createGoogleAuthAccessTokenProvider(): AccessTokenProvider {
   };
 }
 
-export type OAuthPreparationOutcome = { outcome: 'succeeded' } | { outcome: 'failed'; reason: 'oauth-preparation-failed' };
+// CODEX REPAIR ROUND (Step 3C-4) — the success variant now carries the token itself. Prior
+// to Step 3C-4 this function always discarded it (nothing downstream ever needed the real
+// value). It is still never logged, never persisted, and never returned from this file's
+// own exported functions except as one field of a `DeliverySendCapability` constructed
+// inside finalizeDeliveryAuthorization's inner transaction, and only on the ONE branch
+// that just authorized a real send. On the dry-run/cancelled/invalid-delivery/stale-fence
+// branches, `prepareAndFinalizeDelivery` still receives this token but simply never reads
+// it — it is dropped when that local variable goes out of scope.
+export type OAuthPreparationOutcome = { outcome: 'succeeded'; accessToken: string } | { outcome: 'failed'; reason: 'oauth-preparation-failed' };
 
 // Deliberately the ONLY fixed failure category (see the approved design's "use fixed/
 // internal failure categories only" requirement) — this file cannot safely distinguish a
@@ -131,20 +165,37 @@ export async function acquireOAuthAccessToken(provider: AccessTokenProvider): Pr
     const token = await provider();
     // CODEX REPAIR ROUND (L2): whitespace-only strings (e.g. a single space, a tab) must
     // classify as failure exactly like an empty string — `.trim().length` rather than
-    // `.length` alone. The raw (untrimmed) value is still what would have been used had
-    // this check passed, but it never is used at all: this function discards `token`
-    // either way, succeeding or failing.
+    // `.length` alone.
     if (typeof token !== 'string' || token.trim().length === 0) {
       return { outcome: 'failed', reason: 'oauth-preparation-failed' };
     }
-    return { outcome: 'succeeded' };
-    // `token` is discarded here — this function never returns it, logs it, or stores it.
+    return { outcome: 'succeeded', accessToken: token };
   } catch {
     // Deliberately binds no parameter: matches fcmTransport.ts's established convention of
     // never reading a property off a caught exception, since an OAuth client's thrown error
     // could carry credential-adjacent detail in its own message/properties.
     return { outcome: 'failed', reason: 'oauth-preparation-failed' };
   }
+}
+
+// ---------------------------------------------------------------------------------------
+// PHASE 3A-3 STEP 3C-4 — NARROW ONE-SHOT SEND CAPABILITY.
+//
+// Returned ONLY after the `preparing -> sending` transaction below successfully commits.
+// Intended to be consumed IMMEDIATELY by reminderDeliverySender.ts and discarded after the
+// single transport attempt it authorizes — never logged, never persisted, never serialized
+// into any summary, never returned from a Cloud Function, and never exposed through any
+// reusable "look up a validated token" API. This type is exported ONLY so
+// reminderDeliverySender.ts can annotate its own function signature; no other file should
+// import it.
+// ---------------------------------------------------------------------------------------
+export interface DeliverySendCapability {
+  deliveryRef: FirebaseFirestore.DocumentReference;
+  sendAttemptCount: number;
+  sendExecutionId: string;
+  sendIntentAtMs: number;
+  installationToken: string;
+  accessToken: string;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -175,22 +226,68 @@ export type FinalAuthorizationReason =
   | 'installation-epoch-invalid'
   | 'installation-token-missing'
   | 'token-claim-missing'
-  | 'token-claim-mismatch';
+  | 'token-claim-mismatch'
+  // Step 3C-4 additions — every one of these maps 1:1 from
+  // reminderDeliveryLogic.ts's StagedRealSendAuthorizationDecision failure reasons (see
+  // mapStagedReasonToFinalAuthReason below), reached only when the rollout mode is
+  // 'allowlisted-real-send' or 'general-real-send' (a 'paused'/'dry-run' rollout never
+  // reaches the staged-authorization check at all).
+  | 'rollout-real-send-stage-disabled'
+  | 'rollout-real-send-not-allowlisted'
+  | 'rollout-real-send-mode-not-permitted-at-stage'
+  | 'rollout-real-send-invalid-uid';
 
 export type RolloutDisposition =
   | { decision: 'proceed-dry-run' }
-  | { decision: 'cancel'; reason: 'rollout-paused' | 'rollout-mode-not-supported-in-this-phase' };
+  // Step 3C-4 addition: every check this transaction performs for the dry-run path
+  // (parent/provenance, preference, installation, token claim) is performed IDENTICALLY
+  // for this decision — see finalizeDeliveryAuthorization's write phase below for the one
+  // place their handling actually diverges (writing 'sending' + the send capability
+  // instead of 'dry-run-validated').
+  | { decision: 'proceed-real-send' }
+  | { decision: 'cancel'; reason: FinalAuthorizationReason };
 
-// `dry-run` is the ONLY mode this phase may proceed under. 'paused' cancels (never
-// requeues — see the approved design's non-spinning-paused-disposition requirement).
-// 'allowlisted-real-send'/'general-real-send' are UNCONDITIONALLY treated as
-// not-supported-in-this-phase, regardless of allowlist membership — REAL_DELIVERY_ENABLED
-// being false means there is no "authorized" branch for either mode to fall into.
-export function decideFinalAuthorizationRolloutDisposition(rawRolloutConfig: unknown): RolloutDisposition {
+function mapStagedReasonToFinalAuthReason(
+  reason: 'paused' | 'dry-run-only' | 'not-allowlisted' | 'invalid-uid' | 'stage-disabled' | 'mode-not-permitted-at-current-stage'
+): FinalAuthorizationReason {
+  switch (reason) {
+    case 'paused':
+      return 'rollout-paused';
+    case 'dry-run-only':
+      // Unreachable in practice — decideFinalAuthorizationRolloutDisposition below only
+      // ever calls decideStagedRealSendAuthorization for a rollout mode that is NOT
+      // 'dry-run' (that mode is handled by its own branch first) — kept exhaustive so a
+      // future reason added to the shared type cannot silently fall through unmapped.
+      return 'rollout-mode-not-supported-in-this-phase';
+    case 'not-allowlisted':
+      return 'rollout-real-send-not-allowlisted';
+    case 'invalid-uid':
+      return 'rollout-real-send-invalid-uid';
+    case 'stage-disabled':
+      return 'rollout-real-send-stage-disabled';
+    case 'mode-not-permitted-at-current-stage':
+      return 'rollout-real-send-mode-not-permitted-at-stage';
+  }
+}
+
+// `deliveryUid` must be the ALREADY-validated uid the caller obtained from
+// validatePersistedDeliveryForProcessing earlier in the same transaction — never a raw,
+// unvalidated field read. 'paused' cancels (never requeues — see the approved design's
+// non-spinning-paused-disposition requirement). 'dry-run' always proceeds to the existing
+// dry-run path, unconditionally. 'allowlisted-real-send'/'general-real-send' consult
+// decideStagedRealSendAuthorization against THIS file's own REAL_DELIVERY_STAGE constant
+// (layer B of the three-layer enforcement — see the file header) — with
+// REAL_DELIVERY_STAGE === 'disabled' (required for this implementation), that call always
+// returns `authorized: false, reason: 'stage-disabled'` before even inspecting the
+// allowlist, so 'proceed-real-send' is unreachable in production today regardless of what
+// the rollout document contains.
+export function decideFinalAuthorizationRolloutDisposition(rawRolloutConfig: unknown, deliveryUid: unknown): RolloutDisposition {
   const parsed = parseRolloutConfig(rawRolloutConfig);
   if (parsed.mode === 'paused') return { decision: 'cancel', reason: 'rollout-paused' };
   if (parsed.mode === 'dry-run') return { decision: 'proceed-dry-run' };
-  return { decision: 'cancel', reason: 'rollout-mode-not-supported-in-this-phase' };
+  const staged = decideStagedRealSendAuthorization(REAL_DELIVERY_STAGE, rawRolloutConfig, deliveryUid);
+  if (!staged.authorized) return { decision: 'cancel', reason: mapStagedReasonToFinalAuthReason(staged.reason) };
+  return { decision: 'proceed-real-send' };
 }
 
 function mapPreferenceCancellationReason(
@@ -224,36 +321,83 @@ export type FinalAuthorizationResult =
   // potentially stomping a legitimately newer worker's in-flight work. No Firestore write
   // of any kind occurs on this path.
   | { outcome: 'stale-fence'; reason: 'stale-processing-fence' }
-  | { outcome: 'delivery-not-found' };
+  | { outcome: 'delivery-not-found' }
+  // Step 3C-4 addition — every check that would otherwise reach 'dry-run-validated' passed
+  // AND the rollout+stage combination authorized a real send. Carries the one-shot
+  // capability the immediate caller must hand straight to reminderDeliverySender.ts. With
+  // REAL_DELIVERY_STAGE === 'disabled' (required for this implementation), this branch is
+  // unreachable in production today — see decideFinalAuthorizationRolloutDisposition.
+  | { outcome: 'sending-authorized'; capability: DeliverySendCapability };
 
 // `expectedProcessingAttemptCount` is the fence the caller obtained from its own
 // `acquireDeliveryProcessingLease` acquisition — mirrors reminderDeliveryWorker.ts's
 // existing fanout fence pattern exactly. Accepts `unknown` and is validated (via
 // reminderSchedulerLogic.ts's own isValidAttemptCount — same domain, reused rather than
-// reinvented) before any Firestore access.
+// reinvented) before any Firestore access. `accessToken` is the already-acquired OAuth
+// token (see acquireOAuthAccessToken/prepareAndFinalizeDelivery) — read here ONLY to embed
+// in a DeliverySendCapability on the newly-authorized 'sending-authorized' branch; every
+// other branch never touches it.
+//
+// CODEX REPAIR ROUND (Step 3C-4) — sendExecutionId and sendIntentAtMs are generated ONCE,
+// HERE, before db.runTransaction(...) is ever called — exactly mirroring the existing
+// reminder-delivery fanout module's already-approved public/private split for its own
+// per-attempt random identity (generated once outside the transaction, reused verbatim
+// across any callback retry, never generated by the private inner function itself). This
+// function is a thin public wrapper that generates both values (spending them even on a
+// call that turns out not to need them — e.g. a dry-run or cancelled outcome — exactly
+// like that same fanout identity is already generated on every attempt regardless of
+// eventual outcome) and delegates to a module-private inner function that is not
+// exported: no external caller can ever supply/override/predict a sendExecutionId, and a
+// transaction-callback retry for the SAME intent reuses this SAME closure-captured value
+// rather than generating a new one.
 export async function finalizeDeliveryAuthorization(
   db: FirebaseFirestore.Firestore,
   deliveryRef: FirebaseFirestore.DocumentReference,
-  expectedProcessingAttemptCount: unknown
+  expectedProcessingAttemptCount: unknown,
+  accessToken: string
+): Promise<FinalAuthorizationResult> {
+  const sendExecutionId = randomBytes(OPAQUE_ID_BYTE_LENGTH).toString('base64url');
+  const sendIntentAtMs = Date.now();
+  return finalizeDeliveryAuthorizationInner(db, deliveryRef, expectedProcessingAttemptCount, accessToken, sendExecutionId, sendIntentAtMs);
+}
+
+// Module-private (no `export`): the actual transaction. Its ONLY caller, anywhere, is
+// finalizeDeliveryAuthorization immediately above.
+function finalizeDeliveryAuthorizationInner(
+  db: FirebaseFirestore.Firestore,
+  deliveryRef: FirebaseFirestore.DocumentReference,
+  expectedProcessingAttemptCount: unknown,
+  accessToken: string,
+  sendExecutionId: string,
+  sendIntentAtMs: number
 ): Promise<FinalAuthorizationResult> {
   // Structural lock (see file header) — asserted unconditionally, before any Firestore
   // access, independent of whatever decideFinalAuthorizationRolloutDisposition below would
   // otherwise decide. A future accidental flip of this constant without also implementing
-  // Step 3C-4's actual send path fails loudly here rather than silently authorizing sends.
-  if (REAL_DELIVERY_ENABLED) {
-    throw new Error('reminderDeliveryAuth: REAL_DELIVERY_ENABLED must remain false until Step 3C-4 ships with a reviewed sender integration.');
+  // a reviewed real-send rollout fails loudly here rather than silently authorizing sends.
+  if (REAL_DELIVERY_STAGE !== 'disabled') {
+    throw new Error(
+      'reminderDeliveryAuth: REAL_DELIVERY_STAGE must remain "disabled" until a separately-reviewed round explicitly arms real sends.'
+    );
   }
 
   if (!isValidAttemptCount(expectedProcessingAttemptCount)) {
-    return { outcome: 'stale-fence', reason: 'stale-processing-fence' };
+    return Promise.resolve({ outcome: 'stale-fence', reason: 'stale-processing-fence' });
   }
   const reminderId = deliveryRef.parent.parent?.id;
   if (!isValidReminderId(reminderId)) {
-    return { outcome: 'delivery-not-found' };
+    return Promise.resolve({ outcome: 'delivery-not-found' });
   }
   const installationId = deliveryRef.id;
   if (!isValidInstallationIdShape(installationId)) {
-    return { outcome: 'delivery-not-found' };
+    return Promise.resolve({ outcome: 'delivery-not-found' });
+  }
+  if (!isValidOpaqueIdFormat(sendExecutionId)) {
+    // Unreachable given this file's own generation above always produces a well-formed
+    // value — kept as a genuine runtime guard (not a TypeScript-only narrowing) matching
+    // this codebase's "accept unknown, validate internally" convention, since a future
+    // caller-side refactor could otherwise silently thread a malformed value through.
+    throw new Error('reminderDeliveryAuth: sendExecutionId must be a valid opaque ID.');
   }
 
   return db.runTransaction(async (transaction): Promise<FinalAuthorizationResult> => {
@@ -367,8 +511,9 @@ export async function finalizeDeliveryAuthorization(
     }
 
     // --- ROLLOUT (re-read inside THIS transaction, never trusted from an earlier read) ---
-    const rolloutDisposition = decideFinalAuthorizationRolloutDisposition(rolloutSnap.exists ? rolloutSnap.data() : undefined);
+    const rolloutDisposition = decideFinalAuthorizationRolloutDisposition(rolloutSnap.exists ? rolloutSnap.data() : undefined, deliveryUid);
     if (rolloutDisposition.decision === 'cancel') return cancel(rolloutDisposition.reason);
+    const willAuthorizeRealSend = rolloutDisposition.decision === 'proceed-real-send';
 
     // --- NOTIFICATION PREFERENCE (reuses reminderSchedulerLogic.ts's own revalidateConsent
     // — the exact same consent-revalidation Step 2 already performs immediately before its
@@ -416,17 +561,55 @@ export async function finalizeDeliveryAuthorization(
     }
 
     // ================= WRITE PHASE — every check above passed. =================
-    // sendAttemptCount is deliberately never read, referenced, or incremented anywhere in
-    // this function — no durable real-send intent is authorized in this phase.
-    requireAllowedDeliveryTransition('preparing', 'dry-run-validated');
+    if (!willAuthorizeRealSend) {
+      // Unchanged dry-run path: sendAttemptCount/sendExecutionId are deliberately never
+      // read, referenced, or incremented here — no durable real-send intent is authorized
+      // on this branch.
+      requireAllowedDeliveryTransition('preparing', 'dry-run-validated');
+      transaction.update(deliveryRef, {
+        state: 'dry-run-validated',
+        ...buildDeliveryTerminalWorkStateFields(),
+        validatedAt: FieldValue.serverTimestamp(),
+        processedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return { outcome: 'dry-run-validated' };
+    }
+
+    // Step 3C-4 real-send authorization branch — unreachable in production today (see
+    // REAL_DELIVERY_STAGE), but implemented and tested so a future, separately-reviewed
+    // stage change has a proven-correct path to arm rather than a stub.
+    if (!canAuthorizeNewSendIntent(completeValidation.sendAttemptCount)) {
+      // Defensive only: decideSendOutcomeAction already terminalizes to 'rejected-final'
+      // once MAX_SEND_ATTEMPTS is reached rather than ever requeuing to 'queued', so a
+      // 'preparing' delivery should never legitimately carry an exhausted sendAttemptCount
+      // — reaching here means unexplained corruption on a document this worker owns.
+      requireAllowedDeliveryTransition('preparing', 'invalid-delivery');
+      transaction.update(deliveryRef, {
+        ...buildDeliveryQuarantineUpdate('send-attempt-count-exhausted'),
+        processedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return { outcome: 'invalid-delivery', reason: 'send-attempt-count-exhausted' };
+    }
+    const sendAttemptCountAfterThisIntent = completeValidation.sendAttemptCount + 1;
+
+    requireAllowedDeliveryTransition('preparing', 'sending');
     transaction.update(deliveryRef, {
-      state: 'dry-run-validated',
-      ...buildDeliveryTerminalWorkStateFields(),
-      validatedAt: FieldValue.serverTimestamp(),
-      processedAt: FieldValue.serverTimestamp(),
+      ...buildDeliverySendingIntentFields(sendExecutionId, sendAttemptCountAfterThisIntent, sendIntentAtMs),
       updatedAt: FieldValue.serverTimestamp(),
     });
-    return { outcome: 'dry-run-validated' };
+    return {
+      outcome: 'sending-authorized',
+      capability: {
+        deliveryRef,
+        sendAttemptCount: sendAttemptCountAfterThisIntent,
+        sendExecutionId,
+        sendIntentAtMs,
+        installationToken: currentToken,
+        accessToken,
+      },
+    };
   });
 }
 
@@ -457,5 +640,9 @@ export async function prepareAndFinalizeDelivery(
   // finalizeDeliveryAuthorization's own fence re-read (the FIRST thing it does, inside the
   // transaction) is what catches this uniformly, whether the staleness happened during
   // OAuth acquisition or at any other point before the transaction commits.
-  return finalizeDeliveryAuthorization(db, deliveryRef, expectedProcessingAttemptCount);
+  //
+  // Step 3C-4: oauthOutcome.accessToken is threaded straight through, held only in this
+  // local parameter chain — never logged, never persisted here either. On every branch
+  // except 'sending-authorized', finalizeDeliveryAuthorization itself never reads it.
+  return finalizeDeliveryAuthorization(db, deliveryRef, expectedProcessingAttemptCount, oauthOutcome.accessToken);
 }

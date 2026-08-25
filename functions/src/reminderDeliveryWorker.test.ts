@@ -1306,6 +1306,24 @@ async function main(): Promise<void> {
     return summary.candidateCount === 1 && summary.dryRunValidatedCount === 1 && summary.unexpectedFailureCount === 0;
   });
 
+  await checkAsync(
+    "[3C-4] runDeliveryDryRunBatch: even on a real dry-run-validated pass, every new send-related counter stays exactly 0 (proves 'sending-authorized' genuinely never occurs while reminderDeliveryAuth.ts's REAL_DELIVERY_STAGE is disabled, not merely that nothing tests for it)",
+    async () => {
+      const { db, store } = makeFakeDb();
+      seedFullDryRunPipeline(store);
+      const provider: AccessTokenProvider = async () => 'fake-oauth-token';
+      const summary = await runDeliveryDryRunBatch(db, provider);
+      return (
+        summary.sendAcceptedCount === 0 &&
+        summary.sendRejectedFinalCount === 0 &&
+        summary.sendUnknownOutcomeCount === 0 &&
+        summary.sendRequeuedForRetryCount === 0 &&
+        summary.sendOutcomeFenceMismatchCount === 0 &&
+        summary.sendPersistenceFailedCount === 0
+      );
+    }
+  );
+
   await checkAsync('[3C-3] runDeliveryDryRunBatch: bounded batch size and concurrency constants are sane', async () => {
     return DELIVERY_PROCESSING_CONCURRENCY > 0 && DELIVERY_PROCESSING_CONCURRENCY <= DELIVERY_QUEUE_BATCH_SIZE;
   });
@@ -1515,10 +1533,31 @@ async function main(): Promise<void> {
     "reminderDeliveryWorker.ts never imports 'google-auth-library' directly and never constructs a GoogleAuth instance or calls .getAccessToken( itself — it only imports createGoogleAuthAccessTokenProvider FROM reminderDeliveryAuth.ts, which owns all OAuth logic exclusively (Phase 3A-3 Step 3C-3)",
     !codeOnly.includes("from 'google-auth-library'") && !codeOnly.includes('new GoogleAuth(') && !codeOnly.includes('.getAccessToken(')
   );
-  check("reminderDeliveryWorker.ts never writes the literal delivery state 'sending'", !codeOnly.includes("'sending'"));
   check(
-    "reminderDeliveryWorker.ts never writes the literal delivery states 'accepted-by-fcm'/'rejected-final'",
-    !codeOnly.includes("'accepted-by-fcm'") && !codeOnly.includes("'rejected-final'")
+    "reminderDeliveryWorker.ts never itself references the literal delivery state 'sending' at all (unlike 'accepted-by-fcm'/'rejected-final' below, it never even needs to COMPARE against it — the sendResult union it tallies distinguishes outcomes without ever naming the intermediate state)",
+    !codeOnly.includes("'sending'")
+  );
+  check(
+    "reminderDeliveryWorker.ts never WRITES the literal delivery states 'accepted-by-fcm'/'rejected-final' (Step 3C-4: it now legitimately COMPARES against them exactly once each, only inside runDeliveryDryRunBatch's sendResult tally switch, to bucket an already-committed outcome into a summary counter — never as the right-hand side of a `state:` write)",
+    !codeOnly.includes("state: 'accepted-by-fcm'") && !codeOnly.includes("state: 'rejected-final'")
+  );
+
+  // =======================================================================================
+  // STEP 3C-4 — SENDER WIRING. Behaviorally unreachable while reminderDeliveryAuth.ts's
+  // REAL_DELIVERY_STAGE is 'disabled' (proven above via the send-counter-stays-zero test),
+  // so the wiring itself is verified statically here instead.
+  // =======================================================================================
+  check(
+    'reminderDeliveryWorker.ts imports executeControlledSend from ./reminderDeliverySender, and from no other module',
+    codeOnly.includes("import { executeControlledSend, type SendOutcomeCommitResult } from './reminderDeliverySender';")
+  );
+  check(
+    'reminderDeliveryWorker.ts contains exactly one call to executeControlledSend, gated behind an explicit check for finalization.outcome === \'sending-authorized\'',
+    (codeOnly.match(/executeControlledSend\(/g) || []).length === 1 && codeOnly.includes("finalization.outcome === 'sending-authorized'")
+  );
+  check(
+    'reminderDeliveryWorker.ts never itself imports fcmTransport.ts directly — the only path to it is transitively through reminderDeliverySender.ts',
+    !codeOnly.includes("from './fcmTransport'") && !codeOnly.includes('sendFcmOnce')
   );
   check(
     "reminderDeliveryWorker.ts never WRITES 'dry-run-validated' itself (only reminderDeliveryAuth.ts's final-authorization transaction may) — the string legitimately appears only in a switch-case comparison against reminderDeliveryAuth.ts's own result type",
@@ -1656,7 +1695,11 @@ async function main(): Promise<void> {
   {
     const srcDir = path.join(__dirname, '..', 'src');
     const allSourceFiles = fs.readdirSync(srcDir).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'));
-    const RANDOMBYTES_ALLOWED_FILES = new Set(['reminderDeliveryWorker.ts', 'pushInstallations.ts', 'pushInstallationEpochLogic.ts']);
+    // Step 3C-4: reminderDeliveryAuth.ts now also legitimately calls randomBytes( — its
+    // OWN, independent generation of sendExecutionId (mirroring, not reusing, the fanout
+    // module's per-attempt-identity pattern). Added to the allowlist deliberately, not
+    // silently — this is a reviewed, expected new call site, not scope creep.
+    const RANDOMBYTES_ALLOWED_FILES = new Set(['reminderDeliveryWorker.ts', 'reminderDeliveryAuth.ts', 'pushInstallations.ts', 'pushInstallationEpochLogic.ts']);
     const FANOUT_NONCE_IDENTIFIER_ALLOWED_FILES = new Set(['reminderDeliveryWorker.ts', 'reminderDeliveryLogic.ts']);
 
     check(

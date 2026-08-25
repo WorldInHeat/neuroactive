@@ -168,6 +168,17 @@ export function isTerminalDeliveryState(state: string): boolean {
 const ALLOWED_DELIVERY_TRANSITIONS: Record<DeliveryState, DeliveryState[]> = {
   queued: ['preparing', 'invalid-delivery'],
   preparing: ['sending', 'dry-run-validated', 'cancelled', 'invalid-delivery'],
+  // Step 3C-4 CODEX REPAIR ROUND — an earlier version of this round added
+  // 'invalid-delivery' here, reasoning it was a safe quarantine of data this worker
+  // legitimately owns (mirroring the 'preparing' -> 'invalid-delivery' precedent above).
+  // Codex correctly rejected that: once a delivery has reached 'sending', an FCM request
+  // MAY ALREADY HAVE BEEN SENT — rewriting the record to 'invalid-delivery' erases the
+  // durable fact that a send may have occurred, which 'invalid-delivery' does not mean and
+  // was never designed to mean. A post-send persistence failure (e.g. corrupted
+  // attemptHistory discovered when committing the outcome) must instead leave the document
+  // in 'sending' untouched — see reminderDeliverySender.ts's commitSendOutcome, which
+  // performs ZERO Firestore mutation on that path rather than writing any state at all.
+  // 'sending' therefore still has EXACTLY the three outgoing transitions from Step 3C-1.
   sending: ['accepted-by-fcm', 'rejected-final', 'unknown-outcome'],
   'accepted-by-fcm': [],
   'rejected-final': [],
@@ -1131,6 +1142,12 @@ export type PersistedDeliveryValidation =
       targetSnapshot: TargetSnapshot;
       processingAttemptCount: number;
       fanoutExecutionIdAtCreation: string;
+      // Step 3C-4 addition: exposed so a caller deciding whether to authorize a NEW send
+      // intent (canAuthorizeNewSendIntent) never has to re-derive this from raw,
+      // unvalidated `data` itself — by the time this function returns valid:true,
+      // validateDeliverySchema has already proven this is a genuine 0..MAX_SEND_ATTEMPTS
+      // integer.
+      sendAttemptCount: number;
     }
   | { valid: false; reason: string };
 
@@ -1196,5 +1213,164 @@ export function validatePersistedDeliveryForProcessing(refId: unknown, data: Rec
     targetSnapshot: schemaCheck.targetSnapshot,
     processingAttemptCount: schemaCheck.processingAttemptCount,
     fanoutExecutionIdAtCreation: data.fanoutExecutionIdAtCreation as string,
+    sendAttemptCount: schemaCheck.sendAttemptCount,
   };
+}
+
+// ---------------------------------------------------------------------------------------
+// PHASE 3A-3 STEP 3C-4 — STAGED REAL-SEND SOURCE LOCK (pure decision only).
+//
+// REAL_DELIVERY_ENABLED (a single boolean) is replaced by a three-value staged lock, per
+// the Codex-approved Step 3C-4 design: 'disabled' (this phase's only permitted value —
+// zero rollout content can ever authorize a real send), 'allowlisted-only' (a future,
+// separately-reviewed phase — only allowlisted-real-send, for an allowlisted uid, may
+// authorize), and 'general' (a future, separately-reviewed phase beyond that). This type
+// and decideStagedRealSendAuthorization are pure/shared so BOTH of the two independent
+// enforcement layers (reminderDeliveryAuth.ts's authorization boundary, and
+// reminderDeliverySender.ts's immediate pre-transport assertion) consult the exact same
+// decision logic — each file still declares its OWN local REAL_DELIVERY_STAGE constant
+// (deliberately not imported from the other), so a bug/compromise in one file's constant
+// cannot by itself flip the other's.
+// ---------------------------------------------------------------------------------------
+
+export type RealDeliveryStage = 'disabled' | 'allowlisted-only' | 'general';
+
+export type StagedRealSendAuthorizationDecision =
+  | { authorized: true }
+  | {
+      authorized: false;
+      reason:
+        | 'paused'
+        | 'dry-run-only'
+        | 'not-allowlisted'
+        | 'invalid-uid'
+        | 'stage-disabled'
+        | 'mode-not-permitted-at-current-stage';
+    };
+
+// Combines the existing (already-approved, Step 3C-1) decideRealSendAuthorization with the
+// NEW stage gate. 'disabled' short-circuits before even parsing the rollout config — under
+// this stage, NO rollout content of any kind can ever authorize a send. 'general-real-send'
+// additionally requires stage === 'general' specifically — an 'allowlisted-only' stage
+// treats 'general-real-send' exactly like 'not-allowlisted' (never authorized), even for an
+// allowlisted uid, because 'general-real-send' carries no allowlist to check membership
+// against at all. Accepts `unknown` for both rawConfig and uid, exactly like
+// decideRealSendAuthorization, and never trusts a caller-declared type over runtime shape.
+export function decideStagedRealSendAuthorization(
+  stage: RealDeliveryStage,
+  rawConfig: unknown,
+  uid: unknown
+): StagedRealSendAuthorizationDecision {
+  if (stage === 'disabled') return { authorized: false, reason: 'stage-disabled' };
+
+  const base = decideRealSendAuthorization(rawConfig, uid);
+  if (!base.authorized) return base;
+
+  // base.authorized === true here means rollout mode is either 'general-real-send' or
+  // ('allowlisted-real-send' AND uid is a member) — re-parse to find out which, since
+  // decideRealSendAuthorization's own success shape carries no mode information.
+  const parsed = parseRolloutConfig(rawConfig);
+  if (parsed.mode === 'general-real-send' && stage !== 'general') {
+    return { authorized: false, reason: 'mode-not-permitted-at-current-stage' };
+  }
+  return { authorized: true };
+}
+
+// ---------------------------------------------------------------------------------------
+// PHASE 3A-3 STEP 3C-4 — SENDING-INTENT COMMIT SHAPE + POST-SEND OUTCOME FENCE.
+//
+// sendExecutionId reuses the SAME generic opaque-ID primitive (isValidOpaqueIdFormat /
+// OPAQUE_ID_BYTE_LENGTH / OPAQUE_ID_LENGTH) as deliveryPublicId and fanoutExecutionId —
+// same 32-byte-random / 43-char-base64url shape, independently generated per send intent
+// by the (future) orchestration layer OUTSIDE any db.runTransaction(...) call, exactly
+// like fanoutNonce/fanoutExecutionId already are. This file never generates randomness
+// itself anywhere — see the file header.
+// ---------------------------------------------------------------------------------------
+
+// Pure payload builder for the preparing -> sending commit, mirroring
+// buildDeliveryTerminalWorkStateFields/buildDeliveryQuarantineUpdate's established
+// "caller has already validated every input; this just assembles the fixed shape" style.
+// `sendAttemptCountAfterThisIntent` and `sendIntentAtMs` are plain numbers (not Firestore
+// Timestamps) by design — the attempt-history entries this intent will eventually produce
+// already use plain epoch-ms numbers (see AttemptHistoryEntry), so keeping this field in
+// the same representation means the eventual attempt-history entry's sendIntentAt can copy
+// this value verbatim, with no Timestamp<->number conversion (and its associated precision
+// hazard) anywhere in the round trip.
+export function buildDeliverySendingIntentFields(
+  sendExecutionId: string,
+  sendAttemptCountAfterThisIntent: number,
+  sendIntentAtMs: number
+): {
+  state: 'sending';
+  workState: 'terminal';
+  workAvailableAt: null;
+  leaseExpiresAt: null;
+  sendAttemptCount: number;
+  sendExecutionId: string;
+  sendIntentAtMs: number;
+} {
+  return {
+    state: 'sending',
+    ...buildDeliveryTerminalWorkStateFields(),
+    sendAttemptCount: sendAttemptCountAfterThisIntent,
+    sendExecutionId,
+    sendIntentAtMs,
+  };
+}
+
+// The ONLY function that decides whether a freshly-read delivery document still matches a
+// specific, previously-authorized send intent. Used by the post-send outcome transaction
+// (reminderDeliverySender.ts) as its fence: requires state==='sending' AND an EXACT match
+// on the COMPLETE persisted active-intent identity — sendAttemptCount, sendExecutionId,
+// AND (Step 3C-4 Codex repair round) sendIntentAtMs. No two of these three alone are
+// sufficient: sendAttemptCount alone cannot distinguish two different intents that happen
+// to share a count (impossible in practice, since each commit strictly increments it, but
+// this function does not rely on that invariant holding elsewhere); sendExecutionId alone
+// cannot prove the document has not since moved to some other state entirely; and
+// sendIntentAtMs closes the remaining gap where a document could otherwise be
+// quarantined/repaired/re-seeded back into an externally-similar-looking 'sending' shape
+// (same count, same execution id, by whatever means) with a DIFFERENT authorization
+// timestamp — the full triple is required together. Accepts `unknown` for every expected
+// value AND independently re-validates the PERSISTED sendIntentAtMs itself (not merely the
+// expected one) before ever comparing — a malformed value on either side can never
+// coincidentally satisfy this check.
+export function isMatchingActiveSendIntent(
+  data: Record<string, unknown>,
+  expectedSendAttemptCount: unknown,
+  expectedSendExecutionId: unknown,
+  expectedSendIntentAtMs: unknown
+): boolean {
+  if (data.state !== 'sending') return false;
+  if (!isValidSendAttemptCountAfterAttempt(expectedSendAttemptCount)) return false;
+  if (!isValidOpaqueIdFormat(expectedSendExecutionId)) return false;
+  if (!isValidEpochMs(expectedSendIntentAtMs)) return false;
+  if (!isValidEpochMs(data.sendIntentAtMs)) return false;
+  return (
+    data.sendAttemptCount === expectedSendAttemptCount &&
+    data.sendExecutionId === expectedSendExecutionId &&
+    data.sendIntentAtMs === expectedSendIntentAtMs
+  );
+}
+
+// ---------------------------------------------------------------------------------------
+// PHASE 3A-3 STEP 3C-4 — BOUNDED RETRY BACKOFF for the one authorized sending -> queued
+// retry edge (retryable-later, under the attempt cap — see isAuthorizedRetryTransition).
+// Same overflow-hardening pattern as computeDeliveryLeaseExpiresAtMs: validates the input,
+// then re-validates the RESULT, never handing back a value its own epoch-ms validator
+// would itself reject.
+// ---------------------------------------------------------------------------------------
+
+export const DELIVERY_RETRY_BACKOFF_MS = 60_000; // 60 seconds — bounded and nonzero; the
+// every-5-minute scheduler cadence means this mostly just ensures the retry is never
+// immediate, rather than being the dominant source of delay before the next attempt.
+
+export function computeDeliveryRetryAvailableAtMs(nowMs: unknown): number {
+  if (!isValidEpochMs(nowMs)) {
+    throw new Error('computeDeliveryRetryAvailableAtMs: nowMs must be a nonnegative safe-integer epoch-millisecond value.');
+  }
+  const result = nowMs + DELIVERY_RETRY_BACKOFF_MS;
+  if (!isValidEpochMs(result)) {
+    throw new Error('computeDeliveryRetryAvailableAtMs: nowMs + retry backoff overflows the safe-integer epoch-millisecond domain.');
+  }
+  return result;
 }
