@@ -87,6 +87,18 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Server-owned notification rollout configuration (Phase 3A-3 Step 3C-3). Single fixed
+    // document read by both reminderScheduler.ts (fanout decision) and
+    // reminderDeliveryAuth.ts (final-authorization revalidation), Admin SDK only. No client
+    // read or write — an allowlist a client could read would leak who else is enrolled, and
+    // client write access would trivially let any user enable real sends for themselves.
+    // Missing/malformed reads already fail closed to 'paused' semantics in application code
+    // (see reminderDeliveryLogic.ts's parseRolloutConfig), so this document need not even
+    // exist yet for that fail-closed behavior to hold — this rule denies access to it either way.
+    match /artifacts/{appId}/systemConfig/notificationRollout {
+      allow read, write: if false;
+    }
+
     // Stripe customer data (written by the Firebase Stripe extension)
     match /customers/{uid} {
       allow read: if request.auth != null && request.auth.uid == uid;

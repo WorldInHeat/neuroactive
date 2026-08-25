@@ -46,12 +46,16 @@ import {
   fanOutReminderDelivery,
   discoverRecoverableDeliveryWork,
   acquireDeliveryProcessingLease,
+  processDeliveryQueueCandidate,
+  runDeliveryDryRunBatch,
   DELIVERY_QUEUE_BATCH_SIZE,
   DELIVERY_PUBLIC_ID_LENGTH,
+  DELIVERY_PROCESSING_CONCURRENCY,
   __test__,
   type FanoutExecutionResult,
 } from './reminderDeliveryWorker';
 import { DELIVERY_STATES, FANOUT_NONCE_BYTE_LENGTH, deriveDeliveryPublicId, MAX_SEND_ATTEMPTS } from './reminderDeliveryLogic';
+import type { AccessTokenProvider } from './reminderDeliveryAuth';
 
 let pass = 0;
 let fail = 0;
@@ -135,6 +139,14 @@ class FakeDocumentReference {
   collection(name: string): FakeCollectionReference {
     return new FakeCollectionReference(this.store, `${this.path}/${name}`);
   }
+  // Needed for reminderDeliveryAuth.ts's finalizeDeliveryAuthorization, which derives
+  // reminderId via `deliveryRef.parent.parent?.id` — mirrors the real Firestore
+  // DocumentReference.parent -> CollectionReference.parent -> DocumentReference|null chain.
+  get parent(): FakeCollectionReference {
+    const segs = this.path.split('/');
+    segs.pop();
+    return new FakeCollectionReference(this.store, segs.join('/'));
+  }
 }
 
 class FakeQuery {
@@ -208,6 +220,12 @@ class FakeQuery {
 class FakeCollectionReference extends FakeQuery {
   constructor(store: Store, public readonly path: string) {
     super(store, { kind: 'collection', collectionPath: path });
+  }
+  get parent(): FakeDocumentReference | null {
+    const segs = this.path.split('/');
+    segs.pop();
+    if (segs.length === 0) return null;
+    return new FakeDocumentReference(this.store, segs.join('/'));
   }
   doc(id: string): FakeDocumentReference {
     return new FakeDocumentReference(this.store, `${this.path}/${id}`);
@@ -383,6 +401,15 @@ function deliveryPath(reminderId: string, installationId: string): string {
 function installationPath(installationId: string): string {
   return `artifacts/${APP_ID}/pushInstallations/${installationId}`;
 }
+function prefPath(uid: string): string {
+  return `artifacts/${APP_ID}/users/${uid}/notificationPreferences/main`;
+}
+function rolloutPath(): string {
+  return `artifacts/${APP_ID}/systemConfig/notificationRollout`;
+}
+function tokenClaimPath(tokenHash: string): string {
+  return `artifacts/${APP_ID}/pushTokenClaims/${tokenHash}`;
+}
 
 function seedProcessingReminder(store: Store, reminderId: string, attemptCount = 1, overrides: Record<string, unknown> = {}): void {
   seedDoc(store, reminderPath(reminderId), {
@@ -418,6 +445,10 @@ function seedActiveInstallation(store: Store, installationId: string, overrides:
 // specifically verify derivation correctness use deriveDeliveryPublicId directly instead
 // (see the fanout retry-stability tests above).
 const VALID_PUBLIC_ID = 'A'.repeat(DELIVERY_PUBLIC_ID_LENGTH);
+// A syntactically valid fanoutExecutionIdAtCreation for queue fixtures that don't care
+// about actual parent-provenance equality (that is reminderDeliveryAuth.ts's concern) —
+// only that the field itself is well-formed enough to pass acquisition-time validation.
+const VALID_FANOUT_EXECUTION_ID_FOR_QUEUE = 'F'.repeat(DELIVERY_PUBLIC_ID_LENGTH);
 
 // M1 repair round: baseline fields a queued/preparing delivery must ALL satisfy to be
 // acquirable — includes the fields validatePersistedDeliveryForProcessing now additionally
@@ -431,6 +462,7 @@ function validQueuedDeliveryFields(installationId: string, overrides: Record<str
     uid: UID,
     installationId,
     deliveryPublicId: VALID_PUBLIC_ID,
+    fanoutExecutionIdAtCreation: VALID_FANOUT_EXECUTION_ID_FOR_QUEUE,
     sendAttemptCount: 0,
     processingAttemptCount: 0,
     attemptHistory: [],
@@ -476,6 +508,7 @@ const ALLOWED_CHILD_KEYS = new Set([
   'uid',
   'installationId',
   'deliveryPublicId',
+  'fanoutExecutionIdAtCreation',
   'processingAttemptCount',
   'sendAttemptCount',
   'attemptHistory',
@@ -766,7 +799,7 @@ async function main(): Promise<void> {
   });
 
   await checkAsync(
-    '[fanout H1] production fanOutReminderDelivery generates its own randomBytes exactly once and never reuses a caller value',
+    '[fanout H1] production fanOutReminderDelivery generates its own randomBytes exactly twice (fanoutNonce + fanoutExecutionId) and never reuses a caller value',
     async () => {
       const { db, store } = makeFakeDb();
       const reminderId = `${UID}_h1_own`;
@@ -786,15 +819,24 @@ async function main(): Promise<void> {
       } finally {
         (nodeCrypto as unknown as Record<string, unknown>).randomBytes = originalRandomBytes;
       }
-      if (randomBytesCallCount !== 1) return false;
+      // Codex repair round (H1): two independent randomBytes calls per invocation — one for
+      // fanoutNonce (HMAC key), one for fanoutExecutionId (raw provenance identity) — never
+      // derived from one another (Option A from the repair instructions).
+      if (randomBytesCallCount !== 2) return false;
       if (result.outcome !== 'fanned-out' || result.createdDeliveryCount !== 1) return false;
       const child = readDoc(store, deliveryPath(reminderId, installationId));
-      return typeof child?.deliveryPublicId === 'string' && (child.deliveryPublicId as string).length === DELIVERY_PUBLIC_ID_LENGTH;
+      if (typeof child?.deliveryPublicId !== 'string' || (child.deliveryPublicId as string).length !== DELIVERY_PUBLIC_ID_LENGTH) return false;
+      const parent = readDoc(store, reminderPath(reminderId));
+      return (
+        typeof child.fanoutExecutionIdAtCreation === 'string' &&
+        child.fanoutExecutionIdAtCreation === parent?.fanoutExecutionId &&
+        (child.fanoutExecutionIdAtCreation as string).length === DELIVERY_PUBLIC_ID_LENGTH
+      );
     }
   );
 
   await checkAsync(
-    '[fanout H1] simulated transaction-callback retry: callback invoked twice, randomBytes called once, both attempts derive identical deliveryPublicIds',
+    '[fanout H1] simulated transaction-callback retry: callback invoked twice, randomBytes called exactly twice total (once each for nonce/executionId, not once per attempt), both attempts derive identical deliveryPublicIds AND identical fanoutExecutionIds',
     async () => {
       const { db, store, getTransactionCallbackInvocationCount, getAttemptWritesHistory } = makeFakeDb({ simulateRetries: 1 });
       const reminderId = `${UID}_h1_retry`;
@@ -815,7 +857,7 @@ async function main(): Promise<void> {
         (nodeCrypto as unknown as Record<string, unknown>).randomBytes = originalRandomBytes;
       }
 
-      if (randomBytesCallCount !== 1) return false; // worker-owned generation: once per INVOCATION, not once per callback attempt.
+      if (randomBytesCallCount !== 2) return false; // worker-owned generation: exactly twice per INVOCATION (nonce + executionId), never once per callback attempt.
       if (getTransactionCallbackInvocationCount() !== 2) return false; // callback genuinely re-ran (simulated retry).
       if (result.outcome !== 'fanned-out') return false;
 
@@ -825,9 +867,22 @@ async function main(): Promise<void> {
         const create = attemptWrites.find((w) => w.type === 'create' && w.path === deliveryPath(reminderId, installationId));
         return create ? (create.data.deliveryPublicId as string) : undefined;
       };
+      const provenanceFromAttempt = (attemptWrites: PendingWrite[]): string | undefined => {
+        const create = attemptWrites.find((w) => w.type === 'create' && w.path === deliveryPath(reminderId, installationId));
+        return create ? (create.data.fanoutExecutionIdAtCreation as string) : undefined;
+      };
       const idAttempt0 = idFromAttempt(history[0]);
       const idAttempt1 = idFromAttempt(history[1]);
-      return typeof idAttempt0 === 'string' && idAttempt0.length > 0 && idAttempt0 === idAttempt1;
+      const provenanceAttempt0 = provenanceFromAttempt(history[0]);
+      const provenanceAttempt1 = provenanceFromAttempt(history[1]);
+      return (
+        typeof idAttempt0 === 'string' &&
+        idAttempt0.length > 0 &&
+        idAttempt0 === idAttempt1 &&
+        typeof provenanceAttempt0 === 'string' &&
+        provenanceAttempt0.length > 0 &&
+        provenanceAttempt0 === provenanceAttempt1
+      );
     }
   );
 
@@ -1138,6 +1193,142 @@ async function main(): Promise<void> {
   );
 
   // =======================================================================================
+  // PHASE 3A-3 STEP 3C-3 — integration: acquireDeliveryProcessingLease ->
+  // prepareAndFinalizeDelivery, and the bounded batch runner. Exhaustive final-authorization
+  // scenario coverage lives in reminderDeliveryAuth.test.ts; these tests only prove the
+  // WIRING between acquisition and finalization behaves correctly end to end.
+  // =======================================================================================
+
+  function sha256Hex(value: string): string {
+    return nodeCrypto.createHash('sha256').update(value).digest('hex');
+  }
+
+  const RAW_TOKEN_3C3 = 'raw-fcm-token-should-never-persist-3c3';
+
+  function seedFullDryRunPipeline(
+    store: Store,
+    overrides: { installationId?: string; token?: string; rollout?: Record<string, unknown> } = {}
+  ): { uid: string; reminderId: string; installationId: string } {
+    const uid = 'user-1';
+    const reminderId = `${uid}_3c3_pipeline`;
+    const installationId = overrides.installationId ?? hex32(4000);
+    const token = overrides.token ?? RAW_TOKEN_3C3;
+    const tokenHash = sha256Hex(token);
+
+    seedDoc(store, reminderPath(reminderId), {
+      uid,
+      status: 'delivery-fanned-out',
+      deliveryFanoutState: 'completed',
+      targetInstallationCountAtFanout: 1,
+      excludedMalformedInstallationCount: 0,
+      fanoutExecutionId: VALID_FANOUT_EXECUTION_ID_FOR_QUEUE,
+      workState: 'terminal',
+      workAvailableAt: null,
+      leaseExpiresAt: null,
+      attemptCount: 1,
+      preferenceRevisionAtClaim: 1,
+      scheduleTypeAtClaim: 'daily',
+      weekdaysAtClaim: [0, 1, 2, 3, 4, 5, 6],
+      localTimeAtClaim: '07:00',
+      timezoneAtClaim: 'UTC',
+    });
+    seedDoc(store, deliveryPath(reminderId, installationId), validQueuedDeliveryFields(installationId));
+    seedDoc(store, prefPath(uid), {
+      enabled: true,
+      revision: 1,
+      scheduleType: 'daily',
+      weekdays: [0, 1, 2, 3, 4, 5, 6],
+      localTime: '07:00',
+      timezone: 'UTC',
+    });
+    seedDoc(store, rolloutPath(), { mode: 'dry-run', ...overrides.rollout });
+    seedDoc(store, installationPath(installationId), {
+      uid,
+      state: 'active',
+      epochSchemaVersion: 1,
+      tokenVersion: 1,
+      installationAudienceId: 'A'.repeat(16),
+      generation: 1,
+      token,
+    });
+    seedDoc(store, tokenClaimPath(tokenHash), { installationId, uid });
+
+    return { uid, reminderId, installationId };
+  }
+
+  await checkAsync('[3C-3] processDeliveryQueueCandidate: full happy path acquires and dry-run-validates', async () => {
+    const { db, store } = makeFakeDb();
+    const { reminderId, installationId } = seedFullDryRunPipeline(store);
+    const provider: AccessTokenProvider = async () => 'fake-oauth-token';
+    const result = await processDeliveryQueueCandidate(db, __test__.deliveryRef(db, reminderId, installationId), provider);
+    if (result.acquisition.outcome !== 'acquired') return false;
+    if (result.finalization?.outcome !== 'dry-run-validated') return false;
+    const after = readDoc(store, deliveryPath(reminderId, installationId))!;
+    return after.state === 'dry-run-validated' && after.workState === 'terminal';
+  });
+
+  await checkAsync('[3C-3] processDeliveryQueueCandidate: OAuth failure leaves delivery in preparing, no finalization write', async () => {
+    const { db, store } = makeFakeDb();
+    const { reminderId, installationId } = seedFullDryRunPipeline(store);
+    const failingProvider: AccessTokenProvider = async () => {
+      throw new Error('synthetic OAuth failure');
+    };
+    const result = await processDeliveryQueueCandidate(db, __test__.deliveryRef(db, reminderId, installationId), failingProvider);
+    if (result.acquisition.outcome !== 'acquired') return false;
+    if (result.finalization?.outcome !== 'oauth-preparation-failed') return false;
+    const after = readDoc(store, deliveryPath(reminderId, installationId))!;
+    return after.state === 'preparing'; // untouched by the failed finalization attempt.
+  });
+
+  await checkAsync('[3C-3] processDeliveryQueueCandidate: non-acquired outcomes never invoke finalization at all', async () => {
+    const { db, store } = makeFakeDb();
+    const reminderId = `${UID}_3c3_notleased`;
+    const installationId = hex32(4001);
+    seedDoc(
+      store,
+      deliveryPath(reminderId, installationId),
+      validQueuedDeliveryFields(installationId, { workAvailableAt: Timestamp.fromMillis(Date.now() + 60_000) })
+    );
+    let providerCalled = false;
+    const provider: AccessTokenProvider = async () => {
+      providerCalled = true;
+      return 'unused';
+    };
+    const result = await processDeliveryQueueCandidate(db, __test__.deliveryRef(db, reminderId, installationId), provider);
+    return result.acquisition.outcome === 'still-leased' && result.finalization === undefined && !providerCalled;
+  });
+
+  await checkAsync('[3C-3] runDeliveryDryRunBatch: end-to-end batch discovers, acquires, and dry-run-validates', async () => {
+    const { db, store } = makeFakeDb();
+    seedFullDryRunPipeline(store);
+    const provider: AccessTokenProvider = async () => 'fake-oauth-token';
+    const summary = await runDeliveryDryRunBatch(db, provider);
+    return summary.candidateCount === 1 && summary.dryRunValidatedCount === 1 && summary.unexpectedFailureCount === 0;
+  });
+
+  await checkAsync('[3C-3] runDeliveryDryRunBatch: bounded batch size and concurrency constants are sane', async () => {
+    return DELIVERY_PROCESSING_CONCURRENCY > 0 && DELIVERY_PROCESSING_CONCURRENCY <= DELIVERY_QUEUE_BATCH_SIZE;
+  });
+
+  await checkAsync('[3C-3] runDeliveryDryRunBatch: rollout paused (default/missing) -> zero dry-run-validated even with due work present', async () => {
+    const { db, store } = makeFakeDb();
+    // A queued, due delivery exists, but its parent was never fanned out under dry-run
+    // rollout (simulating the CURRENT production default where no rollout document exists
+    // at all and Step 2 never calls fanOutReminderDelivery in the first place) — acquisition
+    // still succeeds structurally, but final authorization must refuse without a rollout
+    // config document present.
+    const reminderId = `${UID}_3c3_paused`;
+    const installationId = hex32(4002);
+    seedDoc(store, deliveryPath(reminderId, installationId), validQueuedDeliveryFields(installationId));
+    // Deliberately no rollout document, no parent, no preference, no installation, no claim
+    // — proving the batch runner surfaces a 'cancelled'/failure outcome rather than crashing
+    // or silently validating.
+    const provider: AccessTokenProvider = async () => 'fake-oauth-token';
+    const summary = await runDeliveryDryRunBatch(db, provider);
+    return summary.candidateCount === 1 && summary.dryRunValidatedCount === 0 && summary.cancelledCount === 1;
+  });
+
+  // =======================================================================================
   // M1 REPAIR — complete persisted-delivery validator. Every case below must NEVER acquire;
   // must always quarantine to invalid-delivery with a fixed internal reason (never a raw
   // malformed value embedded in the reason); must always clear the queue tuple.
@@ -1320,21 +1511,72 @@ async function main(): Promise<void> {
   check('reminderDeliveryWorker.ts never calls fetch(', !codeOnly.includes('fetch('));
   check('reminderDeliveryWorker.ts never references globalThis.fetch', !codeOnly.includes('globalThis.fetch'));
   check("reminderDeliveryWorker.ts never imports 'google-auth-library'", !codeOnly.includes('google-auth-library'));
-  check('reminderDeliveryWorker.ts never references OAuth token acquisition', !/oauth/i.test(codeOnly));
+  check(
+    "reminderDeliveryWorker.ts never imports 'google-auth-library' directly and never constructs a GoogleAuth instance or calls .getAccessToken( itself — it only imports createGoogleAuthAccessTokenProvider FROM reminderDeliveryAuth.ts, which owns all OAuth logic exclusively (Phase 3A-3 Step 3C-3)",
+    !codeOnly.includes("from 'google-auth-library'") && !codeOnly.includes('new GoogleAuth(') && !codeOnly.includes('.getAccessToken(')
+  );
   check("reminderDeliveryWorker.ts never writes the literal delivery state 'sending'", !codeOnly.includes("'sending'"));
   check(
     "reminderDeliveryWorker.ts never writes the literal delivery states 'accepted-by-fcm'/'rejected-final'",
     !codeOnly.includes("'accepted-by-fcm'") && !codeOnly.includes("'rejected-final'")
   );
-  check("reminderDeliveryWorker.ts never writes 'dry-run-validated' (final-authorization-only state)", !codeOnly.includes('dry-run-validated'));
-  check('reminderDeliveryWorker.ts is not exported from index.ts', (() => {
-    const indexSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.ts'), 'utf8');
-    return !indexSource.includes('reminderDeliveryWorker');
-  })());
-  check('reminderScheduler.ts is unmodified in substance: still contains no fanout/delivery references', (() => {
-    const schedulerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'reminderScheduler.ts'), 'utf8');
-    return !schedulerSource.includes('reminderDeliveryWorker') && !schedulerSource.includes('fanOutReminderDelivery');
-  })());
+  check(
+    "reminderDeliveryWorker.ts never WRITES 'dry-run-validated' itself (only reminderDeliveryAuth.ts's final-authorization transaction may) — the string legitimately appears only in a switch-case comparison against reminderDeliveryAuth.ts's own result type",
+    !codeOnly.includes("state: 'dry-run-validated'")
+  );
+  check(
+    "reminderDeliveryWorker.ts never writes state: 'sending' — the deepest reachable outcome remains 'dry-run-validated', authorized only by reminderDeliveryAuth.ts",
+    !codeOnly.includes("state: 'sending'")
+  );
+
+  // =======================================================================================
+  // Phase 3A-3 Step 3C-3 — production reachability changed intentionally this round: this
+  // file now exports exactly one Cloud Function, notificationReminderDeliveryDryRun, and
+  // reminderScheduler.ts now calls fanOutReminderDelivery under an explicit rollout gate.
+  // These checks replace the prior round's "not reachable at all" assertions with "reachable
+  // only through the one intended, name-explicit, structurally-no-sender path" assertions.
+  // =======================================================================================
+
+  check(
+    'reminderDeliveryWorker.ts IS now exported from index.ts, exactly as notificationReminderDeliveryDryRun (name makes dry-run-only nature explicit)',
+    (() => {
+      const indexSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.ts'), 'utf8');
+      return indexSource.includes("export { notificationReminderDeliveryDryRun } from './reminderDeliveryWorker';");
+    })()
+  );
+  check(
+    'reminderDeliveryWorker.ts exports exactly one onSchedule-registered Cloud Function',
+    (codeOnly.match(/export const \w+ = onSchedule\(/g) || []).length === 1
+  );
+  check(
+    "the scheduled export's name contains 'DryRun', making its non-sending nature explicit rather than using a generic name that could later conceal real sending",
+    codeOnly.includes('export const notificationReminderDeliveryDryRun = onSchedule(')
+  );
+  check(
+    'reminderScheduler.ts now calls fanOutReminderDelivery, gated behind decideShouldFanOut (never unconditionally)',
+    (() => {
+      const schedulerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'reminderScheduler.ts'), 'utf8');
+      const schedulerCodeOnly = stripComments(schedulerSource);
+      return (
+        schedulerCodeOnly.includes('fanOutReminderDelivery(') &&
+        schedulerCodeOnly.includes('decideShouldFanOut(') &&
+        schedulerCodeOnly.includes('.shouldFanOut')
+      );
+    })()
+  );
+  check(
+    'reminderScheduler.ts still contains no direct reference to fcmTransport/sendFcmOnce/getMessaging(/node:https/fetch( (fanout wiring introduced no sender)',
+    (() => {
+      const schedulerCodeOnly = stripComments(fs.readFileSync(path.join(__dirname, '..', 'src', 'reminderScheduler.ts'), 'utf8'));
+      return (
+        !schedulerCodeOnly.includes('fcmTransport') &&
+        !schedulerCodeOnly.includes('sendFcmOnce') &&
+        !schedulerCodeOnly.includes('getMessaging(') &&
+        !schedulerCodeOnly.includes('node:https') &&
+        !schedulerCodeOnly.includes('fetch(')
+      );
+    })()
+  );
 
   // =======================================================================================
   // FINAL Codex repair round — static proof that NO exported production symbol accepts
@@ -1442,8 +1684,8 @@ async function main(): Promise<void> {
       })
     );
     check(
-      'reminderDeliveryWorker.ts calls randomBytes( exactly once in its own CODE (comments stripped) — fanOutReminderDelivery only',
-      (codeOnly.match(/randomBytes\(/g) || []).length === 1
+      'reminderDeliveryWorker.ts calls randomBytes( exactly twice in its own CODE (comments stripped) — fanoutNonce + fanoutExecutionId, both inside fanOutReminderDelivery only, per Codex H1 repair round',
+      (codeOnly.match(/randomBytes\(/g) || []).length === 2
     );
   }
 

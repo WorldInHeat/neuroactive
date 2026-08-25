@@ -39,6 +39,7 @@
 'use strict';
 
 import { createHmac } from 'node:crypto';
+import { isValidTokenVersion, isValidAudienceId } from './pushInstallationEpochLogic';
 
 function isNonNullObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -820,7 +821,23 @@ export function decideRealSendAuthorization(rawConfig: unknown, uid: unknown): R
 // the same transaction attempt — this function never generates randomness itself.
 // ---------------------------------------------------------------------------------------
 
-export const FANOUT_NONCE_BYTE_LENGTH = 32; // 256-bit.
+// CODEX REPAIR ROUND (H1 provenance) — the generic "opaque, fixed-format, 43-character
+// base64url identifier" shape shared by deliveryPublicId (an HMAC digest) AND the new
+// fanoutExecutionId (raw randomness, no HMAC) — both are 32-byte values encoded the same
+// way, so the FORMAT validator is a single shared primitive rather than two independently
+// maintained near-duplicates. 32 bytes * 8 bits = 256 bits; base64url (6 bits/char, no
+// padding) = ceil(256/6) = 43 characters, alphabet [A-Za-z0-9_-] only — verified directly
+// (Buffer.from(32 bytes).toString('base64url') is always exactly 43 characters, never 44,
+// since 32 is not a multiple of 3 and base64url-without-padding never pads).
+export const OPAQUE_ID_BYTE_LENGTH = 32;
+export const OPAQUE_ID_LENGTH = 43;
+const OPAQUE_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+export function isValidOpaqueIdFormat(value: unknown): value is string {
+  return typeof value === 'string' && OPAQUE_ID_PATTERN.test(value);
+}
+
+export const FANOUT_NONCE_BYTE_LENGTH = OPAQUE_ID_BYTE_LENGTH; // 256-bit. Kept as a distinct exported name (semantic role: HMAC key) even though the value is identical to OPAQUE_ID_BYTE_LENGTH.
 const PUBLIC_ID_ENCODING_VERSION = 1;
 
 // Unambiguous encoding: a version byte followed by, for each component, a 4-byte
@@ -883,6 +900,12 @@ export type FanoutOutcome =
       deliveryFanoutState: 'completed';
       targetInstallationCountAtFanout: number; // exact count of VALIDATED targets actually fanned out to (0..10) — NOT the raw query-returned count.
       excludedMalformedInstallationCount: number;
+      // CODEX REPAIR ROUND (H1) — immutable, opaque, worker-generated identity proving this
+      // specific successful fanout committed. ONLY the 'completed' variant ever carries
+      // this field — a 'failed' fanout must never masquerade as having successful
+      // provenance (see validateFanoutTuple below, which explicitly rejects a 'failed'
+      // tuple that carries one).
+      fanoutExecutionId: string;
     }
   | {
       status: 'delivery-fanned-out';
@@ -909,12 +932,23 @@ export type FanoutOutcome =
 // negative, non-finite) throws. The documented invariant for the successful branch is:
 // rawActiveCount === targetInstallationCountAtFanout + excludedMalformedInstallationCount
 // — enforced by construction (subtraction), not merely asserted in a comment.
-export function decideFanoutOutcome(rawActiveCount: unknown, excludedMalformedCount: unknown): FanoutOutcome {
+// CODEX REPAIR ROUND (H1) — `fanoutExecutionId` is generated ONCE by the (future)
+// orchestration layer, OUTSIDE db.runTransaction(...), exactly like fanoutNonce (same
+// section's own convention) — this function never generates randomness itself, only
+// validates and (for the 'completed' branch only) embeds the caller-supplied value.
+// Deliberately still required as an input even on the 'installation-count-exceeds-cap'
+// (failed) path — the caller always generates it before knowing the eventual outcome,
+// mirroring fanoutNonce's own lifecycle — but it is NEVER embedded in a 'failed' outcome:
+// a failed fanout must not carry evidence that could be mistaken for successful provenance.
+export function decideFanoutOutcome(rawActiveCount: unknown, excludedMalformedCount: unknown, fanoutExecutionId: unknown): FanoutOutcome {
   if (!isValidNonNegativeInteger(rawActiveCount)) {
     throw new Error('decideFanoutOutcome: rawActiveCount must be a nonnegative safe integer.');
   }
   if (!isValidNonNegativeInteger(excludedMalformedCount) || excludedMalformedCount > rawActiveCount) {
     throw new Error('decideFanoutOutcome: excludedMalformedCount must be a nonnegative safe integer not exceeding rawActiveCount.');
+  }
+  if (!isValidOpaqueIdFormat(fanoutExecutionId)) {
+    throw new Error(`decideFanoutOutcome: fanoutExecutionId must be a valid opaque ID (${OPAQUE_ID_LENGTH}-character base64url).`);
   }
 
   if (rawActiveCount >= FANOUT_QUERY_LIMIT) {
@@ -934,6 +968,7 @@ export function decideFanoutOutcome(rawActiveCount: unknown, excludedMalformedCo
     deliveryFanoutState: 'completed',
     targetInstallationCountAtFanout: rawActiveCount - excludedMalformedCount,
     excludedMalformedInstallationCount: excludedMalformedCount,
+    fanoutExecutionId,
   };
 }
 
@@ -1010,6 +1045,13 @@ export function validateFanoutTuple(input: unknown): FanoutTupleValidation {
     if (input.targetInstallationCountAtFanout + input.excludedMalformedInstallationCount > MAX_TARGET_INSTALLATIONS) {
       return { valid: false, reason: 'invalid-count-arithmetic' };
     }
+    // CODEX REPAIR ROUND (H1) — a 'completed' fanout MUST carry a well-formed
+    // fanoutExecutionId as an own, meaningful property; anything else (absent, null,
+    // malformed format, inherited-only) fails closed. This is the field final
+    // authorization compares against the delivery child's own fanoutExecutionIdAtCreation.
+    if (!hasOwnMeaningfulValue(input, 'fanoutExecutionId') || !isValidOpaqueIdFormat(input.fanoutExecutionId)) {
+      return { valid: false, reason: 'invalid-fanout-execution-id' };
+    }
     return {
       valid: true,
       outcome: {
@@ -1017,6 +1059,7 @@ export function validateFanoutTuple(input: unknown): FanoutTupleValidation {
         deliveryFanoutState: 'completed',
         targetInstallationCountAtFanout: input.targetInstallationCountAtFanout,
         excludedMalformedInstallationCount: input.excludedMalformedInstallationCount,
+        fanoutExecutionId: input.fanoutExecutionId,
       },
     };
   }
@@ -1024,6 +1067,12 @@ export function validateFanoutTuple(input: unknown): FanoutTupleValidation {
   if (input.deliveryFanoutState === 'failed') {
     if (hasOwnMeaningfulValue(input, 'targetInstallationCountAtFanout')) {
       return { valid: false, reason: 'failed-with-nonnull-target-count' };
+    }
+    // CODEX REPAIR ROUND (H1) — a 'failed' fanout must never masquerade as having
+    // successful provenance: any MEANINGFUL fanoutExecutionId present on a failed tuple
+    // (even a well-formed one) is itself a contradiction and fails closed.
+    if (hasOwnMeaningfulValue(input, 'fanoutExecutionId')) {
+      return { valid: false, reason: 'failed-with-fanout-execution-id' };
     }
     if (!hasOwn(input, 'targetingFailureReason')) {
       return { valid: false, reason: 'unrecognized-or-missing-failure-reason' };
@@ -1061,4 +1110,91 @@ export function validateFanoutTuple(input: unknown): FanoutTupleValidation {
   }
 
   return { valid: false, reason: 'invalid-delivery-fanout-state' };
+}
+
+// ---------------------------------------------------------------------------------------
+// COMPLETE PERSISTED-DELIVERY VALIDATOR — Codex repair round (originally M1, Step 3C-2;
+// PROMOTED here from reminderDeliveryWorker.ts in the Step 3C-3 H2/section-11 repair round
+// so it can be a SINGLE shared source of truth for BOTH queue acquisition
+// (reminderDeliveryWorker.ts's acquireDeliveryProcessingLease) AND final authorization
+// (reminderDeliveryAuth.ts's finalizeDeliveryAuthorization) — validateDeliverySchema alone
+// proves only the CORE fields are well-typed; it does NOT prove the document is
+// trustworthy enough to actually acquire a lease on OR to finalize. Every queued/preparing
+// delivery must pass this BEFORE either operation may proceed.
+// ---------------------------------------------------------------------------------------
+
+export type PersistedDeliveryValidation =
+  | {
+      valid: true;
+      uid: string;
+      installationId: string;
+      targetSnapshot: TargetSnapshot;
+      processingAttemptCount: number;
+      fanoutExecutionIdAtCreation: string;
+    }
+  | { valid: false; reason: string };
+
+// `refId` is the delivery document's OWN id (installationId-by-construction, per this
+// codebase's deterministic child-path convention) — passed in by the caller from `ref.id`,
+// never re-derived. Every failure reason below is a FIXED internal enum string; none of
+// them ever embed a raw field value.
+export function validatePersistedDeliveryForProcessing(refId: unknown, data: Record<string, unknown>): PersistedDeliveryValidation {
+  const schemaCheck = validateDeliverySchema(data);
+  if (!schemaCheck.valid) return { valid: false, reason: schemaCheck.reason };
+
+  // DOCUMENT IDENTITY: both the document's own id and the stored installationId field must
+  // independently satisfy the ACTUAL installationId grammar (UUID v4 / 32-hex — the same
+  // strict check deriveDeliveryPublicId itself requires), and must be exactly equal. This
+  // closes the ref.id-vs-stored-installationId substitution attack: a document whose path
+  // says installation A but whose own installationId field claims installation B must never
+  // be trusted as either.
+  if (!isValidInstallationIdShape(refId)) return { valid: false, reason: 'invalid-ref-installation-id-shape' };
+  if (!isValidInstallationIdShape(schemaCheck.installationId)) return { valid: false, reason: 'invalid-stored-installation-id-shape' };
+  if (refId !== schemaCheck.installationId) return { valid: false, reason: 'ref-installation-id-mismatch' };
+
+  // DELIVERY PUBLIC ID: structural format only — never recomputed (the nonce that produced
+  // it is intentionally never persisted anywhere).
+  if (!isValidOpaqueIdFormat(data.deliveryPublicId)) {
+    return { valid: false, reason: 'invalid-delivery-public-id-format' };
+  }
+
+  // FANOUT EXECUTION ID (Codex repair round, H1/H2): structural format only here — this
+  // function has no access to the parent document, so it cannot prove EQUALITY against
+  // parent.fanoutExecutionId (that is final authorization's own, additional responsibility
+  // — see reminderDeliveryAuth.ts). This only proves the delivery's own claimed value is
+  // well-formed, exactly like the deliveryPublicId check immediately above.
+  if (!isValidOpaqueIdFormat(data.fanoutExecutionIdAtCreation)) {
+    return { valid: false, reason: 'invalid-fanout-execution-id-format' };
+  }
+
+  // ATTEMPT HISTORY: bounded length, strictly sequential attemptNumber, fixed-enum
+  // outcomeCategory only, and rejects any entry carrying an unexpected own property —
+  // closing the "secret-bearing history entry" attack.
+  const historyValidation = validateAttemptHistory(data.attemptHistory);
+  if (!historyValidation.valid) return { valid: false, reason: 'invalid-attempt-history' };
+
+  // TARGET SNAPSHOT: validateDeliverySchema's own internal target-snapshot check only
+  // requires installationAudienceId to be a nonempty string — NOT the actual production
+  // audience-ID grammar. Re-validated here against the real grammar
+  // (pushInstallationEpochLogic.ts's AUDIENCE_ID_PATTERN, via its exported isValidAudienceId
+  // — reused, not reinvented) and tokenVersion re-confirmed against its real validator too.
+  if (!isValidAudienceId(schemaCheck.targetSnapshot.installationAudienceId)) {
+    return { valid: false, reason: 'invalid-target-snapshot-audience-id' };
+  }
+  if (!isValidTokenVersion(schemaCheck.targetSnapshot.tokenVersion)) {
+    return { valid: false, reason: 'invalid-target-snapshot-token-version' };
+  }
+
+  // UID and COUNTS (processingAttemptCount nonnegative safe integer; sendAttemptCount
+  // bounded by MAX_SEND_ATTEMPTS) are already fully covered by validateDeliverySchema above
+  // — no separate re-check needed here.
+
+  return {
+    valid: true,
+    uid: schemaCheck.uid,
+    installationId: schemaCheck.installationId,
+    targetSnapshot: schemaCheck.targetSnapshot,
+    processingAttemptCount: schemaCheck.processingAttemptCount,
+    fanoutExecutionIdAtCreation: data.fanoutExecutionIdAtCreation as string,
+  };
 }

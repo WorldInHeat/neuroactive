@@ -3,14 +3,17 @@
 // delivery work queue. Wires the pure, Codex-approved decision functions in
 // reminderDeliveryLogic.ts to real Firestore reads/writes.
 //
-// ***** NOT WIRED TO PRODUCTION *****
-// Nothing in this file is exported from functions/src/index.ts, nothing here is an
-// onSchedule/onCall/onDocumentWritten Cloud Function, and functions/src/reminderScheduler.ts
-// is UNCHANGED this round — its live dry-run-complete terminalization is untouched. Every
-// function below is a plain, exported, testable orchestration primitive, callable only from
-// this file's own test suite today and from a future, separately-authorized Step 3C-3
-// orchestration layer. This file is structurally incapable of running in production this
-// round: there is no trigger anywhere in this codebase that invokes it.
+// ***** PRODUCTION REACHABILITY (Phase 3A-3 Step 3C-3) *****
+// This file now exports exactly ONE Cloud Function, `notificationReminderDeliveryDryRun`
+// (see the bottom of this file), wired into functions/src/index.ts. Every OTHER function
+// above remains a plain, exported, testable, dependency-injected primitive — the scheduled
+// export is a thin wrapper around them, using its own module-scope Firestore singleton
+// (matching reminderScheduler.ts's own established convention) precisely because it is the
+// one and only production call site in this file. Reachability is still tightly bounded:
+// this Cloud Function calls discoverRecoverableDeliveryWork ->
+// acquireDeliveryProcessingLease -> reminderDeliveryAuth.ts's prepareAndFinalizeDelivery,
+// and STOPS there — the deepest reachable delivery state remains 'dry-run-validated'. See
+// "NO SENDER" immediately below, which remains true even now that this file is reachable.
 //
 // ***** NO SENDER *****
 // This file contains no reference to fcmTransport.ts, sendFcmOnce, getMessaging,
@@ -65,8 +68,22 @@
 // and drive the PUBLIC fanOutReminderDelivery exclusively — see reminderDeliveryWorker.test
 // .ts's header for the full rationale.
 import { randomBytes } from 'node:crypto';
-import { FieldPath, FieldValue, Timestamp } from 'firebase-admin/firestore';
-import { buildTerminalWorkStateFields, isValidAttemptCount, requireAllowedTransition } from './reminderSchedulerLogic';
+import { getApps, initializeApp } from 'firebase-admin/app';
+import { getFirestore, FieldPath, FieldValue, Timestamp } from 'firebase-admin/firestore';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
+import { logger } from 'firebase-functions/v2';
+import {
+  buildTerminalWorkStateFields,
+  isValidAttemptCount,
+  requireAllowedTransition,
+  processWithBoundedConcurrency,
+} from './reminderSchedulerLogic';
+import {
+  prepareAndFinalizeDelivery,
+  createGoogleAuthAccessTokenProvider,
+  type AccessTokenProvider,
+  type PrepareAndFinalizeResult,
+} from './reminderDeliveryAuth';
 import {
   isValidIdForPath,
   isValidReminderId,
@@ -79,13 +96,16 @@ import {
   buildDeliveryQuarantineUpdate,
   buildUnknownDeliveryStateNeutralizationUpdate,
   validateDeliverySchema,
-  validateAttemptHistory,
+  validatePersistedDeliveryForProcessing,
   decideFanoutOutcome,
   buildPreExistingChildCorruptionOutcome,
   validateFanoutTuple,
   deriveDeliveryPublicId,
   FANOUT_NONCE_BYTE_LENGTH,
   FANOUT_QUERY_LIMIT,
+  OPAQUE_ID_BYTE_LENGTH,
+  OPAQUE_ID_LENGTH,
+  isValidOpaqueIdFormat,
   type TargetSnapshot,
   type FanoutOutcome,
 } from './reminderDeliveryLogic';
@@ -187,22 +207,38 @@ export async function fanOutReminderDelivery(
   // Generated exactly once, here, before any transaction attempt. Firestore may retry the
   // callback below on contention; this SAME nonce value is reused on every retry because it
   // is captured in the callback's closure, never regenerated inside it.
+  //
+  // CODEX REPAIR ROUND (H1) — fanoutExecutionId is a SEPARATE, independently-generated
+  // opaque random value (Option A from the repair instructions: two independent
+  // randomBytes calls, not a value derived from fanoutNonce — avoiding unnecessary coupling
+  // between the HMAC-key role fanoutNonce plays and the pure-identity role
+  // fanoutExecutionId plays). It proves "this exact delivery child was created by this
+  // exact successful fanout" — see reminderDeliveryLogic.ts's FanoutOutcome/
+  // decideFanoutOutcome/validateFanoutTuple for the immutable parent-side field, and
+  // reminderDeliveryAuth.ts's finalizeDeliveryAuthorization for the equality check against
+  // the child's own fanoutExecutionIdAtCreation.
   const fanoutNonce = randomBytes(FANOUT_NONCE_BYTE_LENGTH);
-  return fanOutReminderDeliveryWithNonce(db, reminderId, expectedAttemptCount, fanoutNonce);
+  const fanoutExecutionId = randomBytes(OPAQUE_ID_BYTE_LENGTH).toString('base64url');
+  return fanOutReminderDeliveryWithNonce(db, reminderId, expectedAttemptCount, fanoutNonce, fanoutExecutionId);
 }
 
 // Module-private (no `export`): the actual fanout transaction. Its ONLY caller, anywhere,
 // is fanOutReminderDelivery immediately above — no other function in this file or any other
-// file may reach it, and no exported symbol accepts a fanoutNonce parameter (Codex FINAL
-// repair round: the prior test-only exported wrapper was removed for exactly this reason).
+// file may reach it, and no exported symbol accepts a fanoutNonce/fanoutExecutionId
+// parameter (Codex FINAL repair round: the prior test-only exported wrapper was removed for
+// exactly this reason).
 function fanOutReminderDeliveryWithNonce(
   db: FirebaseFirestore.Firestore,
   reminderId: string,
   expectedAttemptCount: number,
-  fanoutNonce: Buffer
+  fanoutNonce: Buffer,
+  fanoutExecutionId: string
 ): Promise<FanoutExecutionResult> {
   if (!Buffer.isBuffer(fanoutNonce) || fanoutNonce.byteLength !== FANOUT_NONCE_BYTE_LENGTH) {
     throw new Error(`fanOutReminderDelivery: fanoutNonce must be a Buffer of exactly ${FANOUT_NONCE_BYTE_LENGTH} bytes.`);
+  }
+  if (!isValidOpaqueIdFormat(fanoutExecutionId)) {
+    throw new Error(`fanOutReminderDelivery: fanoutExecutionId must be a valid opaque ID (${OPAQUE_ID_LENGTH}-character base64url).`);
   }
 
   const parentRef = reminderRef(db, reminderId);
@@ -261,8 +297,8 @@ function fanOutReminderDeliveryWithNonce(
     // exactly per the approved design. Over-cap short-circuits with zero children and no
     // child-ref reads at all.
     if (rawActiveCount >= FANOUT_QUERY_LIMIT) {
-      const outcome = decideFanoutOutcome(rawActiveCount, 0);
-      return commitFanoutOutcome(transaction, parentRef, outcome, uid, []);
+      const outcome = decideFanoutOutcome(rawActiveCount, 0, fanoutExecutionId);
+      return commitFanoutOutcome(transaction, parentRef, outcome, uid, fanoutExecutionId, []);
     }
 
     // Per-document delivery-critical validation. Malformed installations are excluded
@@ -296,11 +332,11 @@ function fanOutReminderDeliveryWithNonce(
       // this means unexplained, out-of-band corruption. Fail the WHOLE fanout closed:
       // create zero children, never adopt/merge/overwrite the unexpected document.
       const outcome = buildPreExistingChildCorruptionOutcome();
-      return commitFanoutOutcome(transaction, parentRef, outcome, uid, []);
+      return commitFanoutOutcome(transaction, parentRef, outcome, uid, fanoutExecutionId, []);
     }
 
-    const outcome = decideFanoutOutcome(rawActiveCount, excludedMalformedCount);
-    return commitFanoutOutcome(transaction, parentRef, outcome, uid, childPlans);
+    const outcome = decideFanoutOutcome(rawActiveCount, excludedMalformedCount, fanoutExecutionId);
+    return commitFanoutOutcome(transaction, parentRef, outcome, uid, fanoutExecutionId, childPlans);
   });
 }
 
@@ -316,6 +352,7 @@ function commitFanoutOutcome(
   parentRef: FirebaseFirestore.DocumentReference,
   outcome: FanoutOutcome,
   uid: string,
+  fanoutExecutionId: string,
   childPlans: { installationId: string; targetSnapshot: TargetSnapshot; deliveryPublicId: string; ref: FirebaseFirestore.DocumentReference }[]
 ): FanoutExecutionResult {
   const validation = validateFanoutTuple(outcome);
@@ -328,6 +365,11 @@ function commitFanoutOutcome(
     // `uid` is required by reminderDeliveryLogic.ts's validateDeliverySchema
     // (isValidIdForPath(data.uid)) — every child is stamped with the SAME already-validated
     // parent uid, never re-derived from the (unvalidated-per-child) installation document.
+    // CODEX REPAIR ROUND (H1): every child ALSO gets fanoutExecutionIdAtCreation, atomically
+    // in this SAME transaction/write batch as the parent's own fanoutExecutionId (written
+    // below via `...outcome` on the 'completed' variant) — no child is ever created without
+    // its provenance ID matching the parent's, by construction (both derive from the same
+    // local `fanoutExecutionId` variable, never re-read or re-generated).
     transaction.create(plan.ref, {
       state: 'queued',
       workState: 'queued',
@@ -336,6 +378,7 @@ function commitFanoutOutcome(
       uid,
       installationId: plan.installationId,
       deliveryPublicId: plan.deliveryPublicId,
+      fanoutExecutionIdAtCreation: fanoutExecutionId,
       processingAttemptCount: 0,
       sendAttemptCount: 0,
       attemptHistory: [],
@@ -395,91 +438,17 @@ function isSafeToIncrementProcessingAttemptCount(count: number): boolean {
 }
 
 // ---------------------------------------------------------------------------------------
-// COMPLETE PERSISTED-DELIVERY VALIDATOR — Codex repair round, M1. validateDeliverySchema
-// (reminderDeliveryLogic.ts, frozen) proves only the CORE fields are well-typed; it does
-// NOT prove the document is trustworthy enough to actually acquire a lease on. A
-// queued/preparing delivery must ALSO pass every check below before this file will commit
-// an acquisition or a preparing-lease recovery. A `sending` or other terminal-business-state
-// delivery found queue-corrupted is NEVER routed through this validator (see
-// acquireDeliveryProcessingLease's 'repair-terminal-queue-state' branch) — its business
-// state must be preserved regardless of whatever else is malformed on the document.
+// COMPLETE PERSISTED-DELIVERY VALIDATOR — Codex repair round (H2/section 11, Step 3C-3):
+// PROMOTED to reminderDeliveryLogic.ts (validatePersistedDeliveryForProcessing, imported
+// above) so it is a SINGLE shared source of truth for both this file's queue acquisition
+// AND reminderDeliveryAuth.ts's final authorization — no longer defined locally here. The
+// two exports below are thin, backward-compatible aliases for the shared opaque-ID format
+// primitives (also now in reminderDeliveryLogic.ts), kept under their original names since
+// this file's own test suite and doc comments already reference them.
 // ---------------------------------------------------------------------------------------
 
-// The exact, actual output shape of deriveDeliveryPublicId (reminderDeliveryLogic.ts):
-// createHmac('sha256', nonce).update(encoded).digest('base64url') — a 32-byte (256-bit)
-// digest, base64url-encoded WITHOUT padding: ceil(256 / 6) = 43 characters, alphabet
-// [A-Za-z0-9_-] only (no '=', no '/', no whitespace by construction of that alphabet).
-// Verified directly (not guessed): Buffer.from(32 random bytes).toString('base64url') is
-// always exactly 43 characters, never 44 (that would require padding, which base64url-
-// without-padding never emits for a length not already a multiple of 3 bytes). This file
-// never recomputes the HMAC (fanoutNonce is intentionally never persisted) — it only
-// validates that a PERSISTED value has the shape deriveDeliveryPublicId could have produced.
-export const DELIVERY_PUBLIC_ID_LENGTH = 43;
-const DELIVERY_PUBLIC_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-
-export function isValidDeliveryPublicIdFormat(value: unknown): value is string {
-  return typeof value === 'string' && DELIVERY_PUBLIC_ID_PATTERN.test(value);
-}
-
-export type PersistedDeliveryValidation =
-  | { valid: true; uid: string; installationId: string; targetSnapshot: TargetSnapshot; processingAttemptCount: number }
-  | { valid: false; reason: string };
-
-// `refId` is the delivery document's OWN id (installationId-by-construction per this file's
-// deterministic child-path convention) — passed in by the caller from `ref.id`, never
-// re-derived. Every failure reason below is a FIXED internal enum string; none of them ever
-// embed a raw field value, matching this file's existing quarantine-reason convention.
-function validatePersistedDeliveryForProcessing(refId: unknown, data: Record<string, unknown>): PersistedDeliveryValidation {
-  const schemaCheck = validateDeliverySchema(data);
-  if (!schemaCheck.valid) return { valid: false, reason: schemaCheck.reason };
-
-  // DOCUMENT IDENTITY: both the document's own id and the stored installationId field must
-  // independently satisfy the ACTUAL installationId grammar (UUID v4 / 32-hex — the same
-  // strict check deriveDeliveryPublicId itself requires), and must be exactly equal. This
-  // closes the ref.id-vs-stored-installationId substitution attack: a document whose path
-  // says installation A but whose own installationId field claims installation B must never
-  // be trusted as either.
-  if (!isValidInstallationIdShape(refId)) return { valid: false, reason: 'invalid-ref-installation-id-shape' };
-  if (!isValidInstallationIdShape(schemaCheck.installationId)) return { valid: false, reason: 'invalid-stored-installation-id-shape' };
-  if (refId !== schemaCheck.installationId) return { valid: false, reason: 'ref-installation-id-mismatch' };
-
-  // DELIVERY PUBLIC ID: structural format only — never recomputed (the nonce that produced
-  // it is intentionally never persisted anywhere).
-  if (!isValidDeliveryPublicIdFormat(data.deliveryPublicId)) {
-    return { valid: false, reason: 'invalid-delivery-public-id-format' };
-  }
-
-  // ATTEMPT HISTORY: reuses reminderDeliveryLogic.ts's own validateAttemptHistory —
-  // bounded length, strictly sequential attemptNumber, fixed-enum outcomeCategory only, and
-  // (per that file's own hardening) rejects any entry carrying an unexpected own property —
-  // closing exactly the "secret-bearing history entry" attack this round calls out.
-  const historyValidation = validateAttemptHistory(data.attemptHistory);
-  if (!historyValidation.valid) return { valid: false, reason: 'invalid-attempt-history' };
-
-  // TARGET SNAPSHOT: validateDeliverySchema's own (frozen, internal) target-snapshot check
-  // only requires installationAudienceId to be a nonempty string — NOT the actual
-  // production audience-ID grammar. Re-validated here against the real grammar
-  // (pushInstallationEpochLogic.ts's AUDIENCE_ID_PATTERN, via its exported isValidAudienceId
-  // — reused, not reinvented) and tokenVersion re-confirmed against its real validator too.
-  if (!isValidAudienceId(schemaCheck.targetSnapshot.installationAudienceId)) {
-    return { valid: false, reason: 'invalid-target-snapshot-audience-id' };
-  }
-  if (!isValidTokenVersion(schemaCheck.targetSnapshot.tokenVersion)) {
-    return { valid: false, reason: 'invalid-target-snapshot-token-version' };
-  }
-
-  // UID and COUNTS (processingAttemptCount nonnegative safe integer; sendAttemptCount
-  // bounded by MAX_SEND_ATTEMPTS) are already fully covered by validateDeliverySchema above
-  // — no separate re-check needed here.
-
-  return {
-    valid: true,
-    uid: schemaCheck.uid,
-    installationId: schemaCheck.installationId,
-    targetSnapshot: schemaCheck.targetSnapshot,
-    processingAttemptCount: schemaCheck.processingAttemptCount,
-  };
-}
+export const DELIVERY_PUBLIC_ID_LENGTH = OPAQUE_ID_LENGTH;
+export const isValidDeliveryPublicIdFormat = isValidOpaqueIdFormat;
 
 export type DeliveryLeaseAcquireResult =
   | {
@@ -624,6 +593,164 @@ export async function acquireDeliveryProcessingLease(
     }
   });
 }
+
+// ---------------------------------------------------------------------------------------
+// PHASE 3A-3 STEP 3C-3 — batch orchestration integrating acquireDeliveryProcessingLease
+// with reminderDeliveryAuth.ts's OAuth-preparation + final-authorization pipeline. Kept
+// deliberately separate from acquireDeliveryProcessingLease itself (single responsibility):
+// this function only decides WHETHER to call prepareAndFinalizeDelivery, never duplicates
+// its logic.
+// ---------------------------------------------------------------------------------------
+
+export type ProcessDeliveryCandidateResult = {
+  acquisition: DeliveryLeaseAcquireResult;
+  finalization?: PrepareAndFinalizeResult;
+};
+
+export async function processDeliveryQueueCandidate(
+  db: FirebaseFirestore.Firestore,
+  ref: FirebaseFirestore.DocumentReference,
+  accessTokenProvider: AccessTokenProvider
+): Promise<ProcessDeliveryCandidateResult> {
+  const acquisition = await acquireDeliveryProcessingLease(db, ref);
+  if (acquisition.outcome !== 'acquired') {
+    // still-leased / not-found / already-terminal / terminal-repaired /
+    // unknown-state-neutralized / quarantined all end here — nothing further to do for
+    // this candidate this pass.
+    return { acquisition };
+  }
+  const finalization = await prepareAndFinalizeDelivery(db, ref, acquisition.processingAttemptCount, accessTokenProvider);
+  return { acquisition, finalization };
+}
+
+export const DELIVERY_PROCESSING_CONCURRENCY = 10;
+
+export type DeliveryDryRunBatchSummary = {
+  candidateCount: number;
+  stillLeasedCount: number;
+  notFoundCount: number;
+  alreadyTerminalCount: number;
+  terminalRepairedCount: number;
+  unknownStateNeutralizedCount: number;
+  quarantinedCount: number;
+  oauthPreparationFailedCount: number;
+  dryRunValidatedCount: number;
+  cancelledCount: number;
+  staleFenceCount: number;
+  deliveryNotFoundCount: number;
+  unexpectedFailureCount: number;
+};
+
+function emptyDeliveryDryRunBatchSummary(): Omit<DeliveryDryRunBatchSummary, 'candidateCount'> {
+  return {
+    stillLeasedCount: 0,
+    notFoundCount: 0,
+    alreadyTerminalCount: 0,
+    terminalRepairedCount: 0,
+    unknownStateNeutralizedCount: 0,
+    quarantinedCount: 0,
+    oauthPreparationFailedCount: 0,
+    dryRunValidatedCount: 0,
+    cancelledCount: 0,
+    staleFenceCount: 0,
+    deliveryNotFoundCount: 0,
+    unexpectedFailureCount: 0,
+  };
+}
+
+// Discovers due delivery work and drives each candidate through acquisition + OAuth
+// preparation + final authorization, with the SAME bounded-concurrency worker pool Step 2
+// already uses (reminderSchedulerLogic.ts's processWithBoundedConcurrency, reused rather
+// than reinvented). `accessTokenProvider` is created ONCE by the caller (see
+// notificationReminderDeliveryDryRun below) and shared across every candidate in this
+// batch, so google-auth-library's internal token caching amortizes across the whole batch.
+export async function runDeliveryDryRunBatch(
+  db: FirebaseFirestore.Firestore,
+  accessTokenProvider: AccessTokenProvider
+): Promise<DeliveryDryRunBatchSummary> {
+  const candidateRefs = await discoverRecoverableDeliveryWork(db);
+  const counters = emptyDeliveryDryRunBatchSummary();
+
+  await processWithBoundedConcurrency(candidateRefs, DELIVERY_PROCESSING_CONCURRENCY, async (ref) => {
+    try {
+      const result = await processDeliveryQueueCandidate(db, ref, accessTokenProvider);
+      switch (result.acquisition.outcome) {
+        case 'still-leased':
+          counters.stillLeasedCount++;
+          return;
+        case 'not-found':
+          counters.notFoundCount++;
+          return;
+        case 'already-terminal':
+          counters.alreadyTerminalCount++;
+          return;
+        case 'terminal-repaired':
+          counters.terminalRepairedCount++;
+          return;
+        case 'unknown-state-neutralized':
+          counters.unknownStateNeutralizedCount++;
+          return;
+        case 'quarantined':
+          counters.quarantinedCount++;
+          return;
+        case 'acquired':
+          break; // fall through to finalization tally below.
+      }
+      switch (result.finalization?.outcome) {
+        case 'oauth-preparation-failed':
+          counters.oauthPreparationFailedCount++;
+          break;
+        case 'dry-run-validated':
+          counters.dryRunValidatedCount++;
+          break;
+        case 'cancelled':
+          counters.cancelledCount++;
+          break;
+        case 'stale-fence':
+          counters.staleFenceCount++;
+          break;
+        case 'delivery-not-found':
+          counters.deliveryNotFoundCount++;
+          break;
+        default:
+          counters.unexpectedFailureCount++;
+      }
+    } catch {
+      // Deliberately binds no parameter — matches this codebase's established convention
+      // of never reading a property off a caught exception where the underlying operation
+      // could plausibly involve credential-adjacent state (OAuth acquisition, in this
+      // batch loop's case).
+      counters.unexpectedFailureCount++;
+    }
+  });
+
+  return { candidateCount: candidateRefs.length, ...counters };
+}
+
+// ---------------------------------------------------------------------------------------
+// SCHEDULED ENTRY POINT — the first (and, this round, only) way anything in this file can
+// run in production. Module-scope Firestore singleton, matching reminderScheduler.ts's own
+// established convention — every function above this point remains fully
+// dependency-injected and testable; only this export uses it. `createGoogleAuthAccessToken
+// Provider()` is called ONCE per invocation (not once per delivery), consistent with
+// runDeliveryDryRunBatch's own doc comment on why that amortizes google-auth-library's
+// internal token caching across the whole batch.
+//
+// NO SENDER: this function calls runDeliveryDryRunBatch and nothing else. There is no
+// import of fcmTransport/sendFcmOnce/getMessaging/node:https/fetch anywhere in this file —
+// see the file header. The deepest reachable delivery state remains 'dry-run-validated'.
+// ---------------------------------------------------------------------------------------
+if (getApps().length === 0) initializeApp();
+const productionDb = getFirestore();
+
+export const notificationReminderDeliveryDryRun = onSchedule(
+  { schedule: 'every 5 minutes', timeoutSeconds: 300, memory: '256MiB' },
+  async () => {
+    const accessTokenProvider = createGoogleAuthAccessTokenProvider();
+    const summary = await runDeliveryDryRunBatch(productionDb, accessTokenProvider);
+    logger.info('[ReminderDeliveryWorker] dry-run batch summary', summary);
+  }
+);
 
 // Exposed for tests only (per the approved design's "3C-2 itself may expose helper
 // functions for fenced no-op/test finalization if needed, but do NOT invent send

@@ -53,6 +53,8 @@ import {
   type ProgressResult,
   type ConsentRevalidation,
 } from './reminderSchedulerLogic';
+import { decideShouldFanOut } from './reminderDeliveryLogic';
+import { fanOutReminderDelivery } from './reminderDeliveryWorker';
 
 const APP_ID = 'neuroactive-prod';
 
@@ -492,6 +494,13 @@ type PhaseBCounters = {
   zeroInstallationCount: number;
   multiInstallationCount: number;
   unexpectedFailureCount: number;
+  // Phase 3A-3 Step 3C-3 — fanout wiring. rolloutReadFailureCount mirrors every other
+  // read-failure counter in this function (lease left untouched; a later invocation
+  // retries). fannedOutCount/fanoutNotEligibleCount cover fanOutReminderDelivery's own two
+  // outcome kinds when rollout resolves to dry-run for this uid.
+  rolloutReadFailureCount: number;
+  fannedOutCount: number;
+  fanoutNotEligibleCount: number;
 };
 
 function emptyPhaseBCounters(): PhaseBCounters {
@@ -514,6 +523,9 @@ function emptyPhaseBCounters(): PhaseBCounters {
     zeroInstallationCount: 0,
     multiInstallationCount: 0,
     unexpectedFailureCount: 0,
+    rolloutReadFailureCount: 0,
+    fannedOutCount: 0,
+    fanoutNotEligibleCount: 0,
   };
 }
 
@@ -606,6 +618,40 @@ async function processCandidate(reminderId: string, counters: PhaseBCounters): P
     const result = await commitFinalOutcome(reminderId, attemptCount, 'course-complete', { nextUnfinishedDay: null });
     if (result === 'committed') counters.courseCompleteCount++;
     else counters.commitLostRaceCount++;
+    return;
+  }
+
+  // Phase 3A-3 Step 3C-3 — fanout wiring. Rollout config is read fresh here (never trusted
+  // from an earlier read) and decided via reminderDeliveryLogic.ts's already-approved, pure
+  // decideShouldFanOut. In current production, artifacts/neuroactive-prod/systemConfig/
+  // notificationRollout does not exist yet — decideShouldFanOut(undefined, uid) resolves to
+  // {shouldFanOut:false} in that case (parseRolloutConfig fails closed to 'paused' for a
+  // missing document), so this entire branch is a structural no-op until that document is
+  // deliberately created, and every reminder continues to reach the unchanged
+  // dry-run-complete path below exactly as before this round.
+  //
+  // fanOutReminderDelivery re-reads and re-verifies the SAME (status==='processing' &&
+  // attemptCount===attemptCount) fence transactionally inside itself — it is not passed
+  // anything from this read that it doesn't already independently re-validate, so no
+  // duplicate/redundant fencing is needed here. On a fanned-out reminder, this function
+  // returns immediately afterward: fanOutReminderDelivery's own transaction is what commits
+  // the parent's terminal write (status/workState), so commitFinalOutcome must NOT also be
+  // called for this reminderId — doing so would violate the fence (attemptCount already
+  // matches, but status is no longer 'processing') and correctly be a no-op lost-race, but
+  // is avoided entirely here for clarity rather than relied upon as a safety net.
+  let rolloutRaw: unknown;
+  try {
+    const rolloutSnap = await db.doc(`artifacts/${APP_ID}/systemConfig/notificationRollout`).get();
+    rolloutRaw = rolloutSnap.exists ? rolloutSnap.data() : undefined;
+  } catch (err) {
+    counters.rolloutReadFailureCount++;
+    logger.error('[ReminderScheduler] rollout config read failed', { uid, reminderId, error: String(err) });
+    return; // lease will expire; a later invocation retries this same reminderId.
+  }
+  if (decideShouldFanOut(rolloutRaw, uid).shouldFanOut) {
+    const fanoutResult = await fanOutReminderDelivery(db, reminderId, attemptCount);
+    if (fanoutResult.outcome === 'fanned-out') counters.fannedOutCount++;
+    else counters.fanoutNotEligibleCount++;
     return;
   }
 

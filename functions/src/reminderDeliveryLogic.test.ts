@@ -51,6 +51,10 @@ import {
   decideFanoutOutcome,
   buildPreExistingChildCorruptionOutcome,
   validateFanoutTuple,
+  OPAQUE_ID_BYTE_LENGTH,
+  OPAQUE_ID_LENGTH,
+  isValidOpaqueIdFormat,
+  validatePersistedDeliveryForProcessing,
   type DeliverySchemaCheck,
   type AttemptHistoryEntry,
   type TargetSnapshot,
@@ -622,6 +626,10 @@ check('[4] malformed uid can never be authorized under allowlisted-real-send', d
 console.log('\n=== deriveDeliveryPublicId ===');
 
 const nonceA = Buffer.alloc(FANOUT_NONCE_BYTE_LENGTH, 0xaa);
+// A syntactically valid opaque ID (correct length/alphabet) for fixtures that need ANY
+// well-formed fanoutExecutionId but don't care about its actual randomness provenance.
+const VALID_FANOUT_EXECUTION_ID = 'B'.repeat(OPAQUE_ID_LENGTH);
+const VALID_FANOUT_EXECUTION_ID_2 = 'C'.repeat(OPAQUE_ID_LENGTH);
 const nonceB = Buffer.alloc(FANOUT_NONCE_BYTE_LENGTH, 0xbb);
 const VALID_INSTALL_ID_2 = 'b2c3d4e5-f607-4890-9bcd-ef0123456789';
 
@@ -705,19 +713,19 @@ check(`MAX_TARGET_INSTALLATIONS is 10`, MAX_TARGET_INSTALLATIONS === 10);
 check(`FANOUT_QUERY_LIMIT is 11 (MAX_TARGET_INSTALLATIONS + 1)`, FANOUT_QUERY_LIMIT === 11);
 
 check('zero-target success: rawActiveCount=0 -> completed, count=0', (() => {
-  const o = decideFanoutOutcome(0, 0);
+  const o = decideFanoutOutcome(0, 0, VALID_FANOUT_EXECUTION_ID);
   return o.deliveryFanoutState === 'completed' && o.targetInstallationCountAtFanout === 0;
 })());
 check('exact-cap success: rawActiveCount=10, none malformed -> completed, count=10', (() => {
-  const o = decideFanoutOutcome(10, 0);
+  const o = decideFanoutOutcome(10, 0, VALID_FANOUT_EXECUTION_ID);
   return o.deliveryFanoutState === 'completed' && o.targetInstallationCountAtFanout === 10;
 })());
 check('malformed-exclusion arithmetic: rawActiveCount=10, excluded=3 -> count=7', (() => {
-  const o = decideFanoutOutcome(10, 3);
+  const o = decideFanoutOutcome(10, 3, VALID_FANOUT_EXECUTION_ID);
   return o.deliveryFanoutState === 'completed' && o.targetInstallationCountAtFanout === 7 && o.excludedMalformedInstallationCount === 3;
 })());
 check('invariant holds: rawActiveCount === targetInstallationCountAtFanout + excludedMalformedInstallationCount', (() => {
-  const o = decideFanoutOutcome(6, 2);
+  const o = decideFanoutOutcome(6, 2, VALID_FANOUT_EXECUTION_ID);
   if (o.deliveryFanoutState !== 'completed') return false;
   return 6 === (o.targetInstallationCountAtFanout as number) + o.excludedMalformedInstallationCount;
 })());
@@ -725,7 +733,7 @@ check('invariant holds: rawActiveCount === targetInstallationCountAtFanout + exc
 console.log('\n=== [12] fanout count: ANY count >= FANOUT_QUERY_LIMIT fails closed, not just exactly 11 ===');
 for (const count of [11, 12, 100]) {
   check(`[12] rawActiveCount=${count} -> fails closed, "at least 11", never claims an exact count`, (() => {
-    const o = decideFanoutOutcome(count, 0);
+    const o = decideFanoutOutcome(count, 0, VALID_FANOUT_EXECUTION_ID);
     return (
       o.deliveryFanoutState === 'failed' &&
       o.targetingFailureReason === 'installation-count-exceeds-cap' &&
@@ -735,15 +743,38 @@ for (const count of [11, 12, 100]) {
   })());
 }
 
-check('negative rawActiveCount throws (malformed, not merely over-cap)', throws(() => decideFanoutOutcome(-1, 0)));
-check('non-integer rawActiveCount throws', throws(() => decideFanoutOutcome(5.5, 0)));
-check('NaN rawActiveCount throws', throws(() => decideFanoutOutcome(NaN, 0)));
-check('string rawActiveCount throws', throws(() => decideFanoutOutcome('10' as unknown as number, 0)));
-check('excludedMalformedCount exceeding rawActiveCount throws', throws(() => decideFanoutOutcome(3, 4)));
-check('negative excludedMalformedCount throws', throws(() => decideFanoutOutcome(3, -1)));
-check('non-integer excludedMalformedCount throws', throws(() => decideFanoutOutcome(3, 1.5)));
+check('negative rawActiveCount throws (malformed, not merely over-cap)', throws(() => decideFanoutOutcome(-1, 0, VALID_FANOUT_EXECUTION_ID)));
+check('non-integer rawActiveCount throws', throws(() => decideFanoutOutcome(5.5, 0, VALID_FANOUT_EXECUTION_ID)));
+check('NaN rawActiveCount throws', throws(() => decideFanoutOutcome(NaN, 0, VALID_FANOUT_EXECUTION_ID)));
+check('string rawActiveCount throws', throws(() => decideFanoutOutcome('10' as unknown as number, 0, VALID_FANOUT_EXECUTION_ID)));
+check('excludedMalformedCount exceeding rawActiveCount throws', throws(() => decideFanoutOutcome(3, 4, VALID_FANOUT_EXECUTION_ID)));
+check('negative excludedMalformedCount throws', throws(() => decideFanoutOutcome(3, -1, VALID_FANOUT_EXECUTION_ID)));
+check('non-integer excludedMalformedCount throws', throws(() => decideFanoutOutcome(3, 1.5, VALID_FANOUT_EXECUTION_ID)));
 
-check('status is always "delivery-fanned-out" (per Codex note: preserved, not renamed)', decideFanoutOutcome(5, 0).status === 'delivery-fanned-out' && decideFanoutOutcome(11, 0).status === 'delivery-fanned-out');
+check('status is always "delivery-fanned-out" (per Codex note: preserved, not renamed)', decideFanoutOutcome(5, 0, VALID_FANOUT_EXECUTION_ID).status === 'delivery-fanned-out' && decideFanoutOutcome(11, 0, VALID_FANOUT_EXECUTION_ID).status === 'delivery-fanned-out');
+
+// =========================================================================
+// CODEX REPAIR ROUND (H1) — decideFanoutOutcome now requires a valid opaque
+// fanoutExecutionId and embeds it ONLY on the 'completed' branch.
+// =========================================================================
+console.log('\n=== [H1] decideFanoutOutcome fanoutExecutionId provenance ===');
+check('missing fanoutExecutionId throws', throws(() => decideFanoutOutcome(5, 0, undefined)));
+check('malformed (too short) fanoutExecutionId throws', throws(() => decideFanoutOutcome(5, 0, 'A'.repeat(OPAQUE_ID_LENGTH - 1))));
+check('malformed (bad alphabet) fanoutExecutionId throws', throws(() => decideFanoutOutcome(5, 0, '!'.repeat(OPAQUE_ID_LENGTH))));
+check('non-string fanoutExecutionId throws', throws(() => decideFanoutOutcome(5, 0, 12345)));
+check('completed outcome embeds the exact caller-supplied fanoutExecutionId', (() => {
+  const o = decideFanoutOutcome(5, 0, VALID_FANOUT_EXECUTION_ID);
+  return o.deliveryFanoutState === 'completed' && o.fanoutExecutionId === VALID_FANOUT_EXECUTION_ID;
+})());
+check('zero-target completed outcome STILL embeds fanoutExecutionId', (() => {
+  const o = decideFanoutOutcome(0, 0, VALID_FANOUT_EXECUTION_ID);
+  return o.deliveryFanoutState === 'completed' && o.fanoutExecutionId === VALID_FANOUT_EXECUTION_ID;
+})());
+check('over-cap FAILED outcome never embeds fanoutExecutionId (no such property at all)', (() => {
+  const o = decideFanoutOutcome(11, 0, VALID_FANOUT_EXECUTION_ID);
+  return o.deliveryFanoutState === 'failed' && !Object.prototype.hasOwnProperty.call(o, 'fanoutExecutionId');
+})());
+check('buildPreExistingChildCorruptionOutcome never embeds fanoutExecutionId', !Object.prototype.hasOwnProperty.call(buildPreExistingChildCorruptionOutcome(), 'fanoutExecutionId'));
 
 console.log('\n=== buildPreExistingChildCorruptionOutcome ===');
 check('pre-existing-child outcome fails closed with the exact expected shape', (() => {
@@ -751,10 +782,15 @@ check('pre-existing-child outcome fails closed with the exact expected shape', (
   return o.status === 'delivery-fanned-out' && o.deliveryFanoutState === 'failed' && o.targetingFailureReason === 'unexpected-preexisting-delivery' && o.targetInstallationCountAtFanout === null;
 })());
 
-check('fanout outcome objects never contain any string value outside the fixed enum set', (() => {
+check('fanout outcome objects never contain any string value outside the fixed enum set OR the opaque fanoutExecutionId field', (() => {
   const FIXED_OUTCOME_ENUM_VALUES = new Set(['delivery-fanned-out', 'completed', 'failed', 'installation-count-exceeds-cap', 'unexpected-preexisting-delivery']);
-  const outcomes = [decideFanoutOutcome(0, 0), decideFanoutOutcome(10, 3), decideFanoutOutcome(11, 0), buildPreExistingChildCorruptionOutcome()];
-  return outcomes.every((o) => Object.values(o).every((value) => value === null || typeof value === 'number' || (typeof value === 'string' && FIXED_OUTCOME_ENUM_VALUES.has(value))));
+  const outcomes = [decideFanoutOutcome(0, 0, VALID_FANOUT_EXECUTION_ID), decideFanoutOutcome(10, 3, VALID_FANOUT_EXECUTION_ID), decideFanoutOutcome(11, 0, VALID_FANOUT_EXECUTION_ID), buildPreExistingChildCorruptionOutcome()];
+  return outcomes.every((o) =>
+    Object.entries(o).every(
+      ([key, value]) =>
+        key === 'fanoutExecutionId' || value === null || typeof value === 'number' || (typeof value === 'string' && FIXED_OUTCOME_ENUM_VALUES.has(value))
+    )
+  );
 })());
 
 // =========================================================================
@@ -763,12 +799,85 @@ check('fanout outcome objects never contain any string value outside the fixed e
 console.log('\n=== validateFanoutTuple ===');
 
 check('[10] valid success tuple validates', (() => {
-  const r = validateFanoutTuple({ status: 'delivery-fanned-out', deliveryFanoutState: 'completed', targetInstallationCountAtFanout: 2, excludedMalformedInstallationCount: 0 });
-  return r.valid === true;
+  const r = validateFanoutTuple({
+    status: 'delivery-fanned-out',
+    deliveryFanoutState: 'completed',
+    targetInstallationCountAtFanout: 2,
+    excludedMalformedInstallationCount: 0,
+    fanoutExecutionId: VALID_FANOUT_EXECUTION_ID,
+  });
+  return r.valid === true && r.outcome.deliveryFanoutState === 'completed' && r.outcome.fanoutExecutionId === VALID_FANOUT_EXECUTION_ID;
 })());
 check('[10] valid zero-target success tuple validates', (() => {
-  const r = validateFanoutTuple({ status: 'delivery-fanned-out', deliveryFanoutState: 'completed', targetInstallationCountAtFanout: 0, excludedMalformedInstallationCount: 0 });
+  const r = validateFanoutTuple({
+    status: 'delivery-fanned-out',
+    deliveryFanoutState: 'completed',
+    targetInstallationCountAtFanout: 0,
+    excludedMalformedInstallationCount: 0,
+    fanoutExecutionId: VALID_FANOUT_EXECUTION_ID,
+  });
   return r.valid === true;
+})());
+
+// =========================================================================
+// CODEX REPAIR ROUND (H1) — validateFanoutTuple now requires fanoutExecutionId on
+// 'completed' and forbids it (even well-formed) on 'failed'.
+// =========================================================================
+check('[H1] completed tuple MISSING fanoutExecutionId -> rejected', (() => {
+  const r = validateFanoutTuple({ status: 'delivery-fanned-out', deliveryFanoutState: 'completed', targetInstallationCountAtFanout: 2, excludedMalformedInstallationCount: 0 });
+  return r.valid === false && r.reason === 'invalid-fanout-execution-id';
+})());
+check('[H1] completed tuple with MALFORMED fanoutExecutionId -> rejected', (() => {
+  const r = validateFanoutTuple({
+    status: 'delivery-fanned-out',
+    deliveryFanoutState: 'completed',
+    targetInstallationCountAtFanout: 2,
+    excludedMalformedInstallationCount: 0,
+    fanoutExecutionId: 'too-short',
+  });
+  return r.valid === false && r.reason === 'invalid-fanout-execution-id';
+})());
+check('[H1] completed tuple with NULL fanoutExecutionId -> rejected (own-but-not-meaningful)', (() => {
+  const r = validateFanoutTuple({
+    status: 'delivery-fanned-out',
+    deliveryFanoutState: 'completed',
+    targetInstallationCountAtFanout: 2,
+    excludedMalformedInstallationCount: 0,
+    fanoutExecutionId: null,
+  });
+  return r.valid === false && r.reason === 'invalid-fanout-execution-id';
+})());
+check('[H1] FAILED (over-cap) tuple carrying a well-formed fanoutExecutionId -> rejected (must not masquerade as successful provenance)', (() => {
+  const r = validateFanoutTuple({
+    status: 'delivery-fanned-out',
+    deliveryFanoutState: 'failed',
+    targetingFailureReason: 'installation-count-exceeds-cap',
+    targetInstallationCountAtFanout: null,
+    observedTargetCountAtLeast: FANOUT_QUERY_LIMIT,
+    fanoutExecutionId: VALID_FANOUT_EXECUTION_ID,
+  });
+  return r.valid === false && r.reason === 'failed-with-fanout-execution-id';
+})());
+check('[H1] FAILED (pre-existing-child) tuple carrying a well-formed fanoutExecutionId -> rejected', (() => {
+  const r = validateFanoutTuple({
+    status: 'delivery-fanned-out',
+    deliveryFanoutState: 'failed',
+    targetingFailureReason: 'unexpected-preexisting-delivery',
+    targetInstallationCountAtFanout: null,
+    fanoutExecutionId: VALID_FANOUT_EXECUTION_ID,
+  });
+  return r.valid === false && r.reason === 'failed-with-fanout-execution-id';
+})());
+check('[H1] a fanoutExecutionId inherited-only (not an own property) on a completed tuple does not falsely satisfy the check', (() => {
+  const base = { fanoutExecutionId: VALID_FANOUT_EXECUTION_ID };
+  const input = Object.assign(Object.create(base), {
+    status: 'delivery-fanned-out',
+    deliveryFanoutState: 'completed',
+    targetInstallationCountAtFanout: 2,
+    excludedMalformedInstallationCount: 0,
+  });
+  const r = validateFanoutTuple(input);
+  return r.valid === false && r.reason === 'invalid-fanout-execution-id';
 })());
 check('[10] valid over-cap failure tuple validates', (() => {
   const r = validateFanoutTuple({
@@ -829,6 +938,89 @@ check('[10] unrecognized status -> rejected', validateFanoutTuple({ status: 'som
 check('[10] unrecognized deliveryFanoutState -> rejected', validateFanoutTuple({ status: 'delivery-fanned-out', deliveryFanoutState: 'bogus' }).valid === false);
 check('[10] non-object input -> rejected', validateFanoutTuple('bogus').valid === false);
 check('[10] null input -> rejected', validateFanoutTuple(null).valid === false);
+
+// =========================================================================
+// CODEX REPAIR ROUND (H1) — isValidOpaqueIdFormat / OPAQUE_ID_BYTE_LENGTH: the shared
+// format primitive both deliveryPublicId and fanoutExecutionId now reuse.
+// =========================================================================
+console.log('\n=== isValidOpaqueIdFormat / OPAQUE_ID_BYTE_LENGTH ===');
+check('OPAQUE_ID_BYTE_LENGTH is 32 (256-bit)', OPAQUE_ID_BYTE_LENGTH === 32);
+check('OPAQUE_ID_LENGTH is 43 (base64url of 32 bytes, no padding)', OPAQUE_ID_LENGTH === 43);
+check('a real 32-random-byte base64url string round-trips as valid', isValidOpaqueIdFormat(nonceA.toString('base64url')) && nonceA.toString('base64url').length === OPAQUE_ID_LENGTH);
+check('too short is rejected', !isValidOpaqueIdFormat('A'.repeat(OPAQUE_ID_LENGTH - 1)));
+check('too long is rejected', !isValidOpaqueIdFormat('A'.repeat(OPAQUE_ID_LENGTH + 1)));
+check('padding character "=" is rejected', !isValidOpaqueIdFormat('A'.repeat(OPAQUE_ID_LENGTH - 1) + '='));
+check('slash is rejected', !isValidOpaqueIdFormat('A'.repeat(OPAQUE_ID_LENGTH - 1) + '/'));
+check('whitespace is rejected', !isValidOpaqueIdFormat('A'.repeat(OPAQUE_ID_LENGTH - 1) + ' '));
+check('non-string is rejected', !isValidOpaqueIdFormat(12345));
+check('null is rejected', !isValidOpaqueIdFormat(null));
+
+// =========================================================================
+// CODEX REPAIR ROUND (H2/section 11) — validatePersistedDeliveryForProcessing, PROMOTED
+// here from reminderDeliveryWorker.ts so it is the single shared source of truth for both
+// queue acquisition and final authorization. Exhaustive per-field corruption coverage
+// already exists in reminderDeliveryWorker.test.ts's [queue M1] suite (which exercises this
+// exact function transactionally); these tests focus on the function's OWN direct contract,
+// especially the NEW fanoutExecutionIdAtCreation check this repair round adds.
+// =========================================================================
+console.log('\n=== validatePersistedDeliveryForProcessing ===');
+
+const VALID_AUDIENCE_ID = 'A'.repeat(20); // matches pushInstallationEpochLogic.ts's real AUDIENCE_ID_PATTERN (16-64 chars).
+
+function validPersistedDeliveryData(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    uid: 'uid-1',
+    installationId: VALID_INSTALLATION_ID,
+    sendAttemptCount: 0,
+    processingAttemptCount: 0,
+    targetSnapshot: { generation: 1, tokenVersion: 1, installationAudienceId: VALID_AUDIENCE_ID },
+    deliveryPublicId: deriveDeliveryPublicId(nonceA, 'reminder-1', VALID_INSTALLATION_ID),
+    attemptHistory: [],
+    fanoutExecutionIdAtCreation: VALID_FANOUT_EXECUTION_ID,
+    ...overrides,
+  };
+}
+
+check('[H2] happy path validates and returns fanoutExecutionIdAtCreation unchanged', (() => {
+  const r = validatePersistedDeliveryForProcessing(VALID_INSTALLATION_ID, validPersistedDeliveryData());
+  return r.valid === true && r.fanoutExecutionIdAtCreation === VALID_FANOUT_EXECUTION_ID;
+})());
+check('[H2] missing fanoutExecutionIdAtCreation -> rejected', (() => {
+  const data = validPersistedDeliveryData();
+  delete (data as Record<string, unknown>).fanoutExecutionIdAtCreation;
+  const r = validatePersistedDeliveryForProcessing(VALID_INSTALLATION_ID, data);
+  return r.valid === false && r.reason === 'invalid-fanout-execution-id-format';
+})());
+check('[H2] malformed (too short) fanoutExecutionIdAtCreation -> rejected', (() => {
+  const r = validatePersistedDeliveryForProcessing(VALID_INSTALLATION_ID, validPersistedDeliveryData({ fanoutExecutionIdAtCreation: 'too-short' }));
+  return r.valid === false && r.reason === 'invalid-fanout-execution-id-format';
+})());
+check('[H2] a DIFFERENT but equally well-formed fanoutExecutionIdAtCreation still validates at the field-format level (equality-against-parent is final authorization\'s job, not this function\'s)', (() => {
+  const r = validatePersistedDeliveryForProcessing(VALID_INSTALLATION_ID, validPersistedDeliveryData({ fanoutExecutionIdAtCreation: VALID_FANOUT_EXECUTION_ID_2 }));
+  return r.valid === true && r.fanoutExecutionIdAtCreation === VALID_FANOUT_EXECUTION_ID_2;
+})());
+check('[H2] ref.id / stored installationId mismatch -> rejected', (() => {
+  const r = validatePersistedDeliveryForProcessing('11111111-1111-4111-8111-111111111111', validPersistedDeliveryData());
+  return r.valid === false && r.reason === 'ref-installation-id-mismatch';
+})());
+check('[H2] malformed deliveryPublicId -> rejected', (() => {
+  const r = validatePersistedDeliveryForProcessing(VALID_INSTALLATION_ID, validPersistedDeliveryData({ deliveryPublicId: 'not-valid' }));
+  return r.valid === false && r.reason === 'invalid-delivery-public-id-format';
+})());
+check('[H2] poisoned attemptHistory (nonsequential) -> rejected', (() => {
+  const r = validatePersistedDeliveryForProcessing(
+    VALID_INSTALLATION_ID,
+    validPersistedDeliveryData({ attemptHistory: [{ attemptNumber: 2, sendIntentAt: 1, outcomeCategory: 'accepted', httpStatus: 200, outcomeRecordedAt: 2 }] })
+  );
+  return r.valid === false && r.reason === 'invalid-attempt-history';
+})());
+check('[H2] malformed audience grammar (too short, unlike validateDeliverySchema\'s own looser check) -> rejected', (() => {
+  const r = validatePersistedDeliveryForProcessing(
+    VALID_INSTALLATION_ID,
+    validPersistedDeliveryData({ targetSnapshot: { generation: 1, tokenVersion: 1, installationAudienceId: 'short' } })
+  );
+  return r.valid === false && r.reason === 'invalid-target-snapshot-audience-id';
+})());
 
 // =========================================================================
 // SECOND CODEX REPAIR ROUND — blocker 1: reminder-ID validation must be compatible with
@@ -1022,12 +1214,24 @@ check('[blocker 6] a MIXED own/inherited tuple (some fields own, some only inher
 })());
 
 check('a fully well-formed, all-own-properties success tuple still validates (regression check)', (() => {
-  const tuple = { status: 'delivery-fanned-out', deliveryFanoutState: 'completed', targetInstallationCountAtFanout: 2, excludedMalformedInstallationCount: 0 };
+  const tuple = {
+    status: 'delivery-fanned-out',
+    deliveryFanoutState: 'completed',
+    targetInstallationCountAtFanout: 2,
+    excludedMalformedInstallationCount: 0,
+    fanoutExecutionId: VALID_FANOUT_EXECUTION_ID,
+  };
   return validateFanoutTuple(tuple).valid === true;
 })());
 check('an inherited `targetingFailureReason` on an otherwise-valid COMPLETED tuple does not falsely trigger completed-with-failure-reason (inherited is correctly ignored, not treated as present)', (() => {
   const tupleWithInheritedNoise = Object.create({ targetingFailureReason: 'installation-count-exceeds-cap' });
-  Object.assign(tupleWithInheritedNoise, { status: 'delivery-fanned-out', deliveryFanoutState: 'completed', targetInstallationCountAtFanout: 2, excludedMalformedInstallationCount: 0 });
+  Object.assign(tupleWithInheritedNoise, {
+    status: 'delivery-fanned-out',
+    deliveryFanoutState: 'completed',
+    targetInstallationCountAtFanout: 2,
+    excludedMalformedInstallationCount: 0,
+    fanoutExecutionId: VALID_FANOUT_EXECUTION_ID,
+  });
   return validateFanoutTuple(tupleWithInheritedNoise).valid === true;
 })());
 
