@@ -1,48 +1,68 @@
 // functions/src/reminderDeliverySender.ts
-// Phase 3A-3 Step 3C-4 — the ONLY file, anywhere in this codebase, permitted to import
-// fcmTransport.ts / sendFcmOnce. Consumes a one-shot DeliverySendCapability constructed by
-// reminderDeliveryAuth.ts's finalizeDeliveryAuthorization ('sending-authorized' outcome),
-// performs exactly ONE FCM v1 send, and commits the outcome via a separate, fenced
-// transaction. There is exactly one source-level call to sendFcmOnce in this file — see
-// executeControlledSend below.
+// PHASE 3A-3 STEP 3C-5 — CODEX BUILD-TIME AUTHORITY SEPARATION REPAIR (SIXTH round,
+// SECOND pass) — SINGLE-FILE PRODUCTION MODULE. There is no longer a separate
+// "reminderDeliverySenderCore.ts" at all.
 //
-// DO NOT CLAIM EXACTLY-ONCE DELIVERY. FCM's v1 `messages:send` API has no idempotency key,
-// and a genuinely ambiguous transport outcome (timeout, network error, a >=500/408/421/425
-// gateway-class response) can never be proven to have or have not reached FCM. This file
-// accepts that limitation rather than working around it: an ambiguous outcome always
-// terminalizes (never retries — see reminderDeliveryLogic.ts's decideSendOutcomeAction,
-// reused verbatim, not reimplemented here), and a crash between committing 'sending' and
-// recording an outcome leaves the delivery permanently stuck in 'sending' (workState
-// 'terminal', structurally unreclaimable — see reminderDeliveryLogic.ts's
-// expectedWorkStateForDeliveryState) rather than being silently retried and risking a
-// duplicate notification. That state means "send deliberately authorized; outcome
-// unknown" and requires manual, not automatic, resolution — see the file header of
-// reminderDeliveryLogic.ts's DELIVERY STATES section and this codebase's Step 3C-4 design
-// review for the full rationale.
+// WHY THE PRIOR (SEPARATE-CORE-FILE) DESIGN WAS ABANDONED: the FIFTH round's
+// reminderDeliverySenderCore.ts held the full authorization -> send -> outcome-persistence
+// algorithm as an EXPORTED, parameterized function (accepting db/accessTokenProvider/
+// transport), on the theory that excluding that file from the PRODUCTION tsconfig would
+// keep it out of the deployed artifact while this file's thin wrapper still called it. That
+// theory does not survive contact with how `tsc` actually works: a file excluded from
+// `include`/`exclude` that is nonetheless *imported* by an included file is pulled back into
+// the compiled program and EMITTED anyway — `tsc` has no notion of "type-check and resolve
+// this import, but don't emit its target," short of a full bundler/tree-shaking step (a much
+// larger, explicitly out-of-scope change). Verified empirically this round: excluding
+// `src/testsupport/**` still produced `lib/testsupport/reminderDeliverySenderCore.js` in the
+// production build, because reminderDeliverySender.ts's own `import` of it forced inclusion.
+// Since the deployed artifact MUST contain a working implementation for the feature to
+// function at all, "absent from the deployed artifact" and "invoked by the deployed
+// wrapper via a static import" are mutually exclusive for the SAME parameterized function —
+// there is no configuration that achieves both simultaneously.
 //
-// SOURCE-LEVEL REAL-SEND LOCK, LAYER C — REAL_DELIVERY_STAGE below is a SEPARATE,
-// independently-declared constant from reminderDeliveryAuth.ts's own REAL_DELIVERY_STAGE
-// (deliberately never imported from it — see reminderDeliveryLogic.ts's RealDeliveryStage/
-// decideStagedRealSendAuthorization for why two independently-declared constants are
-// required, not one shared one). Asserted immediately adjacent to the sole sendFcmOnce
-// call site, below. For THIS implementation it MUST remain 'disabled'. In practice this
-// function is never reached in production today at all: reminderDeliveryAuth.ts's own
-// layer A/B enforcement never produces a 'sending-authorized' outcome while ITS
-// REAL_DELIVERY_STAGE is 'disabled', so no caller ever has a capability to hand this file
-// in the first place. This assertion exists purely as redundant, independent
-// defense-in-depth — not the only guard.
+// THE ACTUAL FIX: the entire algorithm now lives HERE, as MODULE-PRIVATE functions (no
+// `export` keyword) — exactly like `executeControlledSend`/`commitSendOutcome` already were
+// in every prior round — so it IS part of the deployed artifact (it has to be) but is NOT a
+// separately `require()`-able, parameterized entry point. The only exported production
+// entry point, `processControlledSendCandidate`, accepts exclusively
+// reminderId/installationId/expectedProcessingAttemptCount and resolves ALL authority
+// (Firestore, OAuth, transport) from PRIVATE, IMMUTABLY-CAPTURED module state (see below) —
+// there is no db/provider/transport parameter anywhere for a caller to substitute, and
+// there is no separate file for a caller to import instead to bypass this wrapper.
 //
-// NO IMPORT-TIME SIDE EFFECTS — every top-level statement below is an import, a type
-// declaration, a plain literal constant, or a function declaration. No module-scope
-// Firestore singleton, no module-scope GoogleAuth/credential construction, nothing that
-// executes before a function in this file is actually called. Every function below takes
-// `db: FirebaseFirestore.Firestore` as an explicit parameter (matching
-// reminderDeliveryWorker.ts's own dependency-injection convention), never a captured
-// singleton.
+// HOW TESTS STILL EXERCISE THIS EXACT CODE (not a reimplementation): see
+// reminderDeliverySender.test.ts's own header. In short — Node's `require()` cache means a
+// module's top-level code (including the IMMUTABLE CAPTURE block below) runs exactly once
+// per resolved module id, the FIRST time it is required in a process. Tests exploit this
+// deliberately and legitimately: BEFORE first requiring this file, a test mutates
+// `firebase-admin/app`'s/`firebase-admin/firestore`'s/`./reminderDeliveryAuth`'s/
+// `./fcmTransport`'s own exported properties to fakes, then clears
+// `require.cache[require.resolve('./reminderDeliverySender')]` (forcing the NEXT require to
+// re-evaluate this module from scratch against whatever the dependencies currently export)
+// and requires it fresh — capturing the FAKES instead of the real implementations for that
+// one fresh module instance. This is squarely inside the threat model this repair actually
+// defends against: Codex's own instruction (section 9, this round) explicitly distinguishes
+// "an ordinary future production import/caller" (defended against, by the capture below)
+// from "arbitrary code execution/mutation BEFORE the production module is first loaded"
+// (explicitly out of scope — "not our intended threat model"). A test file orchestrating its
+// OWN process's require order before ever exercising the module is precisely that carved-out
+// case, not a future ordinary caller.
+//
+// IMMUTABLE CAPTURE (H3/H4): getApps/initializeApp/getFirestore/
+// createGoogleAuthAccessTokenProvider/sendFcmOnce are captured into plain top-level `const`
+// bindings ONCE, the first time this module is evaluated. The standard `tsc`-compiled shape
+// for a named import used as a function call (`someModule_1.someFn()`) is a property lookup
+// on a SHARED, mutable object at EVERY call site, not a captured value — without this
+// capture, any other file that mutated one of those four modules' exported properties AFTER
+// this module had already loaded (but before a given call) could redirect what this file's
+// private getters return. Once captured into a local `const`, a later mutation of the
+// source module's property cannot affect the local binding — this is bedrock JavaScript
+// closure/binding semantics, not a heuristic.
 'use strict';
 
-import { FieldValue, Timestamp } from 'firebase-admin/firestore';
-import { sendFcmOnce, FCM_PROJECT_ID, type FcmSendOutcome } from './fcmTransport';
+import { getApps, initializeApp } from 'firebase-admin/app';
+import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
+import { sendFcmOnce, type FcmSendOutcome } from './fcmTransport';
 import {
   requireAllowedDeliveryTransition,
   requireAuthorizedRetryTransition,
@@ -51,15 +71,39 @@ import {
   computeDeliveryRetryAvailableAtMs,
   isMatchingActiveSendIntent,
   buildDeliveryTerminalWorkStateFields,
+  isValidReminderId,
+  isValidInstallationIdShape,
   type DeliverySendOutcomeKind,
   type AttemptOutcomeCategory,
   type RealDeliveryStage,
 } from './reminderDeliveryLogic';
-import type { DeliverySendCapability } from './reminderDeliveryAuth';
+import {
+  prepareAndFinalizeDelivery,
+  createGoogleAuthAccessTokenProvider,
+  type DeliverySendCapability,
+  type AccessTokenProvider,
+  type PrepareAndFinalizeResult,
+  type FinalAuthorizationReason,
+} from './reminderDeliveryAuth';
+
+// ---------------------------------------------------------------------------------------
+// IMMUTABLE CAPTURE — see file header (H3/H4). Nothing below this block ever reads
+// getApps/initializeApp/getFirestore/createGoogleAuthAccessTokenProvider/sendFcmOnce
+// through the imported module namespace again — only through these captured bindings.
+// ---------------------------------------------------------------------------------------
+const capturedGetApps = getApps;
+const capturedInitializeApp = initializeApp;
+const capturedGetFirestore = getFirestore;
+const capturedCreateGoogleAuthAccessTokenProvider = createGoogleAuthAccessTokenProvider;
+const capturedSendFcmOnce = sendFcmOnce;
 
 // See file header — this is a structural phase lock, not a rollout-config-driven decision.
-// MUST remain 'disabled' for this implementation.
-export const REAL_DELIVERY_STAGE: RealDeliveryStage = 'disabled';
+// PHASE 3A-3 STEP 3C-5 — 'allowlisted-only'. Must not advance to 'general' without a
+// separately reviewed round.
+export const REAL_DELIVERY_STAGE: RealDeliveryStage = 'allowlisted-only';
+
+// The Firestore artifacts path prefix for this single-project deployment.
+const DELIVERY_APP_ID = 'neuroactive-prod';
 
 // ---------------------------------------------------------------------------------------
 // FIXED FIRST-SEND MESSAGE SCHEMA — pure, directly unit-testable, no Firestore/network
@@ -70,16 +114,10 @@ export const REAL_DELIVERY_STAGE: RealDeliveryStage = 'disabled';
 //
 // COMPATIBILITY — inspected directly against the actual deployed service worker
 // (public/firebase-messaging-sw.js): its onBackgroundMessage handler explicitly skips
-// manual display whenever `payload.notification` is present ("already auto-displayed by
-// Firebase's own SW machinery... calling showNotification() again would duplicate that
-// auto-display"), and its notificationclick handler always focuses/opens the app root
-// ('/'), never reading any custom data field from the payload. Including a `notification`
-// object (title/body) is therefore both necessary (for the existing background-display
-// path to fire at all) and sufficient (no additional data-only display branch is needed).
-// Deliberately does NOT include a custom deep-link field: the existing click handler does
-// not consume one yet, so adding one now would be unused, misleading scaffolding rather
-// than genuine compatibility — a real deep-link requires its own, separately-reviewed
-// service-worker change.
+// manual display whenever `payload.notification` is present, and its notificationclick
+// handler always focuses/opens the app root ('/'), never reading any custom data field
+// from the payload. Including a `notification` object (title/body) is therefore both
+// necessary and sufficient. Deliberately does NOT include a custom deep-link field.
 // ---------------------------------------------------------------------------------------
 const FIRST_SEND_NOTIFICATION_TITLE = 'NeuroActive';
 const FIRST_SEND_NOTIFICATION_BODY = 'You have a session reminder.';
@@ -99,8 +137,7 @@ export function buildFirstSendNotificationMessage(installationToken: unknown): R
 
 // ---------------------------------------------------------------------------------------
 // FcmSendOutcome -> DeliverySendOutcomeKind / AttemptOutcomeCategory / httpStatus
-// translation. Pure, directly testable, zero network/Firestore access. Kept as small,
-// independent helpers (not one monolith) so each mapping can be exercised in isolation.
+// translation. Pure, directly testable, zero network/Firestore access.
 // ---------------------------------------------------------------------------------------
 
 export function translateFcmOutcomeToDeliveryOutcome(sendOutcome: FcmSendOutcome): DeliverySendOutcomeKind {
@@ -113,50 +150,55 @@ export function translateFcmOutcomeToDeliveryOutcome(sendOutcome: FcmSendOutcome
 export function classifyAttemptOutcomeCategory(sendOutcome: FcmSendOutcome): AttemptOutcomeCategory {
   if (sendOutcome.kind === 'accepted') return 'accepted';
   if (sendOutcome.kind === 'rejected') return sendOutcome.category;
-  // 'unknown-outcome' and 'request-not-attempted' both collapse to the SAME history
-  // category, exactly mirroring decideSendOutcomeAction's own collapsing of both into the
-  // same terminal 'unknown-outcome' delivery state.
   return 'unknown-outcome';
 }
 
 export function extractAttemptHttpStatus(sendOutcome: FcmSendOutcome): number | null {
   if (sendOutcome.kind === 'accepted') return sendOutcome.httpStatus;
   if (sendOutcome.kind === 'rejected') return sendOutcome.httpStatus;
-  // 'unknown-outcome' and 'request-not-attempted' never carry an httpStatus field at all —
-  // AttemptHistoryEntry requires `null` here for exactly this category.
   return null;
 }
 
 // ---------------------------------------------------------------------------------------
-// POST-SEND FENCED OUTCOME COMMIT.
+// PRIVATE PRODUCTION AUTHORITY — module-scope, NOT exported. Uses ONLY the captured
+// bindings above. No property on this module's compiled exports object can ever be
+// assigned to redirect what these two functions return.
+// ---------------------------------------------------------------------------------------
+
+let cachedDb: FirebaseFirestore.Firestore | null = null;
+
+function getProductionSenderDb(): FirebaseFirestore.Firestore {
+  if (cachedDb === null) {
+    if (capturedGetApps().length === 0) capturedInitializeApp();
+    cachedDb = capturedGetFirestore();
+  }
+  return cachedDb;
+}
+
+let cachedAccessTokenProvider: AccessTokenProvider | null = null;
+
+function getProductionSenderAccessTokenProvider(): AccessTokenProvider {
+  if (cachedAccessTokenProvider === null) {
+    cachedAccessTokenProvider = capturedCreateGoogleAuthAccessTokenProvider();
+  }
+  return cachedAccessTokenProvider;
+}
+
+// ---------------------------------------------------------------------------------------
+// POST-SEND FENCED OUTCOME COMMIT — MODULE-PRIVATE. The ONLY value that may ever reach
+// this function as `sendOutcome` is the actual return value of the immediately preceding
+// `capturedSendFcmOnce` call inside executeControlledSend, below — never a caller-selected
+// literal. Reachable ONLY through executeControlledSend, itself reachable ONLY through
+// processControlledSendCandidate.
 // ---------------------------------------------------------------------------------------
 
 export type SendOutcomeCommitResult =
   | { outcome: 'terminalized'; state: 'accepted-by-fcm' | 'rejected-final' | 'unknown-outcome' }
   | { outcome: 'requeued-for-retry' }
-  // The re-read delivery no longer matches the exact (state==='sending' &&
-  // sendAttemptCount && sendExecutionId) tuple this capability was authorized for — never
-  // writes anything. Not expected to occur in normal automated operation (see the file
-  // header's "DO NOT CLAIM EXACTLY-ONCE DELIVERY" section for why), but the fence must
-  // hold even for a scenario this codebase's own automation does not create.
   | { outcome: 'outcome-fence-mismatch' }
-  // CODEX REPAIR ROUND (Step 3C-4) — replaces the prior, REJECTED 'invalid-delivery'
-  // disposition. By the time this branch is reached, the fence has already proven this is
-  // the authorized 'sending' record for an attempt whose FCM request MAY ALREADY HAVE
-  // BEEN MADE (executeControlledSend calls sendFcmOnce before commitSendOutcome ever
-  // runs). A post-send persistence problem (e.g. the pre-existing attemptHistory this
-  // outcome would append to is itself somehow malformed) must NEVER be recorded as
-  // 'invalid-delivery' — that would destroy the one durable fact this document still
-  // proves: an authorized send may have occurred. This outcome performs ZERO Firestore
-  // mutation and leaves the document in 'sending', unchanged, for operator review — see
-  // commitSendOutcome below.
   | { outcome: 'persistence-failed'; reason: string };
 
-// Exported separately from executeControlledSend (below) so tests can exercise the fence /
-// attempt-history / retry-vs-terminalize logic by injecting a synthetic FcmSendOutcome,
-// without needing to fake the transport layer at all — mirrors fcmTransport.ts's own split
-// between classifyFcmTransportResult (pure) and sendFcmOnce (the network wrapper).
-export async function commitSendOutcome(
+async function commitSendOutcome(
   db: FirebaseFirestore.Firestore,
   capability: DeliverySendCapability,
   sendOutcome: FcmSendOutcome
@@ -170,19 +212,9 @@ export async function commitSendOutcome(
     const snap = await transaction.get(capability.deliveryRef);
     if (!snap.exists) return { outcome: 'outcome-fence-mismatch' };
     const data = snap.data()!;
-    // CODEX REPAIR ROUND (Step 3C-4) — the fence now requires the COMPLETE persisted
-    // active-intent identity (state + sendAttemptCount + sendExecutionId +
-    // sendIntentAtMs), not merely the first two fields. See
-    // reminderDeliveryLogic.ts's isMatchingActiveSendIntent for the full rationale.
     if (!isMatchingActiveSendIntent(data, capability.sendAttemptCount, capability.sendExecutionId, capability.sendIntentAtMs)) {
       return { outcome: 'outcome-fence-mismatch' };
     }
-    // The fence above just proved data.sendIntentAtMs === capability.sendIntentAtMs
-    // exactly — but the attempt-history entry below deliberately uses THIS freshly-read,
-    // persisted value, never capability.sendIntentAtMs directly, as a matter of
-    // provenance discipline: once a transactional read exists, it — not an
-    // earlier-obtained caller value — is the trustworthy source for anything durably
-    // recorded from this point on.
     const persistedSendIntentAtMs = data.sendIntentAtMs as number;
 
     const appendedHistory = appendAttemptHistoryEntry(data.attemptHistory, {
@@ -192,13 +224,6 @@ export async function commitSendOutcome(
       outcomeRecordedAt: Date.now(),
     });
     if (appendedHistory === null) {
-      // CODEX REPAIR ROUND (Step 3C-4) — the pre-existing history (already validated at
-      // authorization time) or the candidate entry this attempt would produce is somehow
-      // malformed. Unlike a pre-send corruption discovery, this document's FCM request may
-      // already have been made — ZERO Firestore mutation occurs here (not even a
-      // quarantine write), and the document is deliberately left in 'sending', exactly as
-      // it was, for operator review. See the SendOutcomeCommitResult 'persistence-failed'
-      // variant's own comment for the full rationale.
       return { outcome: 'persistence-failed', reason: 'invalid-attempt-history-on-outcome' };
     }
 
@@ -214,10 +239,6 @@ export async function commitSendOutcome(
       return { outcome: 'terminalized', state: decision.state };
     }
 
-    // decision.action === 'requeue-retry' — the ONLY authorization surface for this edge
-    // is requireAuthorizedRetryTransition, which recomputes the decision from scratch
-    // rather than trusting `decision` itself (matching this codebase's established
-    // "never trust a caller-supplied pre-computed decision object" convention).
     requireAuthorizedRetryTransition('sending', deliveryOutcome, capability.sendAttemptCount);
     const workAvailableAtMs = computeDeliveryRetryAvailableAtMs(Date.now());
     transaction.update(capability.deliveryRef, {
@@ -225,11 +246,6 @@ export async function commitSendOutcome(
       workState: 'queued',
       workAvailableAt: Timestamp.fromMillis(workAvailableAtMs),
       leaseExpiresAt: null,
-      // sendAttemptCount is deliberately left UNCHANGED — it remains the durable count of
-      // already-authorized intents. sendExecutionId/sendIntentAtMs are cleared: the
-      // previous execution ID is no longer the active attempt identity, and the NEXT
-      // authorized attempt (a future preparing -> sending commit) will receive a fresh
-      // sendExecutionId, never a reused one.
       sendExecutionId: null,
       sendIntentAtMs: null,
       attemptHistory: appendedHistory,
@@ -240,22 +256,91 @@ export async function commitSendOutcome(
 }
 
 // ---------------------------------------------------------------------------------------
-// THE SOLE TRANSPORT CALL SITE.
+// THE SOLE TRANSPORT CALL SITE — MODULE-PRIVATE. Uses ONLY `capturedSendFcmOnce` — never
+// the live `./fcmTransport` module namespace. Its only caller, anywhere, is
+// processControlledSendCandidate below, which invokes it with a capability THAT SAME CALL
+// just received, synchronously, from a fresh finalizeDeliveryAuthorization transaction.
 // ---------------------------------------------------------------------------------------
-
-// `capability` must be consumed IMMEDIATELY and exactly once: `capability.accessToken` and
-// `capability.installationToken` are read here only to build the request and are never
-// retained, logged, or returned by this function. This is the ONLY function in this
-// codebase that calls sendFcmOnce — see the file header.
-export async function executeControlledSend(db: FirebaseFirestore.Firestore, capability: DeliverySendCapability): Promise<SendOutcomeCommitResult> {
+async function executeControlledSend(db: FirebaseFirestore.Firestore, capability: DeliverySendCapability): Promise<SendOutcomeCommitResult> {
   if (REAL_DELIVERY_STAGE === 'disabled') {
     throw new Error('reminderDeliverySender: REAL_DELIVERY_STAGE must not be "disabled" when executeControlledSend is invoked.');
   }
   const message = buildFirstSendNotificationMessage(capability.installationToken);
-  const sendOutcome = await sendFcmOnce({
-    projectId: FCM_PROJECT_ID,
+  const sendOutcome = await capturedSendFcmOnce({
+    projectId: 'neuroactive',
     accessToken: capability.accessToken,
     message,
   });
   return commitSendOutcome(db, capability, sendOutcome);
+}
+
+// ---------------------------------------------------------------------------------------
+// THE SAFE PUBLIC PRODUCTION ENTRY POINT — the ONLY exported way, anywhere in this
+// codebase, to reach the module-private executeControlledSend above.
+//
+// Accepts EXCLUSIVELY inert identity/fence data: `reminderId`, `installationId` (both
+// `unknown`, validated internally), and the caller's own already-obtained processing fence
+// (`expectedProcessingAttemptCount`). It does NOT accept — and cannot be made to accept, by
+// any caller, ever — a Firestore instance, a DocumentReference bound to one, an
+// AccessTokenProvider, a transport function, a DeliverySendCapability, a raw
+// installation/FCM token, a raw OAuth token, a caller-chosen sendExecutionId, a
+// caller-supplied "authorized" boolean, or any rollout/allowlist assertion. `db` and
+// `accessTokenProvider` are resolved EXCLUSIVELY via the private getters above.
+// ---------------------------------------------------------------------------------------
+
+export type SanitizedSendOrchestrationResult =
+  | { outcome: 'oauth-preparation-failed' }
+  | { outcome: 'dry-run-validated' }
+  | { outcome: 'cancelled'; reason: FinalAuthorizationReason }
+  | { outcome: 'invalid-delivery'; reason: string }
+  | { outcome: 'stale-fence'; reason: 'stale-processing-fence' }
+  | { outcome: 'delivery-not-found' }
+  | { outcome: 'terminalized'; state: 'accepted-by-fcm' | 'rejected-final' | 'unknown-outcome' }
+  | { outcome: 'requeued-for-retry' }
+  | { outcome: 'outcome-fence-mismatch' }
+  | { outcome: 'persistence-failed'; reason: string };
+
+// Reconstructs a SanitizedSendOrchestrationResult field-by-field from the real
+// PrepareAndFinalizeResult — NEVER via `{ ...finalization }` or any other spread of the
+// original object, so a future field added to that type (secret-bearing or not) can never
+// ride along unnoticed.
+function sanitizeNonSendingFinalizationOutcome(
+  finalization: Exclude<PrepareAndFinalizeResult, { outcome: 'sending-authorized' }>
+): SanitizedSendOrchestrationResult {
+  switch (finalization.outcome) {
+    case 'oauth-preparation-failed':
+      return { outcome: 'oauth-preparation-failed' };
+    case 'dry-run-validated':
+      return { outcome: 'dry-run-validated' };
+    case 'cancelled':
+      return { outcome: 'cancelled', reason: finalization.reason };
+    case 'invalid-delivery':
+      return { outcome: 'invalid-delivery', reason: finalization.reason };
+    case 'stale-fence':
+      return { outcome: 'stale-fence', reason: finalization.reason };
+    case 'delivery-not-found':
+      return { outcome: 'delivery-not-found' };
+  }
+}
+
+export async function processControlledSendCandidate(
+  reminderId: unknown,
+  installationId: unknown,
+  expectedProcessingAttemptCount: unknown
+): Promise<SanitizedSendOrchestrationResult> {
+  if (!isValidReminderId(reminderId) || !isValidInstallationIdShape(installationId)) {
+    return { outcome: 'delivery-not-found' };
+  }
+  const db = getProductionSenderDb();
+  const accessTokenProvider = getProductionSenderAccessTokenProvider();
+  const deliveryRef = db.doc(`artifacts/${DELIVERY_APP_ID}/reminders/${reminderId}/deliveries/${installationId}`);
+  const finalization = await prepareAndFinalizeDelivery(db, deliveryRef, expectedProcessingAttemptCount, accessTokenProvider);
+  if (finalization.outcome !== 'sending-authorized') {
+    return sanitizeNonSendingFinalizationOutcome(finalization);
+  }
+  // The ONLY place, anywhere in this codebase, where a DeliverySendCapability is ever
+  // handed to the module-private transport function — immediately, synchronously, with the
+  // exact capability this exact call just received from a genuinely fresh authorization.
+  const { capability } = finalization;
+  return executeControlledSend(db, capability);
 }

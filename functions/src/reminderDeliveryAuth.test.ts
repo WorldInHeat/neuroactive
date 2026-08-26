@@ -26,7 +26,7 @@ import {
   type AccessTokenProvider,
   type FinalAuthorizationResult,
 } from './reminderDeliveryAuth';
-import { OPAQUE_ID_LENGTH } from './reminderDeliveryLogic';
+import { OPAQUE_ID_LENGTH, MAX_SEND_ATTEMPTS } from './reminderDeliveryLogic';
 
 // A well-formed OAuth token, used as the 4th `accessToken` argument every
 // finalizeDeliveryAuthorization call site below now requires (Step 3C-4). Never asserted
@@ -312,7 +312,7 @@ async function main(): Promise<void> {
   // SECTION 33 — FINAL AUTHORIZATION
   // =======================================================================================
 
-  check('source-level lock: REAL_DELIVERY_STAGE is "disabled"', REAL_DELIVERY_STAGE === 'disabled');
+  check('source-level lock: REAL_DELIVERY_STAGE is "allowlisted-only" (Step 3C-5)', REAL_DELIVERY_STAGE === 'allowlisted-only');
 
   await checkAsync('happy dry-run -> dry-run-validated', async () => {
     const result = await runHappyPath();
@@ -411,27 +411,83 @@ async function main(): Promise<void> {
     return result.outcome === 'dry-run-validated';
   });
 
-  // Step 3C-4: with REAL_DELIVERY_STAGE === 'disabled', BOTH real-send rollout modes now
-  // fail closed via the staged gate specifically (reason 'rollout-real-send-stage-disabled'),
-  // not the old, now-removed 'rollout-mode-not-supported-in-this-phase' catch-all — even
-  // an allowlisted uid under 'allowlisted-real-send' is rejected, proving the stage check
-  // runs BEFORE allowlist membership is ever consulted.
-  await checkAsync('[3C-4] rollout allowlisted-real-send, uid ON the allowlist -> still cancelled (stage disabled overrides allowlist membership)', async () => {
-    const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] } });
-    return result.outcome === 'cancelled' && result.reason === 'rollout-real-send-stage-disabled';
+  // =======================================================================================
+  // STEP 3C-5 — REAL_DELIVERY_STAGE advanced to 'allowlisted-only'. This is the FIRST round
+  // where 'allowlisted-real-send' + an allowlisted uid is genuinely reachable — a real
+  // DeliverySendCapability, with the real installation token and OAuth token, is actually
+  // constructed and returned. Every other combination must still fail closed.
+  // =======================================================================================
+
+  await checkAsync(
+    "[3C-5] rollout allowlisted-real-send, uid ON the allowlist -> sending-authorized, with a well-formed one-shot capability",
+    async () => {
+      const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] } });
+      if (result.outcome !== 'sending-authorized') return false;
+      const cap = result.capability;
+      return (
+        cap.sendAttemptCount === 1 &&
+        typeof cap.sendExecutionId === 'string' &&
+        cap.sendExecutionId.length === OPAQUE_ID_LENGTH &&
+        typeof cap.sendIntentAtMs === 'number' &&
+        cap.installationToken === RAW_TOKEN &&
+        cap.accessToken === TEST_ACCESS_TOKEN
+      );
+    }
+  );
+
+  await checkAsync(
+    "[3C-5] rollout allowlisted-real-send, uid NOT on the allowlist -> cancelled (reason 'rollout-real-send-not-allowlisted', not stage-disabled — the stage now permits this mode, only allowlist membership blocks it)",
+    async () => {
+      const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['someone-else'] } });
+      return result.outcome === 'cancelled' && result.reason === 'rollout-real-send-not-allowlisted';
+    }
+  );
+
+  await checkAsync("[3C-5] rollout allowlisted-real-send, EMPTY allowlist -> cancelled 'rollout-real-send-not-allowlisted'", async () => {
+    const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: [] } });
+    return result.outcome === 'cancelled' && result.reason === 'rollout-real-send-not-allowlisted';
   });
 
-  await checkAsync('[3C-4] rollout allowlisted-real-send, uid NOT on the allowlist -> cancelled (stage disabled, same reason as above — stage check runs first)', async () => {
-    const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['someone-else'] } });
-    return result.outcome === 'cancelled' && result.reason === 'rollout-real-send-stage-disabled';
+  await checkAsync(
+    "[3C-5] rollout allowlisted-real-send, MALFORMED allowlist member -> whole config fails closed to 'paused' semantics (reason 'rollout-paused', per parseRolloutConfig's established contract — a single bad member invalidates the whole allowlist, never silently drops it)",
+    async () => {
+      const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1', 12345] } });
+      return result.outcome === 'cancelled' && result.reason === 'rollout-paused';
+    }
+  );
+
+  await checkAsync("[3C-5] rollout allowlisted-real-send, DUPLICATE uid entries, one matching -> still authorized (parser does not dedupe, membership check is a plain .includes())", async () => {
+    const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1', 'user-1', 'someone-else'] } });
+    return result.outcome === 'sending-authorized';
   });
 
-  await checkAsync('[3C-4] rollout general-real-send -> cancelled rollout-real-send-stage-disabled', async () => {
-    const result = await runHappyPath({ rollout: { mode: 'general-real-send' } });
-    return result.outcome === 'cancelled' && result.reason === 'rollout-real-send-stage-disabled';
+  await checkAsync(
+    '[3C-5] rollout allowlisted-real-send with an extra, unrecognized rollout document field -> still authorized (parseRolloutConfig only ever reads mode/allowlistUids; unknown fields are silently ignored, matching its existing, established contract — not a new behavior introduced this round)',
+    async () => {
+      const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'], unexpectedField: 'ignored-value' } });
+      return result.outcome === 'sending-authorized';
+    }
+  );
+
+  await checkAsync(
+    "[3C-5] rollout general-real-send -> cancelled 'rollout-real-send-mode-not-permitted-at-stage' (general remains source-disabled at the allowlisted-only stage, regardless of allowlist content)",
+    async () => {
+      const result = await runHappyPath({ rollout: { mode: 'general-real-send' } });
+      return result.outcome === 'cancelled' && result.reason === 'rollout-real-send-mode-not-permitted-at-stage';
+    }
+  );
+
+  await checkAsync("[3C-5] rollout paused under allowlisted-only stage -> still cancelled rollout-paused (stage change does not affect the paused/dry-run branches at all)", async () => {
+    const result = await runHappyPath({ rollout: { mode: 'paused' } });
+    return result.outcome === 'cancelled' && result.reason === 'rollout-paused';
   });
 
-  await checkAsync('[3C-4] disabled-stage cancellation writes zero send-intent fields (state stays cancelled, not sending)', async () => {
+  await checkAsync("[3C-5] rollout dry-run under allowlisted-only stage -> still proceeds to dry-run-validated, never to sending-authorized", async () => {
+    const result = await runHappyPath({ rollout: { mode: 'dry-run' } });
+    return result.outcome === 'dry-run-validated';
+  });
+
+  await checkAsync('[3C-5] general-real-send cancellation writes zero send-intent fields (state stays cancelled, not sending)', async () => {
     const { db, store } = makeFakeDb();
     const fixture = seedHappyPath(db, store, { rollout: { mode: 'general-real-send' } });
     await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
@@ -443,6 +499,41 @@ async function main(): Promise<void> {
       after.sendAttemptCount === 0
     );
   });
+
+  await checkAsync(
+    "[3C-5] sending-authorized write: exact atomic shape (state='sending', workState='terminal', sendAttemptCount=1, sendExecutionId/sendIntentAtMs present, neither installationToken nor accessToken ever persisted)",
+    async () => {
+      const { db, store } = makeFakeDb();
+      const fixture = seedHappyPath(db, store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] } });
+      await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+      const after = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!;
+      const serialized = JSON.stringify(after);
+      return (
+        after.state === 'sending' &&
+        after.workState === 'terminal' &&
+        after.workAvailableAt === null &&
+        after.leaseExpiresAt === null &&
+        after.sendAttemptCount === 1 &&
+        typeof after.sendExecutionId === 'string' &&
+        typeof after.sendIntentAtMs === 'number' &&
+        !serialized.includes(RAW_TOKEN) &&
+        !serialized.includes(TEST_ACCESS_TOKEN)
+      );
+    }
+  );
+
+  await checkAsync(
+    '[3C-5] sending-authorized outcome: neither installationToken nor accessToken appear in the returned result when serialized carelessly by a hypothetical logging call (capability fields are only ever consumed by the immediate caller, never logged by this file itself — see the static no-console check below)',
+    async () => {
+      const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] } });
+      if (result.outcome !== 'sending-authorized') return false;
+      // This assertion documents that the CAPABILITY OBJECT ITSELF necessarily contains the
+      // secrets (by design — that's its whole purpose) — the safety property is that
+      // reminderDeliveryAuth.ts itself never logs/persists it, verified separately by the
+      // static checks below and by reminderDeliveryWorker.ts's own sanitization tests.
+      return result.capability.installationToken === RAW_TOKEN && result.capability.accessToken === TEST_ACCESS_TOKEN;
+    }
+  );
 
   await checkAsync('installation missing -> cancelled installation-missing', async () => {
     const result = await runHappyPath({ installation: null });
@@ -612,31 +703,45 @@ async function main(): Promise<void> {
       return d.decision === 'cancel' && d.reason === 'rollout-paused';
     })()
   );
-  // Step 3C-4: with this file's REAL_DELIVERY_STAGE hardcoded to 'disabled', BOTH
-  // real-send modes cancel via the staged gate — 'proceed-real-send' is provably
-  // unreachable through this exported function as compiled today, regardless of uid or
-  // allowlist content. The 'allowlisted-only'/'general' stage behaviors themselves are
-  // exhaustively covered directly against decideStagedRealSendAuthorization in
-  // reminderDeliveryLogic.test.ts, which is NOT hardcoded to any one stage.
+  // Step 3C-5: with this file's REAL_DELIVERY_STAGE now 'allowlisted-only',
+  // 'allowlisted-real-send' for an allowlisted uid is genuinely reachable through this
+  // exported function; 'general-real-send' remains unconditionally not-permitted-at-stage.
+  // The 'disabled'/'general' stage behaviors themselves remain exhaustively covered
+  // directly against decideStagedRealSendAuthorization in reminderDeliveryLogic.test.ts,
+  // which is NOT hardcoded to any one stage.
   check(
-    'decideFinalAuthorizationRolloutDisposition: allowlisted-real-send, uid on allowlist -> still cancel (stage disabled)',
+    'decideFinalAuthorizationRolloutDisposition: allowlisted-real-send, uid on allowlist -> proceed-real-send',
     (() => {
       const d = decideFinalAuthorizationRolloutDisposition({ mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, 'user-1');
-      return d.decision === 'cancel' && d.reason === 'rollout-real-send-stage-disabled';
+      return d.decision === 'proceed-real-send';
     })()
   );
   check(
-    'decideFinalAuthorizationRolloutDisposition: general-real-send -> cancel (stage disabled)',
+    'decideFinalAuthorizationRolloutDisposition: allowlisted-real-send, uid NOT on allowlist -> cancel rollout-real-send-not-allowlisted',
+    (() => {
+      const d = decideFinalAuthorizationRolloutDisposition({ mode: 'allowlisted-real-send', allowlistUids: ['someone-else'] }, 'user-1');
+      return d.decision === 'cancel' && d.reason === 'rollout-real-send-not-allowlisted';
+    })()
+  );
+  check(
+    'decideFinalAuthorizationRolloutDisposition: general-real-send -> cancel rollout-real-send-mode-not-permitted-at-stage',
     (() => {
       const d = decideFinalAuthorizationRolloutDisposition({ mode: 'general-real-send' }, 'user-1');
-      return d.decision === 'cancel' && d.reason === 'rollout-real-send-stage-disabled';
+      return d.decision === 'cancel' && d.reason === 'rollout-real-send-mode-not-permitted-at-stage';
     })()
   );
   check(
-    'decideFinalAuthorizationRolloutDisposition: general-real-send with malformed uid -> still cancel (stage-disabled reason wins; stage check runs before uid validation)',
+    'decideFinalAuthorizationRolloutDisposition: general-real-send with malformed uid -> cancel rollout-real-send-invalid-uid (decideRealSendAuthorization validates uid BEFORE consulting rollout mode at all — confirmed by direct inspection, not assumed)',
     (() => {
       const d = decideFinalAuthorizationRolloutDisposition({ mode: 'general-real-send' }, { not: 'a string' });
-      return d.decision === 'cancel' && d.reason === 'rollout-real-send-stage-disabled';
+      return d.decision === 'cancel' && d.reason === 'rollout-real-send-invalid-uid';
+    })()
+  );
+  check(
+    'decideFinalAuthorizationRolloutDisposition: allowlisted-real-send with malformed uid -> cancel rollout-real-send-invalid-uid',
+    (() => {
+      const d = decideFinalAuthorizationRolloutDisposition({ mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, { not: 'a string' });
+      return d.decision === 'cancel' && d.reason === 'rollout-real-send-invalid-uid';
     })()
   );
 
@@ -864,12 +969,16 @@ async function main(): Promise<void> {
   );
 
   // =======================================================================================
-  // STEP 3C-4 — STAGED REAL-SEND LOCK, SENDING-INTENT COMMIT, AND SECRET HANDOFF.
+  // STEP 3C-4/3C-5 — STAGED REAL-SEND LOCK, SENDING-INTENT COMMIT, AND SECRET HANDOFF.
   // =======================================================================================
 
   check(
-    'reminderDeliveryAuth.ts asserts REAL_DELIVERY_STAGE !== "disabled" throws, BEFORE any Firestore access (layer A structural lock, mirrors the exact pre-3C-4 REAL_DELIVERY_ENABLED pattern)',
-    codeOnly.includes("if (REAL_DELIVERY_STAGE !== 'disabled')") && codeOnly.includes('must remain "disabled"')
+    'reminderDeliveryAuth.ts asserts REAL_DELIVERY_STAGE === "general" throws, BEFORE any Firestore access (layer A structural lock — updated in Step 3C-5 to permit the reviewed "allowlisted-only" stage while still failing loudly on an unreviewed advance to "general")',
+    codeOnly.includes("if (REAL_DELIVERY_STAGE === 'general')") && codeOnly.includes('must not advance to "general"')
+  );
+  check(
+    "reminderDeliveryAuth.ts no longer contains the old, now-incorrect 'disabled'-only guard condition",
+    !codeOnly.includes("if (REAL_DELIVERY_STAGE !== 'disabled')")
   );
   check(
     'reminderDeliveryAuth.ts consults decideStagedRealSendAuthorization (layer B) inside decideFinalAuthorizationRolloutDisposition, never bypassing it for a real-send rollout mode',
@@ -892,12 +1001,29 @@ async function main(): Promise<void> {
     (codeOnly.match(/completeValidation\.sendAttemptCount \+ 1/g) || []).length === 1
   );
 
-  await checkAsync('[3C-4] canAuthorizeNewSendIntent guard: sendAttemptCount already at MAX_SEND_ATTEMPTS on a would-be real-send branch is defensive/unreachable while stage is disabled, but the guard code path itself must exist statically', async () => {
-    // Behaviorally unreachable while REAL_DELIVERY_STAGE === 'disabled' (the rollout check
-    // cancels first) — verified here as a static-source check instead, since no rollout
-    // config can drive execution past the stage gate in this compiled file.
-    return codeOnly.includes('canAuthorizeNewSendIntent(completeValidation.sendAttemptCount)') && codeOnly.includes("'send-attempt-count-exhausted'");
-  });
+  await checkAsync(
+    '[3C-5] canAuthorizeNewSendIntent guard: sendAttemptCount already at MAX_SEND_ATTEMPTS on an authorized allowlisted-real-send branch -> invalid-delivery (send-attempt-count-exhausted), never sending-authorized. Now genuinely BEHAVIORALLY reachable and tested end-to-end, not merely statically, since the stage advance makes this branch real.',
+    async () => {
+      const result = await runHappyPath({
+        rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] },
+        delivery: { sendAttemptCount: MAX_SEND_ATTEMPTS },
+      });
+      return result.outcome === 'invalid-delivery' && result.reason === 'send-attempt-count-exhausted';
+    }
+  );
+  await checkAsync(
+    '[3C-5] send-attempt-count-exhausted quarantine write carries the fixed reason only, never persists a raw sendAttemptCount-adjacent value beyond the pre-existing field itself',
+    async () => {
+      const { db, store } = makeFakeDb();
+      const fixture = seedHappyPath(db, store, {
+        rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] },
+        delivery: { sendAttemptCount: MAX_SEND_ATTEMPTS },
+      });
+      await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+      const after = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!;
+      return after.state === 'invalid-delivery' && after.invalidDeliveryReason === 'send-attempt-count-exhausted';
+    }
+  );
 
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);

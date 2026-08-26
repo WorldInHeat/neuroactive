@@ -7,8 +7,12 @@
   },
   "main": "lib/index.js",
   "scripts": {
-    "build": "tsc",
+    "clean": "node -e \"require('fs').rmSync('lib', { recursive: true, force: true })\"",
+    "clean:test": "node -e \"require('fs').rmSync('lib-test', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc",
+    "build:test": "npm run clean:test && tsc -p tsconfig.test.json",
     "build:watch": "tsc --watch",
+    "test": "npm run build:test && node --test lib-test/*.test.js",
     "serve": "npm run build && firebase emulators:start --only functions,firestore",
     "deploy": "firebase deploy --only functions"
   },

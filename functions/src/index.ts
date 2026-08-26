@@ -22,11 +22,14 @@ export {
 } from './pushInstallations';
 export { updateNotificationPreferences, refreshNotificationTimezone } from './notificationPreferences';
 export { notificationReminderSchedulerDryRun } from './reminderScheduler';
-// Phase 3A-3 Step 3C-3 — the first deployable delivery-pipeline export. Structurally
-// incapable of sending: see reminderDeliveryWorker.ts's and reminderDeliveryAuth.ts's own
-// headers. The deepest reachable delivery state is 'dry-run-validated'. The name is
-// deliberately explicit about its dry-run-only nature.
-export { notificationReminderDeliveryDryRun } from './reminderDeliveryWorker';
+// Phase 3A-3 Step 3C-3, renamed Step 3C-5 (M1) — the delivery-pipeline export. This function
+// transitively reaches real FCM transport via reminderDeliverySender.ts, but whether a real
+// send is ever authorized depends on the production rollout document (currently
+// `{mode:"paused"}`) and both files' own REAL_DELIVERY_STAGE constants (currently
+// 'allowlisted-only') — see reminderDeliveryWorker.ts's and reminderDeliveryAuth.ts's own
+// headers for the full reachability analysis. The deepest state reachable TODAY, given the
+// current rollout document, is still 'dry-run-validated'.
+export { notificationReminderDeliveryWorker } from './reminderDeliveryWorker';
 
 if (getApps().length === 0) initializeApp();
 const db = getFirestore();

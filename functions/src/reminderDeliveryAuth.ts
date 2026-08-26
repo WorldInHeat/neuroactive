@@ -22,16 +22,18 @@
 // REAL_DELIVERY_STAGE below replaces the prior single boolean REAL_DELIVERY_ENABLED with a
 // three-value staged lock (see reminderDeliveryLogic.ts's RealDeliveryStage/
 // decideStagedRealSendAuthorization). It is a compile-time-visible constant, independent of
-// and never overridden by the Firestore-stored rollout config. For THIS implementation it
-// MUST remain 'disabled': under 'disabled', decideStagedRealSendAuthorization short-circuits
-// to `authorized: false` before even parsing the rollout config, so NO rollout content —
-// 'paused', 'dry-run', 'allowlisted-real-send' with ANY allowlist, or 'general-real-send' —
-// can ever reach the sending-commit branch below. This is layer A of the three-layer
-// enforcement the design review required; layer B is the fresh rollout+uid re-decision
-// inside THIS transaction (immediately below); layer C is reminderDeliverySender.ts's own,
-// independently-declared REAL_DELIVERY_STAGE constant, asserted immediately adjacent to its
-// sole sendFcmOnce call site — a bug or compromise in either file's constant alone cannot
-// flip the other's. This constant may change only in a future, separately-reviewed round.
+// and never overridden by the Firestore-stored rollout config. PHASE 3A-3 STEP 3C-5 —
+// advanced from 'disabled' to 'allowlisted-only': under this stage,
+// decideStagedRealSendAuthorization authorizes ONLY rollout mode 'allowlisted-real-send'
+// for a uid actually present in that document's own allowlistUids array — 'paused',
+// 'dry-run', a non-allowlisted uid under 'allowlisted-real-send', and 'general-real-send'
+// (unconditionally, regardless of allowlist content) all still fail closed, exactly as
+// before. This is layer A of the three-layer enforcement the design review required; layer
+// B is the fresh rollout+uid re-decision inside THIS transaction (immediately below);
+// layer C is reminderDeliverySender.ts's own, independently-declared REAL_DELIVERY_STAGE
+// constant, asserted immediately adjacent to its sole sendFcmOnce call site — a bug or
+// compromise in either file's constant alone cannot flip the other's. This constant may
+// advance to 'general' only in a future, separately-reviewed round.
 //
 // ROLLOUT CONFIG — server-owned, fixed path, Admin-SDK-only (see firestore.rules):
 //   artifacts/{appId}/systemConfig/notificationRollout
@@ -78,9 +80,19 @@ import { classifyEpochSchemaMarker, readFieldPresence, isValidTokenVersion, isVa
 const APP_ID = 'neuroactive-prod';
 
 // See file header — this is a structural phase lock, not a rollout-config-driven decision.
-// MUST remain 'disabled' for this implementation; see the file header's "SOURCE-LEVEL
-// REAL-SEND LOCK" section for the full three-layer enforcement rationale.
-export const REAL_DELIVERY_STAGE: RealDeliveryStage = 'disabled';
+// PHASE 3A-3 STEP 3C-5 — advanced from 'disabled' to 'allowlisted-only'. This is the FIRST
+// stage under which decideStagedRealSendAuthorization can ever return `authorized: true` —
+// but ONLY for rollout mode 'allowlisted-real-send' with the requesting uid present in
+// that rollout document's own allowlistUids array (never 'general-real-send', which stays
+// unconditionally source-disabled at this stage — see
+// reminderDeliveryLogic.ts's decideStagedRealSendAuthorization for the exact mode-vs-stage
+// precedence rule). Production remains completely inert after this change alone: the
+// production rollout document is `{mode:"paused"}` and stays that way independent of this
+// commit — reaching an actual send additionally requires a SEPARATE, later, explicitly
+// authorized rollout mutation to `allowlisted-real-send` with an allowlist naming exactly
+// the intended uid. This constant may advance to 'general' only in a future, separately
+// reviewed round.
+export const REAL_DELIVERY_STAGE: RealDeliveryStage = 'allowlisted-only';
 
 // ---------------------------------------------------------------------------------------
 // Path helpers — duplicated locally per this codebase's established per-file convention
@@ -276,11 +288,13 @@ function mapStagedReasonToFinalAuthReason(
 // non-spinning-paused-disposition requirement). 'dry-run' always proceeds to the existing
 // dry-run path, unconditionally. 'allowlisted-real-send'/'general-real-send' consult
 // decideStagedRealSendAuthorization against THIS file's own REAL_DELIVERY_STAGE constant
-// (layer B of the three-layer enforcement — see the file header) — with
-// REAL_DELIVERY_STAGE === 'disabled' (required for this implementation), that call always
-// returns `authorized: false, reason: 'stage-disabled'` before even inspecting the
-// allowlist, so 'proceed-real-send' is unreachable in production today regardless of what
-// the rollout document contains.
+// (layer B of the three-layer enforcement — see the file header). With
+// REAL_DELIVERY_STAGE === 'allowlisted-only', 'proceed-real-send' is reachable ONLY for
+// rollout mode 'allowlisted-real-send' with deliveryUid present in that document's own
+// allowlistUids — 'general-real-send' still unconditionally returns
+// 'mode-not-permitted-at-current-stage' regardless of allowlist content, and the production
+// rollout document remains `{mode:"paused"}` independent of this source change, so this
+// branch is not reachable in production today without a separate, later rollout mutation.
 export function decideFinalAuthorizationRolloutDisposition(rawRolloutConfig: unknown, deliveryUid: unknown): RolloutDisposition {
   const parsed = parseRolloutConfig(rawRolloutConfig);
   if (parsed.mode === 'paused') return { decision: 'cancel', reason: 'rollout-paused' };
@@ -325,8 +339,11 @@ export type FinalAuthorizationResult =
   // Step 3C-4 addition — every check that would otherwise reach 'dry-run-validated' passed
   // AND the rollout+stage combination authorized a real send. Carries the one-shot
   // capability the immediate caller must hand straight to reminderDeliverySender.ts. With
-  // REAL_DELIVERY_STAGE === 'disabled' (required for this implementation), this branch is
-  // unreachable in production today — see decideFinalAuthorizationRolloutDisposition.
+  // REAL_DELIVERY_STAGE === 'allowlisted-only' (Step 3C-5), this branch is reachable ONLY
+  // for rollout mode 'allowlisted-real-send' with an allowlisted uid — the production
+  // rollout document remains `{mode:"paused"}` independent of this source change, so this
+  // branch is not reachable in production today without a separate rollout mutation — see
+  // decideFinalAuthorizationRolloutDisposition.
   | { outcome: 'sending-authorized'; capability: DeliverySendCapability };
 
 // `expectedProcessingAttemptCount` is the fence the caller obtained from its own
@@ -373,11 +390,15 @@ function finalizeDeliveryAuthorizationInner(
 ): Promise<FinalAuthorizationResult> {
   // Structural lock (see file header) — asserted unconditionally, before any Firestore
   // access, independent of whatever decideFinalAuthorizationRolloutDisposition below would
-  // otherwise decide. A future accidental flip of this constant without also implementing
-  // a reviewed real-send rollout fails loudly here rather than silently authorizing sends.
-  if (REAL_DELIVERY_STAGE !== 'disabled') {
+  // otherwise decide. PHASE 3A-3 STEP 3C-5 — this round's review explicitly covers
+  // 'disabled' AND 'allowlisted-only' (both fully implemented and tested); only 'general'
+  // remains unreviewed. A future accidental advance to 'general' without a separately
+  // reviewed round fails loudly here rather than silently authorizing unrestricted sends —
+  // this is the same "fail loudly, not silently" philosophy the original guard used, just
+  // updated to reflect what THIS round actually reviewed and approved.
+  if (REAL_DELIVERY_STAGE === 'general') {
     throw new Error(
-      'reminderDeliveryAuth: REAL_DELIVERY_STAGE must remain "disabled" until a separately-reviewed round explicitly arms real sends.'
+      'reminderDeliveryAuth: REAL_DELIVERY_STAGE must not advance to "general" until a separately-reviewed round explicitly arms unrestricted real sends.'
     );
   }
 

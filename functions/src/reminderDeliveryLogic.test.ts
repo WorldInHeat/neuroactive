@@ -1395,5 +1395,84 @@ check('[3C-4] computeDeliveryRetryAvailableAtMs throws on malformed nowMs (negat
 check('[3C-4] computeDeliveryRetryAvailableAtMs throws on malformed nowMs (non-integer)', throws(() => computeDeliveryRetryAvailableAtMs(1.5)));
 check('[3C-4] computeDeliveryRetryAvailableAtMs throws on overflow (nowMs near MAX_SAFE_INTEGER)', throws(() => computeDeliveryRetryAvailableAtMs(Number.MAX_SAFE_INTEGER)));
 
+// =========================================================================
+// PHASE 3A-3 STEP 3C-5 — TWO-LOCK FAILURE MATRIX.
+//
+// reminderDeliveryAuth.ts and reminderDeliverySender.ts each declare their OWN,
+// independent REAL_DELIVERY_STAGE constant — deliberately never a shared value — so
+// neither file alone can ever unlock a real send. Both compiled files are currently
+// 'allowlisted-only', so the actual combined behavior of the deployed pair cannot be
+// re-tested by literally flipping either file's constant here. What CAN be, and is, tested
+// exhaustively: (a) the AUTH side's decision, via decideStagedRealSendAuthorization, which
+// IS fully stage-parameterized and is the exact function reminderDeliveryAuth.ts consults
+// for its own stage; and (b) the SENDER side's guard, which is a single, trivial boolean
+// condition (`stage === 'disabled'` throws, anything else proceeds) — modeled here
+// directly rather than by invoking either real file, since reminderDeliverySender.ts's own
+// guard cannot safely be exercised behaviorally without reaching the network (see
+// reminderDeliverySender.test.ts's own header for why). Combining the two independently
+// proves all four quadrants of the matrix without ever weakening or bypassing either
+// file's actual, separately-declared lock.
+// =========================================================================
+console.log('\n=== [3C-5] two-lock failure matrix ===');
+
+function senderWouldReachTransport(senderStage: RealDeliveryStage): boolean {
+  // Mirrors reminderDeliverySender.ts's executeControlledSend guard EXACTLY:
+  // `if (REAL_DELIVERY_STAGE === 'disabled') throw;` — anything else proceeds toward
+  // sendFcmOnce. Modeled here as a pure boolean, never by calling the real function.
+  return senderStage !== 'disabled';
+}
+
+function authWouldAuthorize(authStage: RealDeliveryStage): boolean {
+  const d = decideStagedRealSendAuthorization(authStage, { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, 'user-1');
+  return d.authorized;
+}
+
+function canRealSendOccur(authStage: RealDeliveryStage, senderStage: RealDeliveryStage): boolean {
+  // A real send requires BOTH: AUTH authorizes (constructs and returns a capability) AND
+  // SENDER's own guard does not refuse to consume it.
+  return authWouldAuthorize(authStage) && senderWouldReachTransport(senderStage);
+}
+
+check(
+  "[3C-5 two-lock] AUTH disabled / SENDER disabled -> no send (both locks closed)",
+  canRealSendOccur('disabled', 'disabled') === false
+);
+check(
+  "[3C-5 two-lock] AUTH allowlisted-only / SENDER disabled -> no send (AUTH would authorize and construct a capability, but SENDER refuses to consume it — the capability is simply never handed to a reachable transport)",
+  authWouldAuthorize('allowlisted-only') === true && canRealSendOccur('allowlisted-only', 'disabled') === false
+);
+check(
+  "[3C-5 two-lock] AUTH disabled / SENDER allowlisted-only -> no send (AUTH never constructs a capability at all — SENDER's own permissiveness is irrelevant since it has nothing to consume)",
+  authWouldAuthorize('disabled') === false && canRealSendOccur('disabled', 'allowlisted-only') === false
+);
+check(
+  "[3C-5 two-lock] AUTH allowlisted-only / SENDER allowlisted-only -> send reachable ONLY after every authorization condition (rollout mode + allowlist membership) independently passes — this is the actual currently-compiled combination",
+  canRealSendOccur('allowlisted-only', 'allowlisted-only') === true
+);
+check(
+  "[3C-5 two-lock] AUTH allowlisted-only / SENDER allowlisted-only, but uid NOT allowlisted -> still no send (the matrix alone is not sufficient; allowlist membership is a THIRD independent condition)",
+  (() => {
+    const d = decideStagedRealSendAuthorization('allowlisted-only', { mode: 'allowlisted-real-send', allowlistUids: ['someone-else'] }, 'user-1');
+    return d.authorized === false && senderWouldReachTransport('allowlisted-only') === true; // sender WOULD proceed if handed a capability — but AUTH never hands it one.
+  })()
+);
+check(
+  "[3C-5 two-lock] AUTH general / SENDER general -> still requires decideStagedRealSendAuthorization's own mode-vs-stage check to pass for general-real-send specifically (not modeled as automatically true just because both stages match)",
+  (() => {
+    const d = decideStagedRealSendAuthorization('general', { mode: 'general-real-send' }, 'user-1');
+    return d.authorized === true && canRealSendOccur('general', 'general') === true;
+  })()
+);
+check(
+  "[3C-5 two-lock] AUTH allowlisted-only / SENDER general -> AUTH still refuses general-real-send regardless of how permissive SENDER's own stage is (mode-vs-stage precedence is enforced entirely on the AUTH side; SENDER's own permissiveness is irrelevant since AUTH never hands it a capability)",
+  (() => {
+    const d = decideStagedRealSendAuthorization('allowlisted-only', { mode: 'general-real-send' }, 'user-1');
+    // senderWouldReachTransport('general') is true (SENDER's guard only blocks 'disabled')
+    // — but that's moot, since AUTH itself refuses to authorize under general-real-send at
+    // the allowlisted-only stage, so no capability is ever constructed for SENDER to reach.
+    return d.authorized === false && senderWouldReachTransport('general') === true;
+  })()
+);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

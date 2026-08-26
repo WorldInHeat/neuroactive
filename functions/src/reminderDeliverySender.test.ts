@@ -1,27 +1,44 @@
 // functions/src/reminderDeliverySender.test.ts
-// Phase 3A-3 Step 3C-4 — repository-local test file for the sole FCM transport call site.
+// Phase 3A-3 Step 3C-5 — repository-local test file for the sole FCM transport call site and
+// its safe orchestration entry point, reminderDeliverySender.ts.
 //
-// EMULATOR STATUS: no Firestore emulator available (same as every other test file in this
-// codebase's delivery pipeline) — this file drives the real, unmodified commitSendOutcome/
-// executeControlledSend functions against a small, deterministic, in-memory fake
-// implementing only the document-get/transaction-update subset of `firebase-admin/
-// firestore` these functions actually call.
+// CODEX BUILD-TIME AUTHORITY SEPARATION REPAIR (SIXTH round, SECOND pass) — there is no
+// longer a separate "reminderDeliverySenderCore.ts" anywhere in this codebase (see
+// reminderDeliverySender.ts's own header for why the earlier separate-core-file design was
+// abandoned: `tsc` emits any file an included file imports, `exclude` notwithstanding — so a
+// separately importable, parameterized orchestration function could never actually be kept
+// out of the deployed artifact while still being invoked by production). The full algorithm
+// now lives, module-private, inside reminderDeliverySender.ts itself, behind a single
+// zero-authority-parameter export, processControlledSendCandidate(reminderId, installationId,
+// expectedProcessingAttemptCount), which privately resolves its own db/OAuth/transport
+// authority from IMMUTABLY-CAPTURED module state.
 //
-// TESTING STRATEGY FOR A STRUCTURALLY-LOCKED FILE: REAL_DELIVERY_STAGE is a genuine,
-// hardcoded 'disabled' constant (not a test-injectable parameter, by design — see the
-// source file's header). executeControlledSend is therefore provably unreachable past its
-// own guard in this compiled file, and is tested for exactly that (it must throw, always,
-// before ever touching the network). commitSendOutcome, by contrast, is NOT
-// stage-gated at all (only the transport call site is) — it is fully reachable and is
-// where the bulk of the adversarial fencing/retry/history coverage below lives, driven by
-// directly-constructed DeliverySendCapability objects (bypassing the — separately,
-// exhaustively tested elsewhere — authorization boundary entirely, since commitSendOutcome
-// does not care how a capability was obtained, only whether the document it names still
-// matches it).
+// HOW THIS FILE STILL DRIVES THE REAL PRODUCTION CODE WITH FAKE DEPENDENCIES (not a
+// reimplementation): Node's `require()` cache means a module's top-level code — including
+// reminderDeliverySender.ts's own IMMUTABLE CAPTURE block — runs exactly once per resolved
+// module id, the first time it is required in a process. `loadFreshSenderModule()` below
+// exploits this deliberately: it mutates `firebase-admin/app`'s / `firebase-admin/
+// firestore`'s / `./reminderDeliveryAuth`'s / `./fcmTransport`'s own exported properties to
+// fakes, clears `require.cache[require.resolve('./reminderDeliverySender')]` (forcing the
+// next require to re-evaluate the module from scratch against whatever those dependencies
+// currently export), requires it fresh — capturing the fakes into THAT ONE module instance's
+// local consts — and immediately restores the real exports afterward (the fresh instance's
+// captured consts are unaffected by that restoration; capture already happened). This is
+// squarely the case Codex's own instruction (section 9, this round) carves out of the threat
+// model: "a test controlling its own require order before first exercising the module" is not
+// "an ordinary future production import/caller." No production module's exports are ever left
+// mutated for longer than the single synchronous require() call that needs them.
+//
+// This file also separately verifies, via compiled-output/source inspection, that:
+// reminderDeliverySender.js is the ONLY compiled module exporting the transport-capable entry
+// point; that entry point's real runtime arity leaves no parameter slot for a fake
+// db/provider/transport; the 5 dependency functions are captured into plain top-level consts
+// exactly once each and never re-read; and the deleted core files are genuinely absent from
+// both the source tree and node's module resolution.
 //
 // HOW TO RUN:
 //   cd functions
-//   npm run build
+//   npm run build:test
 //   node lib/reminderDeliverySender.test.js
 import * as fs from 'fs';
 import * as path from 'path';
@@ -31,13 +48,13 @@ import {
   translateFcmOutcomeToDeliveryOutcome,
   classifyAttemptOutcomeCategory,
   extractAttemptHttpStatus,
-  commitSendOutcome,
-  executeControlledSend,
   REAL_DELIVERY_STAGE,
 } from './reminderDeliverySender';
-import type { FcmSendOutcome } from './fcmTransport';
-import type { DeliverySendCapability } from './reminderDeliveryAuth';
+import type * as SenderModule from './reminderDeliverySender';
+import type { FcmSendOutcome, SendFcmOnceParams } from './fcmTransport';
+import type { AccessTokenProvider } from './reminderDeliveryAuth';
 import { OPAQUE_ID_LENGTH, MAX_SEND_ATTEMPTS, DELIVERY_RETRY_BACKOFF_MS } from './reminderDeliveryLogic';
+import { createHash } from 'node:crypto';
 
 let pass = 0;
 let fail = 0;
@@ -69,8 +86,8 @@ function stripComments(source: string): string {
 }
 
 // =========================================================================================
-// FAKE FIRESTORE — same minimal document get/update/transaction pattern already
-// established in reminderDeliveryAuth.test.ts / reminderDeliveryWorker.test.ts.
+// FAKE FIRESTORE — same minimal document get/update/transaction pattern already established
+// in reminderDeliveryAuth.test.ts / reminderDeliveryWorker.test.ts.
 // =========================================================================================
 
 type StoredDoc = Record<string, unknown>;
@@ -84,10 +101,25 @@ function resolveFieldValues(data: Record<string, unknown>): StoredDoc {
   return result;
 }
 
+class FakeCollectionRef {
+  constructor(public readonly path: string) {}
+  get parent(): FakeDocumentRef | null {
+    const segs = this.path.split('/');
+    segs.pop();
+    if (segs.length === 0) return null;
+    return new FakeDocumentRef(segs.join('/'));
+  }
+}
+
 class FakeDocumentRef {
   readonly id: string;
   constructor(public readonly path: string) {
     this.id = path.split('/').pop() as string;
+  }
+  get parent(): FakeCollectionRef {
+    const segs = this.path.split('/');
+    segs.pop();
+    return new FakeCollectionRef(segs.join('/'));
   }
 }
 
@@ -147,44 +179,164 @@ function readDoc(store: Store, docPath: string): StoredDoc | undefined {
 }
 
 // =========================================================================================
+// REQUIRE-CACHE-BUSTING LOADER — see file header. Mutates the 4 dependency modules' exports
+// to fakes, forces a fresh evaluation of reminderDeliverySender.ts (capturing the fakes),
+// then restores the real exports immediately. Every scenario below that needs to reach
+// (fake) transport calls this to get its OWN fresh module instance — each with its own
+// private `cachedDb`/`cachedAccessTokenProvider`, so scenarios never leak state into
+// each other.
+// =========================================================================================
+
+type FcmTransportFn = (params: SendFcmOnceParams) => Promise<FcmSendOutcome>;
+
+interface DependencyFakes {
+  db: FirebaseFirestore.Firestore;
+  accessTokenProvider: AccessTokenProvider;
+  transport: FcmTransportFn;
+}
+
+// firebase-admin's own named exports (getApps/initializeApp) are getter-only accessor
+// properties (ESM/CJS interop), not plain writable values like our own compiled modules'
+// exports — a bare `mod.prop = fake` assignment throws against a getter-only property.
+// Object.defineProperty works uniformly against both shapes and lets the original descriptor
+// (accessor or data) be restored exactly.
+function setExport(mod: object, key: string, value: unknown): PropertyDescriptor | undefined {
+  const original = Object.getOwnPropertyDescriptor(mod, key);
+  Object.defineProperty(mod, key, { value, writable: true, configurable: true, enumerable: true });
+  return original;
+}
+function restoreExport(mod: object, key: string, original: PropertyDescriptor | undefined): void {
+  if (original) Object.defineProperty(mod, key, original);
+}
+
+function loadFreshSenderModule(fakes: DependencyFakes): typeof SenderModule {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const appMod = require('firebase-admin/app') as object;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const firestoreMod = require('firebase-admin/firestore') as object;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const authMod = require('./reminderDeliveryAuth') as object;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const transportMod = require('./fcmTransport') as object;
+
+  const originals = {
+    getApps: setExport(appMod, 'getApps', () => []),
+    initializeApp: setExport(appMod, 'initializeApp', () => undefined),
+    getFirestore: setExport(firestoreMod, 'getFirestore', () => fakes.db),
+    createGoogleAuthAccessTokenProvider: setExport(authMod, 'createGoogleAuthAccessTokenProvider', () => fakes.accessTokenProvider),
+    sendFcmOnce: setExport(transportMod, 'sendFcmOnce', fakes.transport),
+  };
+
+  try {
+    const resolved = require.resolve('./reminderDeliverySender');
+    delete require.cache[resolved];
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require('./reminderDeliverySender') as typeof SenderModule;
+  } finally {
+    restoreExport(appMod, 'getApps', originals.getApps);
+    restoreExport(appMod, 'initializeApp', originals.initializeApp);
+    restoreExport(firestoreMod, 'getFirestore', originals.getFirestore);
+    restoreExport(authMod, 'createGoogleAuthAccessTokenProvider', originals.createGoogleAuthAccessTokenProvider);
+    restoreExport(transportMod, 'sendFcmOnce', originals.sendFcmOnce);
+  }
+}
+
+// =========================================================================================
 // FIXTURES
 // =========================================================================================
 
-const DELIVERY_PATH = 'artifacts/neuroactive-prod/reminders/user-1_1000/deliveries/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-const VALID_EXECUTION_ID = 'F'.repeat(OPAQUE_ID_LENGTH);
 const OTHER_EXECUTION_ID = 'G'.repeat(OPAQUE_ID_LENGTH);
-const RAW_INSTALLATION_TOKEN = 'raw-fcm-token-should-never-persist-or-log';
 const RAW_ACCESS_TOKEN = 'ya29.raw-oauth-token-should-never-persist-or-log';
+const okAccessTokenProvider: AccessTokenProvider = async () => RAW_ACCESS_TOKEN;
 
-function seedActiveSendIntent(
-  store: Store,
-  overrides: Record<string, unknown> = {}
-): void {
-  seedDoc(store, DELIVERY_PATH, {
-    state: 'sending',
-    workState: 'terminal',
-    workAvailableAt: null,
-    leaseExpiresAt: null,
-    uid: 'user-1',
-    installationId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    sendAttemptCount: 1,
-    sendExecutionId: VALID_EXECUTION_ID,
-    sendIntentAtMs: 1700000000000,
-    attemptHistory: [],
-    ...overrides,
-  });
+const ORCH_UID = 'user-1';
+const ORCH_REMINDER_ID = `${ORCH_UID}_2000`;
+const ORCH_INSTALLATION_ID = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const ORCH_FANOUT_EXECUTION_ID = 'H'.repeat(OPAQUE_ID_LENGTH);
+const ORCH_DELIVERY_PATH = `artifacts/neuroactive-prod/reminders/${ORCH_REMINDER_ID}/deliveries/${ORCH_INSTALLATION_ID}`;
+const ORCH_RAW_TOKEN = 'raw-fcm-token-orchestration-should-never-persist-or-log';
+
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
 }
 
-function makeCapability(db: FirebaseFirestore.Firestore, overrides: Partial<DeliverySendCapability> = {}): DeliverySendCapability {
-  return {
-    deliveryRef: db.doc(DELIVERY_PATH),
-    sendAttemptCount: 1,
-    sendExecutionId: VALID_EXECUTION_ID,
-    sendIntentAtMs: 1700000000000,
-    installationToken: RAW_INSTALLATION_TOKEN,
-    accessToken: RAW_ACCESS_TOKEN,
-    ...overrides,
-  };
+interface OrchestrationFixtureOverrides {
+  reminder?: Record<string, unknown> | null;
+  delivery?: Record<string, unknown>;
+  preference?: Record<string, unknown> | null;
+  rollout?: Record<string, unknown>;
+  installation?: Record<string, unknown> | null;
+  tokenClaim?: Record<string, unknown> | null;
+}
+
+function seedOrchestrationPreparingFixture(store: Store, overrides: OrchestrationFixtureOverrides): void {
+  if (overrides.reminder !== null) {
+    seedDoc(store, `artifacts/neuroactive-prod/reminders/${ORCH_REMINDER_ID}`, {
+      uid: ORCH_UID,
+      status: 'delivery-fanned-out',
+      deliveryFanoutState: 'completed',
+      targetInstallationCountAtFanout: 1,
+      excludedMalformedInstallationCount: 0,
+      fanoutExecutionId: ORCH_FANOUT_EXECUTION_ID,
+      workState: 'terminal',
+      workAvailableAt: null,
+      leaseExpiresAt: null,
+      attemptCount: 1,
+      preferenceRevisionAtClaim: 1,
+      scheduleTypeAtClaim: 'daily',
+      weekdaysAtClaim: [0, 1, 2, 3, 4, 5, 6],
+      localTimeAtClaim: '07:00',
+      timezoneAtClaim: 'UTC',
+      ...overrides.reminder,
+    });
+  }
+  const preparingLeaseMs = Date.now() + 5 * 60 * 1000;
+  seedDoc(store, ORCH_DELIVERY_PATH, {
+    state: 'preparing',
+    workState: 'queued',
+    workAvailableAt: Timestamp.fromMillis(preparingLeaseMs),
+    leaseExpiresAt: Timestamp.fromMillis(preparingLeaseMs),
+    uid: ORCH_UID,
+    installationId: ORCH_INSTALLATION_ID,
+    deliveryPublicId: 'A'.repeat(OPAQUE_ID_LENGTH),
+    fanoutExecutionIdAtCreation: ORCH_FANOUT_EXECUTION_ID,
+    sendAttemptCount: 0,
+    processingAttemptCount: 1,
+    attemptHistory: [],
+    targetSnapshot: { generation: 1, tokenVersion: 1, installationAudienceId: 'A'.repeat(16) },
+    ...overrides.delivery,
+  });
+  if (overrides.preference !== null) {
+    seedDoc(store, `artifacts/neuroactive-prod/users/${ORCH_UID}/notificationPreferences/main`, {
+      enabled: true,
+      revision: 1,
+      scheduleType: 'daily',
+      weekdays: [0, 1, 2, 3, 4, 5, 6],
+      localTime: '07:00',
+      timezone: 'UTC',
+      ...overrides.preference,
+    });
+  }
+  seedDoc(store, 'artifacts/neuroactive-prod/systemConfig/notificationRollout', overrides.rollout ?? { mode: 'paused' });
+  if (overrides.installation !== null) {
+    seedDoc(store, `artifacts/neuroactive-prod/pushInstallations/${ORCH_INSTALLATION_ID}`, {
+      uid: ORCH_UID,
+      state: 'active',
+      epochSchemaVersion: 1,
+      tokenVersion: 1,
+      installationAudienceId: 'A'.repeat(16),
+      generation: 1,
+      token: ORCH_RAW_TOKEN,
+      ...overrides.installation,
+    });
+  }
+  if (overrides.tokenClaim !== null) {
+    seedDoc(store, `artifacts/neuroactive-prod/pushTokenClaims/${sha256Hex(ORCH_RAW_TOKEN)}`, {
+      installationId: ORCH_INSTALLATION_ID,
+      uid: ORCH_UID,
+      ...overrides.tokenClaim,
+    });
+  }
 }
 
 const ACCEPTED_OUTCOME: FcmSendOutcome = { kind: 'accepted', httpStatus: 200, messageName: 'projects/neuroactive/messages/abc123' };
@@ -200,6 +352,20 @@ const UNKNOWN_5XX: FcmSendOutcome = { kind: 'unknown-outcome', reason: 'ambiguou
 const UNKNOWN_MALFORMED: FcmSendOutcome = { kind: 'unknown-outcome', reason: 'malformed-response' };
 const NOT_ATTEMPTED: FcmSendOutcome = { kind: 'request-not-attempted', reason: 'wrong-project' };
 
+function fakeTransport(impl: (params: SendFcmOnceParams) => Promise<FcmSendOutcome>): { transport: FcmTransportFn; callCount: () => number } {
+  let calls = 0;
+  const transport: FcmTransportFn = async (params) => {
+    calls++;
+    return impl(params);
+  };
+  return { transport, callCount: () => calls };
+}
+
+// Convenience: builds a fresh module instance wired to a fake db/transport for one call.
+function freshSenderFor(db: FirebaseFirestore.Firestore, transport: FcmTransportFn): typeof SenderModule {
+  return loadFreshSenderModule({ db, accessTokenProvider: okAccessTokenProvider, transport });
+}
+
 async function main(): Promise<void> {
   const srcDir = path.join(__dirname, '..', 'src');
   const senderSourcePath = path.join(srcDir, 'reminderDeliverySender.ts');
@@ -207,27 +373,29 @@ async function main(): Promise<void> {
   const senderCodeOnly = stripComments(senderSource);
 
   // =======================================================================================
-  // buildFirstSendNotificationMessage — fixed schema, pure.
+  // buildFirstSendNotificationMessage — fixed schema, pure. Driven through the vanilla,
+  // ONE-TIME top-level import: these helpers never touch Firestore/OAuth/transport, so the
+  // real (never-invoked-for-orchestration) module instance is safe to use directly.
   // =======================================================================================
   console.log('\n=== buildFirstSendNotificationMessage ===');
 
-  check('[3C-4] valid token -> message carries the exact token and a notification object', (() => {
+  check('valid token -> message carries the exact token and a notification object', (() => {
     const msg = buildFirstSendNotificationMessage('some-token');
     return msg.token === 'some-token' && typeof msg.notification === 'object' && msg.notification !== null;
   })());
   check(
-    '[3C-4] message notification has fixed, nonempty title/body (compatible with the existing SW auto-display path)',
+    'message notification has fixed, nonempty title/body (compatible with the existing SW auto-display path)',
     (() => {
       const msg = buildFirstSendNotificationMessage('some-token');
       const notification = msg.notification as { title: string; body: string };
       return typeof notification.title === 'string' && notification.title.length > 0 && typeof notification.body === 'string' && notification.body.length > 0;
     })()
   );
-  check('[3C-4] message contains no other top-level keys beyond token/notification', (() => {
+  check('message contains no other top-level keys beyond token/notification', (() => {
     const msg = buildFirstSendNotificationMessage('some-token');
     return JSON.stringify(Object.keys(msg).sort()) === JSON.stringify(['notification', 'token']);
   })());
-  check('[3C-4] empty-string token throws', (() => {
+  check('empty-string token throws', (() => {
     try {
       buildFirstSendNotificationMessage('');
       return false;
@@ -235,7 +403,7 @@ async function main(): Promise<void> {
       return true;
     }
   })());
-  check('[3C-4] non-string token throws', (() => {
+  check('non-string token throws', (() => {
     try {
       buildFirstSendNotificationMessage(12345);
       return false;
@@ -243,7 +411,7 @@ async function main(): Promise<void> {
       return true;
     }
   })());
-  check('[3C-4] two calls with different tokens never share a message object reference', (() => {
+  check('two calls with different tokens never share a message object reference', (() => {
     const a = buildFirstSendNotificationMessage('token-a');
     const b = buildFirstSendNotificationMessage('token-b');
     return a !== b && a.token !== b.token;
@@ -254,7 +422,7 @@ async function main(): Promise<void> {
   // =======================================================================================
   console.log('\n=== translateFcmOutcomeToDeliveryOutcome / classifyAttemptOutcomeCategory / extractAttemptHttpStatus ===');
 
-  check('[3C-4] accepted -> DeliverySendOutcomeKind accepted, category accepted, httpStatus 200', (() => {
+  check('accepted -> DeliverySendOutcomeKind accepted, category accepted, httpStatus 200', (() => {
     const d = translateFcmOutcomeToDeliveryOutcome(ACCEPTED_OUTCOME);
     return d.kind === 'accepted' && classifyAttemptOutcomeCategory(ACCEPTED_OUTCOME) === 'accepted' && extractAttemptHttpStatus(ACCEPTED_OUTCOME) === 200;
   })());
@@ -268,7 +436,7 @@ async function main(): Promise<void> {
     [REJECTED_RETRYABLE, 'retryable-later', 429],
   ];
   for (const [outcome, expectedCategory, expectedStatus] of rejectionCases) {
-    check(`[3C-4] rejected/${expectedCategory} translates+classifies+extracts correctly`, (() => {
+    check(`rejected/${expectedCategory} translates+classifies+extracts correctly`, (() => {
       const d = translateFcmOutcomeToDeliveryOutcome(outcome);
       return (
         d.kind === 'rejected' &&
@@ -280,26 +448,266 @@ async function main(): Promise<void> {
   }
 
   for (const outcome of [UNKNOWN_TIMEOUT, UNKNOWN_NETWORK, UNKNOWN_5XX, UNKNOWN_MALFORMED, NOT_ATTEMPTED]) {
-    check(`[3C-4] ${outcome.kind} (${'reason' in outcome ? outcome.reason : ''}) -> DeliverySendOutcomeKind ${outcome.kind}, history category 'unknown-outcome', httpStatus null`, (() => {
+    check(`${outcome.kind} (${'reason' in outcome ? outcome.reason : ''}) -> DeliverySendOutcomeKind ${outcome.kind}, history category 'unknown-outcome', httpStatus null`, (() => {
       const d = translateFcmOutcomeToDeliveryOutcome(outcome);
       return d.kind === outcome.kind && classifyAttemptOutcomeCategory(outcome) === 'unknown-outcome' && extractAttemptHttpStatus(outcome) === null;
     })());
   }
 
   // =======================================================================================
-  // commitSendOutcome — the fenced post-send transaction. The bulk of the adversarial
-  // coverage lives here.
+  // COMPILED EXPORT-SURFACE AUDIT — single-file production module. No separate core file
+  // exists anywhere; this checks the ONE compiled module's real export surface.
   // =======================================================================================
-  console.log('\n=== commitSendOutcome ===');
+  console.log('\n=== compiled export-surface audit ===');
 
-  await checkAsync('[3C-4] accepted -> terminalized accepted-by-fcm, attemptHistory has exactly 1 entry with category accepted', async () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const compiledWrapperExports = require('./reminderDeliverySender') as Record<string, unknown>;
+  const compiledWrapperExportNames = Object.keys(compiledWrapperExports).sort();
+
+  check(
+    "compiled lib/reminderDeliverySender.js exports 'processControlledSendCandidate' as a function with EXACTLY 3 runtime parameters (reminderId, installationId, expectedProcessingAttemptCount) — no db, no provider, no transport parameter slot",
+    typeof compiledWrapperExports.processControlledSendCandidate === 'function' &&
+      (compiledWrapperExports.processControlledSendCandidate as (...args: unknown[]) => unknown).length === 3
+  );
+  const expectedWrapperExportNames = [
+    'REAL_DELIVERY_STAGE',
+    'buildFirstSendNotificationMessage',
+    'classifyAttemptOutcomeCategory',
+    'extractAttemptHttpStatus',
+    'processControlledSendCandidate',
+    'translateFcmOutcomeToDeliveryOutcome',
+  ].sort();
+  check(
+    `compiled lib/reminderDeliverySender.js exports EXACTLY the expected runtime surface — actual [${compiledWrapperExportNames.join(', ')}]`,
+    JSON.stringify(compiledWrapperExportNames) === JSON.stringify(expectedWrapperExportNames)
+  );
+  check(
+    "compiled lib/reminderDeliverySender.js does NOT export 'commitSendOutcome', 'executeControlledSend', 'getProductionSenderDb', or 'getProductionSenderAccessTokenProvider' — all four remain module-private post-compilation",
+    ['commitSendOutcome', 'executeControlledSend', 'getProductionSenderDb', 'getProductionSenderAccessTokenProvider'].every(
+      (n) => !Object.prototype.hasOwnProperty.call(compiledWrapperExports, n)
+    )
+  );
+  check("REAL_DELIVERY_STAGE is 'allowlisted-only'", REAL_DELIVERY_STAGE === 'allowlisted-only');
+  check("REAL_DELIVERY_STAGE !== 'general' — this round's review covers only 'allowlisted-only'", (REAL_DELIVERY_STAGE as string) !== 'general');
+
+  // =======================================================================================
+  // DIRECT-REQUIRE ATTACK TEST — the FIFTH round's core files no longer exist anywhere in
+  // the source tree at all (not merely excluded from the production tsconfig). Confirms this
+  // structurally: node's own module resolution must fail with MODULE_NOT_FOUND, and the
+  // directory/files themselves are absent from both src/ and the compiled test build.
+  // =======================================================================================
+  console.log('\n=== direct-require attack test (deleted core files) ===');
+
+  check('src/testsupport/ directory does not exist', !fs.existsSync(path.join(srcDir, 'testsupport')));
+  for (const modName of ['./testsupport/reminderDeliverySenderCore', './testsupport/reminderDeliveryWorkerCore']) {
+    check(`require('${modName}') throws MODULE_NOT_FOUND`, (() => {
+      try {
+        require(modName);
+        return false;
+      } catch (err) {
+        return err instanceof Error && (err as NodeJS.ErrnoException).code === 'MODULE_NOT_FOUND';
+      }
+    })());
+  }
+
+  // =======================================================================================
+  // CODEX H1 EXPLOIT RETEST — a fabricated, fully-fake Firestore-shaped authorization
+  // universe cannot reach transport through the compiled production wrapper: there is no
+  // parameter through which to inject a fake db/provider/transport at all.
+  // =======================================================================================
+  console.log('\n=== Codex H1 exploit retest (fake authorization universe via production exports) ===');
+
+  check(
+    '[H1 retest] the compiled production wrapper exposes no authority-hook export (getTrustedDeliveryDb/getTrustedDeliveryAccessTokenProvider/getProductionSenderDb/getProductionSenderAccessTokenProvider) and processControlledSendCandidate\'s real runtime arity (3) leaves no slot for a fake db/provider/transport; JS silently ignores any 4th positional argument since this file\'s own source never reads `arguments[...]` or a rest parameter',
+    (() => {
+      const forbiddenNames = ['getTrustedDeliveryDb', 'getTrustedDeliveryAccessTokenProvider', 'getProductionSenderDb', 'getProductionSenderAccessTokenProvider'];
+      if (forbiddenNames.some((n) => compiledWrapperExportNames.includes(n))) return false;
+      if ((compiledWrapperExports.processControlledSendCandidate as (...args: unknown[]) => unknown).length !== 3) return false;
+      if (senderCodeOnly.includes('arguments[') || senderCodeOnly.includes('...args')) return false;
+      return true;
+    })()
+  );
+
+  // =======================================================================================
+  // BUILD-TIME CONFIG REGRESSION GUARD — cheap, safe, repeatable checks that the config
+  // shape a real `npm run build` (production) depends on has not silently drifted. The
+  // DEFINITIVE proof (a real production build genuinely never emits a core file, because no
+  // such file exists) is a manual, one-time-per-round verification (see this round's report)
+  // — rebuilding from inside a currently-executing compiled test file is unsafe (the
+  // production build's `clean` step deletes the whole lib/ directory, including this file's
+  // own already-loaded .js, mid-execution).
+  // =======================================================================================
+  console.log('\n=== build-time config regression guard ===');
+
+  check(
+    "functions/tsconfig.json (the PRODUCTION config — the only one firebase.json's predeploy hook ever runs) excludes '**/*.test.ts' from src/, so 'npm run build' never emits test files into lib/",
+    (() => {
+      const tsconfigPath = path.join(__dirname, '..', 'tsconfig.json');
+      const tsconfig = JSON.parse(fs.readFileSync(tsconfigPath, 'utf8')) as { exclude?: string[] };
+      return (tsconfig.exclude ?? []).includes('src/**/*.test.ts');
+    })()
+  );
+  check(
+    "functions/tsconfig.test.json exists, extends the production config, overrides 'exclude' to compile everything (including *.test.ts), and emits into 'lib-test' — a directory distinct from the production config's 'lib' outDir, so a test build can never overlap production output",
+    (() => {
+      const testTsconfigPath = path.join(__dirname, '..', 'tsconfig.test.json');
+      const testTsconfig = JSON.parse(fs.readFileSync(testTsconfigPath, 'utf8')) as {
+        extends?: string;
+        exclude?: unknown[];
+        compilerOptions?: { outDir?: string };
+      };
+      return (
+        testTsconfig.extends === './tsconfig.json' &&
+        Array.isArray(testTsconfig.exclude) &&
+        testTsconfig.exclude.length === 0 &&
+        testTsconfig.compilerOptions?.outDir === 'lib-test'
+      );
+    })()
+  );
+  check(
+    "functions/package.json's 'build'/'clean' scripts clean and (re)compile ONLY lib/ (never referencing 'lib-test'), and 'build:test'/'clean:test' clean and (re)compile ONLY lib-test/ (never referencing production 'lib') — the two script pairs never touch the other's output directory in EITHER direction, so 'npm run build:test' can never delete or overwrite a prior 'npm run build's production output, and a future 'npm run build' can never delete or overwrite 'lib-test'",
+    (() => {
+      const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')) as { scripts: Record<string, string> };
+      return (
+        pkg.scripts.build === 'npm run clean && tsc' &&
+        pkg.scripts['build:test'] === 'npm run clean:test && tsc -p tsconfig.test.json' &&
+        pkg.scripts.clean.includes('rmSync') &&
+        pkg.scripts.clean.includes("'lib'") &&
+        !pkg.scripts.clean.includes("'lib-test'") &&
+        pkg.scripts['clean:test'].includes('rmSync') &&
+        pkg.scripts['clean:test'].includes("'lib-test'") &&
+        !pkg.scripts['clean:test'].includes("'lib'")
+      );
+    })()
+  );
+  check(
+    "the repository root firebase.json wires functions.predeploy to run functions' own 'npm run build' (the production-only, clean config) — every firebase deploy is guaranteed to rebuild lib/ cleanly immediately before packaging",
+    (() => {
+      const firebaseJsonPath = path.join(__dirname, '..', '..', 'firebase.json');
+      const firebaseJson = JSON.parse(fs.readFileSync(firebaseJsonPath, 'utf8')) as { functions?: { predeploy?: string[] } };
+      const predeploy = firebaseJson.functions?.predeploy ?? [];
+      return predeploy.some((cmd) => cmd.includes('run build') && cmd.includes('RESOURCE_DIR'));
+    })()
+  );
+
+  // =======================================================================================
+  // IMMUTABLE AUTHORITY CAPTURE (H3/H4) — static proof against the ACTUAL compiled JS. Each
+  // of the 5 dependency functions is captured into a plain top-level `const` exactly once,
+  // and never read a second time through the live imported-module property anywhere else in
+  // the file — the only way a later mutation of e.g. `require('./fcmTransport').sendFcmOnce`
+  // could affect this file's behavior is if the file re-read that property somewhere else,
+  // which this proves it structurally does not.
+  // =======================================================================================
+  console.log('\n=== immutable authority capture (H3/H4) ===');
+
+  const compiledSenderJsPath = path.join(__dirname, 'reminderDeliverySender.js');
+  const compiledSenderJs = fs.readFileSync(compiledSenderJsPath, 'utf8');
+  const CAPTURED_NAMES = ['capturedGetApps', 'capturedInitializeApp', 'capturedGetFirestore', 'capturedCreateGoogleAuthAccessTokenProvider', 'capturedSendFcmOnce'];
+  const DEPENDENCY_FN_NAMES = ['getApps', 'initializeApp', 'getFirestore', 'createGoogleAuthAccessTokenProvider', 'sendFcmOnce'];
+
+  check(
+    'compiled lib/reminderDeliverySender.js captures all 5 dependency functions into plain top-level `const captured<Name> = <module>_1.<name>;` bindings — exactly one capture line per dependency',
+    CAPTURED_NAMES.every((name) => (compiledSenderJs.match(new RegExp(`const ${name} = \\w+_\\d+\\.\\w+;`, 'g')) || []).length === 1)
+  );
+  check(
+    'after removing the 5 capture lines themselves, none of the 5 dependency function names is read a second time through any `<module>_<n>.<name>` property access anywhere else in the compiled file',
+    (() => {
+      let withoutCaptureLines = compiledSenderJs;
+      for (const name of CAPTURED_NAMES) {
+        withoutCaptureLines = withoutCaptureLines.replace(new RegExp(`const ${name} = \\w+_\\d+\\.\\w+;\\n`), '');
+      }
+      const dynamicReadPattern = new RegExp(`\\w+_\\d+\\.(${DEPENDENCY_FN_NAMES.join('|')})\\b`);
+      return !dynamicReadPattern.test(withoutCaptureLines);
+    })()
+  );
+  check(
+    'every private production function below the capture block references only the captured local identifiers',
+    CAPTURED_NAMES.every((name) => compiledSenderJs.includes(name))
+  );
+
+  // Demonstrates the mutation mechanism itself is real (the dependency modules genuinely are
+  // ordinary, mutable CommonJS exports objects) — proves loadFreshSenderModule's technique,
+  // and by extension a hostile future in-process file, really can flip these properties.
+  // Combined with the static proof above (never re-read post-capture), this shows why a
+  // mutation AFTER first load cannot reach an already-loaded instance's behavior, while a
+  // mutation BEFORE a fresh cache-busted load (exactly what loadFreshSenderModule does, and
+  // exactly what the composition tests below rely on) is captured.
+  await checkAsync(
+    '[module-load-order] a vanilla-loaded production module instance keeps using its own already-captured real dependencies even after those dependencies\' exports are mutated out from under it; a freshly cache-busted require performed AFTER the mutation captures the mutated (fake) value instead',
+    async () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const fcmTransportMod = require('./fcmTransport') as { sendFcmOnce: unknown };
+      const originalSendFcmOnce = fcmTransportMod.sendFcmOnce;
+      const fakeSendFcmOnce = async () => ACCEPTED_OUTCOME;
+      try {
+        fcmTransportMod.sendFcmOnce = fakeSendFcmOnce;
+        const mutationSucceeded = fcmTransportMod.sendFcmOnce === fakeSendFcmOnce;
+        // A fresh cache-busted require performed now (mutation already in place) captures
+        // the fake — proving the technique works, without ever invoking the real transport.
+        const resolved = require.resolve('./reminderDeliverySender');
+        delete require.cache[resolved];
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        require('./reminderDeliverySender');
+        return mutationSucceeded;
+      } finally {
+        fcmTransportMod.sendFcmOnce = originalSendFcmOnce;
+        const resolved = require.resolve('./reminderDeliverySender');
+        delete require.cache[resolved];
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        require('./reminderDeliverySender'); // restore a real-captured instance for subsequent export-surface reads.
+      }
+    }
+  );
+
+  // =======================================================================================
+  // BEHAVIORAL TRANSPORT-COMPOSITION TESTS — through the REAL, unmodified
+  // processControlledSendCandidate, on a freshly cache-busted module instance wired to a
+  // fake db/provider/transport. Proves the full fresh-authorization -> transport ->
+  // outcome-commit composition behaves correctly, and that transport is invoked exactly
+  // once, never zero and never twice.
+  // =======================================================================================
+  console.log('\n=== processControlledSendCandidate — behavioral composition (fake transport) ===');
+
+  await checkAsync('authorized + accepted transport outcome -> terminalized accepted-by-fcm, transport called EXACTLY ONCE with the real capability token/accessToken', async () => {
     const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store);
-    const result = await commitSendOutcome(db, makeCapability(db), ACCEPTED_OUTCOME);
+    seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
+    let capturedAccessToken: string | undefined;
+    let capturedToken: unknown;
+    const { transport, callCount } = fakeTransport((params) => {
+      capturedAccessToken = params.accessToken;
+      capturedToken = (params.message as { token?: unknown }).token;
+      return Promise.resolve(ACCEPTED_OUTCOME);
+    });
+    const sender = freshSenderFor(db, transport);
+    const result = await sender.processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+    if (callCount() !== 1) return false;
+    if (capturedAccessToken !== RAW_ACCESS_TOKEN || capturedToken !== ORCH_RAW_TOKEN) return false;
     if (result.outcome !== 'terminalized' || result.state !== 'accepted-by-fcm') return false;
-    const after = readDoc(store, DELIVERY_PATH)!;
+    const after = readDoc(store, ORCH_DELIVERY_PATH)!;
     const history = after.attemptHistory as unknown[];
-    return after.state === 'accepted-by-fcm' && after.workState === 'terminal' && after.workAvailableAt === null && after.leaseExpiresAt === null && history.length === 1;
+    return after.state === 'accepted-by-fcm' && history.length === 1;
+  });
+
+  await checkAsync('authorized + retryable-later transport outcome -> requeued-for-retry, transport called exactly once, delivery back to queued, bounded backoff', async () => {
+    const { db, store } = makeFakeDb();
+    seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
+    const { transport, callCount } = fakeTransport(() => Promise.resolve(REJECTED_RETRYABLE));
+    const before = Date.now();
+    const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+    if (callCount() !== 1) return false;
+    if (result.outcome !== 'requeued-for-retry') return false;
+    const after = readDoc(store, ORCH_DELIVERY_PATH)!;
+    const workAvailableAtMs = (after.workAvailableAt as Timestamp).toMillis();
+    return after.state === 'queued' && after.sendExecutionId === null && workAvailableAtMs - before >= DELIVERY_RETRY_BACKOFF_MS;
+  });
+
+  await checkAsync('authorized + unknown/ambiguous transport outcome -> terminalized unknown-outcome, transport called exactly once', async () => {
+    const { db, store } = makeFakeDb();
+    seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
+    const { transport, callCount } = fakeTransport(() => Promise.resolve(UNKNOWN_5XX));
+    const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+    if (callCount() !== 1) return false;
+    return result.outcome === 'terminalized' && result.state === 'unknown-outcome';
   });
 
   for (const [outcome, category] of [
@@ -309,346 +717,487 @@ async function main(): Promise<void> {
     [REJECTED_UNREGISTERED, 'unregistered'],
     [REJECTED_OTHER, 'other-definitive-rejection'],
   ] as [FcmSendOutcome, string][]) {
-    await checkAsync(`[3C-4] definitive rejection (${category}) -> ALWAYS terminalized rejected-final, never retried`, async () => {
+    await checkAsync(`definitive rejection (${category}) -> ALWAYS terminalized rejected-final, never retried, transport called exactly once`, async () => {
       const { db, store } = makeFakeDb();
-      seedActiveSendIntent(store);
-      const result = await commitSendOutcome(db, makeCapability(db), outcome);
-      return result.outcome === 'terminalized' && result.state === 'rejected-final';
+      seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
+      const { transport, callCount } = fakeTransport(() => Promise.resolve(outcome));
+      const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+      if (callCount() !== 1) return false;
+      if (result.outcome !== 'terminalized' || result.state !== 'rejected-final') return false;
+      return readDoc(store, ORCH_DELIVERY_PATH)!.state === 'rejected-final';
     });
   }
 
   for (const outcome of [UNKNOWN_TIMEOUT, UNKNOWN_NETWORK, UNKNOWN_5XX, UNKNOWN_MALFORMED, NOT_ATTEMPTED]) {
-    await checkAsync(`[3C-4] ambiguous outcome (${outcome.kind}/${'reason' in outcome ? outcome.reason : ''}) -> ALWAYS terminalized unknown-outcome, never retried`, async () => {
+    await checkAsync(`ambiguous outcome (${outcome.kind}/${'reason' in outcome ? outcome.reason : ''}) -> ALWAYS terminalized unknown-outcome, never retried, transport called exactly once`, async () => {
       const { db, store } = makeFakeDb();
-      seedActiveSendIntent(store);
-      const result = await commitSendOutcome(db, makeCapability(db), outcome);
+      seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
+      const { transport, callCount } = fakeTransport(() => Promise.resolve(outcome));
+      const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+      if (callCount() !== 1) return false;
       return result.outcome === 'terminalized' && result.state === 'unknown-outcome';
     });
   }
 
-  await checkAsync('[3C-4] retryable-later BELOW attempt cap -> requeued-for-retry, sendAttemptCount UNCHANGED, sendExecutionId/sendIntentAtMs cleared', async () => {
+  await checkAsync('[attempt cap] retryable-later when the authorized intent is exactly the MAX_SEND_ATTEMPTS-th attempt -> terminalized rejected-final, NOT requeued, transport called exactly once', async () => {
     const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, { sendAttemptCount: 1 });
-    const before = Date.now();
-    const result = await commitSendOutcome(db, makeCapability(db, { sendAttemptCount: 1 }), REJECTED_RETRYABLE);
-    if (result.outcome !== 'requeued-for-retry') return false;
-    const after = readDoc(store, DELIVERY_PATH)!;
-    const workAvailableAt = after.workAvailableAt as Timestamp;
-    return (
-      after.state === 'queued' &&
-      after.workState === 'queued' &&
-      after.sendAttemptCount === 1 &&
-      after.sendExecutionId === null &&
-      after.sendIntentAtMs === null &&
-      after.leaseExpiresAt === null &&
-      workAvailableAt.toMillis() >= before + DELIVERY_RETRY_BACKOFF_MS
-    );
-  });
-
-  await checkAsync(`[3C-4] retryable-later AT the attempt cap (sendAttemptCount === MAX_SEND_ATTEMPTS) -> terminalized rejected-final, NOT retried`, async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, { sendAttemptCount: MAX_SEND_ATTEMPTS });
-    const result = await commitSendOutcome(db, makeCapability(db, { sendAttemptCount: MAX_SEND_ATTEMPTS }), REJECTED_RETRYABLE);
-    return result.outcome === 'terminalized' && result.state === 'rejected-final';
-  });
-
-  await checkAsync('[3C-4] requeued retry: bounded future workAvailableAt, never immediate (>= now + backoff, not merely > now)', async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, { sendAttemptCount: 1 });
-    const before = Date.now();
-    await commitSendOutcome(db, makeCapability(db, { sendAttemptCount: 1 }), REJECTED_RETRYABLE);
-    const after = readDoc(store, DELIVERY_PATH)!;
-    const workAvailableAtMs = (after.workAvailableAt as Timestamp).toMillis();
-    return workAvailableAtMs - before >= DELIVERY_RETRY_BACKOFF_MS;
-  });
-
-  // --- FENCE ADVERSARIAL COVERAGE ---
-
-  await checkAsync('[3C-4 fence] delivery not found -> outcome-fence-mismatch, throws nothing', async () => {
-    const { db } = makeFakeDb();
-    const result = await commitSendOutcome(db, makeCapability(db), ACCEPTED_OUTCOME);
-    return result.outcome === 'outcome-fence-mismatch';
-  });
-
-  await checkAsync("[3C-4 fence] document state is 'preparing' (not yet sending) -> outcome-fence-mismatch, zero write", async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, { state: 'preparing' });
-    const before = readDoc(store, DELIVERY_PATH);
-    const result = await commitSendOutcome(db, makeCapability(db), ACCEPTED_OUTCOME);
-    if (result.outcome !== 'outcome-fence-mismatch') return false;
-    return JSON.stringify(before) === JSON.stringify(readDoc(store, DELIVERY_PATH));
-  });
-
-  await checkAsync("[3C-4 fence] document already reached a terminal state (e.g. rejected-final from a prior commit) -> outcome-fence-mismatch, zero write (proves this outcome can never double-apply)", async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, { state: 'rejected-final', workState: 'terminal' });
-    const before = readDoc(store, DELIVERY_PATH);
-    const result = await commitSendOutcome(db, makeCapability(db), ACCEPTED_OUTCOME);
-    if (result.outcome !== 'outcome-fence-mismatch') return false;
-    return JSON.stringify(before) === JSON.stringify(readDoc(store, DELIVERY_PATH));
-  });
-
-  await checkAsync('[3C-4 fence] sendAttemptCount mismatch (doc already advanced to attempt 2) -> outcome-fence-mismatch, zero write', async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, { sendAttemptCount: 2, sendExecutionId: OTHER_EXECUTION_ID });
-    const before = readDoc(store, DELIVERY_PATH);
-    // Capability represents a STALE attempt-1 outcome, arriving after attempt 2 already
-    // committed 'sending' again — exactly the "delayed attempt-1 outcome after attempt 2
-    // exists" adversarial scenario.
-    const result = await commitSendOutcome(db, makeCapability(db, { sendAttemptCount: 1, sendExecutionId: VALID_EXECUTION_ID }), ACCEPTED_OUTCOME);
-    if (result.outcome !== 'outcome-fence-mismatch') return false;
-    return JSON.stringify(before) === JSON.stringify(readDoc(store, DELIVERY_PATH));
-  });
-
-  await checkAsync('[3C-4 fence] sendExecutionId mismatch (same count, different execution id) -> outcome-fence-mismatch, zero write (two workers racing the SAME attempt number is impossible by construction, but the fence must still hold)', async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, { sendAttemptCount: 1, sendExecutionId: OTHER_EXECUTION_ID });
-    const before = readDoc(store, DELIVERY_PATH);
-    const result = await commitSendOutcome(db, makeCapability(db, { sendAttemptCount: 1, sendExecutionId: VALID_EXECUTION_ID }), ACCEPTED_OUTCOME);
-    if (result.outcome !== 'outcome-fence-mismatch') return false;
-    return JSON.stringify(before) === JSON.stringify(readDoc(store, DELIVERY_PATH));
-  });
-
-  await checkAsync('[3C-4 fence] crash-before-outcome simulation: document still sitting in "sending" with no history change is never mistaken for a match by a DIFFERENT capability', async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, { sendAttemptCount: 1, sendExecutionId: VALID_EXECUTION_ID });
-    // A capability for a hypothetical attempt 2 that was never actually authorized (the
-    // document never advanced) must not match either — proves the fence is a positive
-    // exact-match requirement, not merely "state === sending".
-    const result = await commitSendOutcome(db, makeCapability(db, { sendAttemptCount: 2, sendExecutionId: OTHER_EXECUTION_ID }), ACCEPTED_OUTCOME);
-    return result.outcome === 'outcome-fence-mismatch';
-  });
-
-  // --- ATTEMPT HISTORY COUPLING ---
-
-  await checkAsync('[3C-4] attempt-history entry uses the EXACT persisted sendIntentAtMs/attempt number from the capability, not a re-derived value', async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, { sendAttemptCount: 1, sendIntentAtMs: 1234567890123 });
-    await commitSendOutcome(db, makeCapability(db, { sendAttemptCount: 1, sendIntentAtMs: 1234567890123 }), ACCEPTED_OUTCOME);
-    const after = readDoc(store, DELIVERY_PATH)!;
-    const history = after.attemptHistory as { attemptNumber: number; sendIntentAt: number; outcomeCategory: string; httpStatus: number | null }[];
-    return history.length === 1 && history[0].attemptNumber === 1 && history[0].sendIntentAt === 1234567890123 && history[0].outcomeCategory === 'accepted' && history[0].httpStatus === 200;
-  });
-
-  await checkAsync('[3C-4] a second, later attempt appends attemptNumber 2 to existing history rather than replacing it', async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, {
-      sendAttemptCount: 2,
-      sendExecutionId: OTHER_EXECUTION_ID,
-      sendIntentAtMs: 2000,
-      attemptHistory: [{ attemptNumber: 1, sendIntentAt: 1000, outcomeCategory: 'retryable-later', httpStatus: 429, outcomeRecordedAt: 1500 }],
+    seedOrchestrationPreparingFixture(store, {
+      rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] },
+      delivery: { sendAttemptCount: MAX_SEND_ATTEMPTS - 1 },
     });
-    const result = await commitSendOutcome(db, makeCapability(db, { sendAttemptCount: 2, sendExecutionId: OTHER_EXECUTION_ID, sendIntentAtMs: 2000 }), ACCEPTED_OUTCOME);
-    if (result.outcome !== 'terminalized') return false;
-    const after = readDoc(store, DELIVERY_PATH)!;
+    const { transport, callCount } = fakeTransport(() => Promise.resolve(REJECTED_RETRYABLE));
+    const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+    if (callCount() !== 1) return false;
+    if (result.outcome !== 'terminalized' || result.state !== 'rejected-final') return false;
+    const after = readDoc(store, ORCH_DELIVERY_PATH)!;
+    return after.state === 'rejected-final' && after.sendAttemptCount === MAX_SEND_ATTEMPTS;
+  });
+
+  await checkAsync('TWO sequential real authorized attempts (first retryable-later requeued, then a later worker reacquires and this attempt is accepted) -> attemptHistory records attemptNumber 1 then 2, each attempt uses a DIFFERENT sendExecutionId, transport called exactly once PER call', async () => {
+    const { db, store } = makeFakeDb();
+    seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
+
+    let firstExecutionId: unknown;
+    const first = fakeTransport(() => {
+      firstExecutionId = (readDoc(store, ORCH_DELIVERY_PATH) as { sendExecutionId?: unknown }).sendExecutionId;
+      return Promise.resolve(REJECTED_RETRYABLE);
+    });
+    const firstResult = await freshSenderFor(db, first.transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+    if (firstResult.outcome !== 'requeued-for-retry') return false;
+
+    const afterRequeue = readDoc(store, ORCH_DELIVERY_PATH)!;
+    const secondPreparingLeaseMs = Date.now() + 5 * 60 * 1000;
+    seedDoc(store, ORCH_DELIVERY_PATH, {
+      ...afterRequeue,
+      state: 'preparing',
+      workState: 'queued',
+      workAvailableAt: Timestamp.fromMillis(secondPreparingLeaseMs),
+      leaseExpiresAt: Timestamp.fromMillis(secondPreparingLeaseMs),
+      processingAttemptCount: 2,
+    });
+
+    let secondExecutionId: unknown;
+    const second = fakeTransport(() => {
+      secondExecutionId = (readDoc(store, ORCH_DELIVERY_PATH) as { sendExecutionId?: unknown }).sendExecutionId;
+      return Promise.resolve(ACCEPTED_OUTCOME);
+    });
+    const secondResult = await freshSenderFor(db, second.transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 2);
+    if (second.callCount() !== 1) return false;
+    if (secondResult.outcome !== 'terminalized' || secondResult.state !== 'accepted-by-fcm') return false;
+    if (firstExecutionId === undefined || secondExecutionId === undefined || firstExecutionId === secondExecutionId) return false;
+
+    const after = readDoc(store, ORCH_DELIVERY_PATH)!;
     const history = after.attemptHistory as { attemptNumber: number }[];
     return history.length === 2 && history[0].attemptNumber === 1 && history[1].attemptNumber === 2;
   });
 
-  // =======================================================================================
-  // CODEX REPAIR ROUND (Step 3C-4, blocker 3) — POST-SEND PERSISTENCE FAILURE MUST NEVER
-  // DESTROY 'sending' PROVENANCE. Once executeControlledSend has called sendFcmOnce, an
-  // FCM request may already have been made — a persistence problem discovered when
-  // committing the outcome (e.g. malformed pre-existing attemptHistory) must leave the
-  // document in 'sending', completely untouched, rather than overwriting it with any
-  // other state. This replaces the earlier, Codex-REJECTED 'invalid-delivery' quarantine
-  // behavior.
-  // =======================================================================================
-
-  for (const [label, outcome] of [
-    ['accepted', ACCEPTED_OUTCOME],
-    ['rejected (definitive)', REJECTED_INVALID_ARGUMENT],
-    ['unknown-outcome', UNKNOWN_TIMEOUT],
-    ['retryable-later', REJECTED_RETRYABLE],
-  ] as [string, FcmSendOutcome][]) {
-    await checkAsync(`[3C-4 persistence-failed] malformed existing attemptHistory after a ${label} transport result -> outcome 'persistence-failed', ZERO Firestore mutation, document stays exactly 'sending'`, async () => {
-      const { db, store } = makeFakeDb();
-      const seeded = {
+  await checkAsync('attemptHistory corrupted DURING the (fake) transport call (after authorization, before outcome commit) -> persistence-failed AFTER a real transport call was already made, document stays exactly "sending", secret in the corrupted entry never leaks into the result', async () => {
+    const { db, store } = makeFakeDb();
+    seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
+    const { transport, callCount } = fakeTransport(() => {
+      const current = readDoc(store, ORCH_DELIVERY_PATH)!;
+      seedDoc(store, ORCH_DELIVERY_PATH, {
+        ...current,
         attemptHistory: [{ attemptNumber: 1, sendIntentAt: 1, outcomeCategory: 'accepted', httpStatus: 200, outcomeRecordedAt: 2, rawToken: 'SECRET-SHOULD-NEVER-SURVIVE' }],
-      };
-      seedActiveSendIntent(store, seeded);
-      const before = readDoc(store, DELIVERY_PATH);
-      const result = await commitSendOutcome(db, makeCapability(db), outcome);
-      if (result.outcome !== 'persistence-failed') return false;
-      const after = readDoc(store, DELIVERY_PATH);
-      // ZERO mutation — not merely "state still sending" but the ENTIRE document
-      // byte-for-byte unchanged, including updatedAt/processedAt never being touched.
-      return JSON.stringify(before) === JSON.stringify(after) && after!.state === 'sending';
+      });
+      return Promise.resolve(ACCEPTED_OUTCOME);
+    });
+    const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+    if (callCount() !== 1) return false;
+    if (result.outcome !== 'persistence-failed') return false;
+    if (JSON.stringify(result).includes('SECRET-SHOULD-NEVER-SURVIVE')) return false;
+    return readDoc(store, ORCH_DELIVERY_PATH)!.state === 'sending';
+  });
+
+  await checkAsync('[fence] delivery document deleted entirely BETWEEN authorization and outcome commit -> outcome-fence-mismatch (never a throw, never a write), transport called exactly once', async () => {
+    const { db, store } = makeFakeDb();
+    seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
+    const { transport, callCount } = fakeTransport(() => {
+      store.delete(ORCH_DELIVERY_PATH);
+      return Promise.resolve(ACCEPTED_OUTCOME);
+    });
+    const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+    if (callCount() !== 1) return false;
+    return result.outcome === 'outcome-fence-mismatch' && !store.has(ORCH_DELIVERY_PATH);
+  });
+
+  await checkAsync('[fence] document flipped to an already-terminal state (e.g. by a hypothetical duplicate concurrent commit) DURING the transport call -> outcome-fence-mismatch, that concurrently-written terminal state is never overwritten', async () => {
+    const { db, store } = makeFakeDb();
+    seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
+    const { transport, callCount } = fakeTransport(() => {
+      const current = readDoc(store, ORCH_DELIVERY_PATH)!;
+      seedDoc(store, ORCH_DELIVERY_PATH, { ...current, state: 'rejected-final', workState: 'terminal', workAvailableAt: null, leaseExpiresAt: null });
+      return Promise.resolve(ACCEPTED_OUTCOME);
+    });
+    const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+    if (callCount() !== 1) return false;
+    if (result.outcome !== 'outcome-fence-mismatch') return false;
+    return readDoc(store, ORCH_DELIVERY_PATH)!.state === 'rejected-final';
+  });
+
+  await checkAsync('[fence] sendAttemptCount advanced (as if a second attempt already committed) DURING the transport call -> outcome-fence-mismatch', async () => {
+    const { db, store } = makeFakeDb();
+    seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
+    const { transport, callCount } = fakeTransport(() => {
+      const current = readDoc(store, ORCH_DELIVERY_PATH)!;
+      seedDoc(store, ORCH_DELIVERY_PATH, { ...current, sendAttemptCount: 2 });
+      return Promise.resolve(ACCEPTED_OUTCOME);
+    });
+    const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+    if (callCount() !== 1) return false;
+    return result.outcome === 'outcome-fence-mismatch';
+  });
+
+  await checkAsync('[fence] sendIntentAtMs mutated (as if the SAME attempt number was somehow re-intended) DURING the transport call -> outcome-fence-mismatch', async () => {
+    const { db, store } = makeFakeDb();
+    seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
+    const { transport, callCount } = fakeTransport(() => {
+      const current = readDoc(store, ORCH_DELIVERY_PATH)! as { sendIntentAtMs: number };
+      seedDoc(store, ORCH_DELIVERY_PATH, { ...current, sendIntentAtMs: current.sendIntentAtMs + 1 });
+      return Promise.resolve(ACCEPTED_OUTCOME);
+    });
+    const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+    if (callCount() !== 1) return false;
+    return result.outcome === 'outcome-fence-mismatch';
+  });
+
+  await checkAsync('[secrecy] neither the installation token nor the OAuth access token ever appears in the PERSISTED delivery document after any outcome (accepted/rejected/retryable/unknown)', async () => {
+    for (const outcome of [ACCEPTED_OUTCOME, REJECTED_INVALID_ARGUMENT, REJECTED_RETRYABLE, UNKNOWN_5XX]) {
+      const { db, store } = makeFakeDb();
+      seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
+      const { transport } = fakeTransport(() => Promise.resolve(outcome));
+      await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+      const serialized = JSON.stringify(readDoc(store, ORCH_DELIVERY_PATH)!);
+      if (serialized.includes(ORCH_RAW_TOKEN) || serialized.includes(RAW_ACCESS_TOKEN)) return false;
+    }
+    return true;
+  });
+
+  await checkAsync('[secrecy] the returned SanitizedSendOrchestrationResult never contains the installation token, the access token, or a capability, across accepted/retryable/unknown outcomes', async () => {
+    for (const outcome of [ACCEPTED_OUTCOME, REJECTED_RETRYABLE, UNKNOWN_5XX]) {
+      const { db, store } = makeFakeDb();
+      seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
+      const { transport } = fakeTransport(() => Promise.resolve(outcome));
+      const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+      const serialized = JSON.stringify(result);
+      if (serialized.includes(ORCH_RAW_TOKEN) || serialized.includes(RAW_ACCESS_TOKEN) || 'capability' in (result as object)) return false;
+    }
+    return true;
+  });
+
+  // =======================================================================================
+  // CODEX H1 — EXPLICIT STUCK-SENDING SYNTHETIC-RETRY ATTACK TEST (retained from prior
+  // rounds). A delivery already stuck in 'sending' (simulating a crash after FCM but before
+  // outcome persistence) is unreachable through the real orchestration entry point: state
+  // !== 'preparing' fails closed to stale-fence before any transport call.
+  // =======================================================================================
+  await checkAsync(
+    "[H1] a delivery already stuck in 'sending' -> processControlledSendCandidate returns stale-fence, makes ZERO transport calls, and mutates NOTHING",
+    async () => {
+      const { db, store } = makeFakeDb();
+      const stuckSendIntentAtMs = Date.now();
+      seedOrchestrationPreparingFixture(store, {
+        rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] },
+        delivery: {
+          state: 'sending',
+          workState: 'terminal',
+          workAvailableAt: null,
+          leaseExpiresAt: null,
+          sendAttemptCount: 1,
+          sendExecutionId: OTHER_EXECUTION_ID,
+          sendIntentAtMs: stuckSendIntentAtMs,
+          attemptHistory: [],
+        },
+      });
+      const before = readDoc(store, ORCH_DELIVERY_PATH);
+      const { transport, callCount } = fakeTransport(() => Promise.resolve(ACCEPTED_OUTCOME));
+      const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+      if (callCount() !== 0) return false;
+      if (result.outcome !== 'stale-fence') return false;
+      return JSON.stringify(before) === JSON.stringify(readDoc(store, ORCH_DELIVERY_PATH));
+    }
+  );
+
+  // =======================================================================================
+  // NEGATIVE-AUTHORIZATION ZERO-TRANSPORT TESTS — 32 scenarios, driving the REAL
+  // processControlledSendCandidate (never a reimplementation of the decision logic).
+  // =======================================================================================
+  console.log('\n=== processControlledSendCandidate — negative authorization, zero transport ===');
+
+  async function assertZeroTransportOutcome(
+    label: string,
+    overrides: OrchestrationFixtureOverrides,
+    expectedOutcome: SenderModule.SanitizedSendOrchestrationResult,
+    expectedProcessingAttemptCount: unknown = 1
+  ): Promise<void> {
+    await checkAsync(`[negative-auth] ${label}`, async () => {
+      const { db, store } = makeFakeDb();
+      seedOrchestrationPreparingFixture(store, overrides);
+      const { transport, callCount } = fakeTransport(() => Promise.resolve(ACCEPTED_OUTCOME));
+      const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, expectedProcessingAttemptCount);
+      if (callCount() !== 0) return false;
+      return JSON.stringify(result) === JSON.stringify(expectedOutcome);
     });
   }
 
-  await checkAsync("[3C-4 persistence-failed] active send-intent metadata (sendAttemptCount/sendExecutionId/sendIntentAtMs) is completely unchanged after a persistence-failed outcome", async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, {
-      attemptHistory: [{ attemptNumber: 1, sendIntentAt: 1, outcomeCategory: 'accepted', httpStatus: 200, outcomeRecordedAt: 2, rawToken: 'X' }],
-    });
-    await commitSendOutcome(db, makeCapability(db), ACCEPTED_OUTCOME);
-    const after = readDoc(store, DELIVERY_PATH)!;
-    return after.sendAttemptCount === 1 && after.sendExecutionId === VALID_EXECUTION_ID && after.sendIntentAtMs === 1700000000000;
+  await assertZeroTransportOutcome('rollout paused -> cancelled/rollout-paused', { rollout: { mode: 'paused' } }, {
+    outcome: 'cancelled',
+    reason: 'rollout-paused',
+  });
+  await assertZeroTransportOutcome('rollout dry-run -> dry-run-validated (never a real send, even though otherwise fully valid)', { rollout: { mode: 'dry-run' } }, {
+    outcome: 'dry-run-validated',
+  });
+  await assertZeroTransportOutcome(
+    'allowlisted-real-send but uid NOT in the allowlist -> cancelled/rollout-real-send-not-allowlisted',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['some-other-uid'] } },
+    { outcome: 'cancelled', reason: 'rollout-real-send-not-allowlisted' }
+  );
+  await assertZeroTransportOutcome(
+    'allowlisted-real-send with an EMPTY allowlist -> cancelled/rollout-real-send-not-allowlisted',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [] } },
+    { outcome: 'cancelled', reason: 'rollout-real-send-not-allowlisted' }
+  );
+  await assertZeroTransportOutcome(
+    'allowlisted-real-send with a MALFORMED (non-array) allowlistUids -> parseRolloutConfig fails closed to paused -> cancelled/rollout-paused',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: 'not-an-array' } },
+    { outcome: 'cancelled', reason: 'rollout-paused' }
+  );
+  await assertZeroTransportOutcome(
+    "general-real-send -> cancelled/rollout-real-send-mode-not-permitted-at-stage (this file's stage is 'allowlisted-only', never 'general')",
+    { rollout: { mode: 'general-real-send' } },
+    { outcome: 'cancelled', reason: 'rollout-real-send-mode-not-permitted-at-stage' }
+  );
+  await assertZeroTransportOutcome(
+    'malformed rollout document (no recognizable mode field at all) -> parseRolloutConfig fails closed to paused -> cancelled/rollout-paused',
+    { rollout: { unexpectedField: 12345 } },
+    { outcome: 'cancelled', reason: 'rollout-paused' }
+  );
+  await assertZeroTransportOutcome(
+    "stale processing fence (caller's expectedProcessingAttemptCount does not match the persisted document) -> stale-fence",
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } },
+    { outcome: 'stale-fence', reason: 'stale-processing-fence' },
+    2 // fixture seeds processingAttemptCount: 1
+  );
+
+  const expiredLeaseMs = Date.now() - 60_000;
+  await assertZeroTransportOutcome(
+    'expired lease on an otherwise-consistent preparing work tuple -> stale-fence (a legitimate reacquisition could be imminent — never treated as corruption)',
+    {
+      rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] },
+      delivery: {
+        workAvailableAt: Timestamp.fromMillis(expiredLeaseMs),
+        leaseExpiresAt: Timestamp.fromMillis(expiredLeaseMs),
+      },
+    },
+    { outcome: 'stale-fence', reason: 'stale-processing-fence' }
+  );
+  await assertZeroTransportOutcome(
+    "fanout provenance mismatch (delivery's fanoutExecutionIdAtCreation does not match the parent's committed fanoutExecutionId) -> cancelled/fanout-provenance-mismatch",
+    {
+      rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] },
+      delivery: { fanoutExecutionIdAtCreation: OTHER_EXECUTION_ID },
+    },
+    { outcome: 'cancelled', reason: 'fanout-provenance-mismatch' }
+  );
+  await assertZeroTransportOutcome(
+    'notification preference revision changed after the fanout claim -> cancelled/preference-changed',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, preference: { revision: 2 } },
+    { outcome: 'cancelled', reason: 'preference-changed' }
+  );
+  await assertZeroTransportOutcome(
+    'installation revoked (state no longer active) -> cancelled/installation-revoked',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, installation: { state: 'revoked' } },
+    { outcome: 'cancelled', reason: 'installation-revoked' }
+  );
+  await assertZeroTransportOutcome(
+    'installation token rotated (tokenVersion advanced past the fanout-time snapshot) -> cancelled/installation-token-version-changed',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, installation: { tokenVersion: 2 } },
+    { outcome: 'cancelled', reason: 'installation-token-version-changed' }
+  );
+  await assertZeroTransportOutcome(
+    'token claim identity mismatch (claim points at a different uid than the delivery) -> cancelled/token-claim-mismatch',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, tokenClaim: { uid: 'someone-else' } },
+    { outcome: 'cancelled', reason: 'token-claim-mismatch' }
+  );
+  await assertZeroTransportOutcome(
+    'malformed expectedProcessingAttemptCount (e.g. a negative number) fails the PRE-transaction isValidAttemptCount check -> stale-fence, before any Firestore read at all',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } },
+    { outcome: 'stale-fence', reason: 'stale-processing-fence' },
+    -1
+  );
+
+  await checkAsync(
+    'structurally malformed reminderId string -> delivery-not-found, zero transport, zero Firestore access at all (rejected by the pre-db validation)',
+    async () => {
+      const { db } = makeFakeDb();
+      const { transport, callCount } = fakeTransport(() => Promise.resolve(ACCEPTED_OUTCOME));
+      const result = await freshSenderFor(db, transport).processControlledSendCandidate('not-a-valid-reminder-id', ORCH_INSTALLATION_ID, 1);
+      if (callCount() !== 0) return false;
+      return result.outcome === 'delivery-not-found';
+    }
+  );
+  await checkAsync('structurally malformed installationId string -> delivery-not-found, zero transport', async () => {
+    const { db } = makeFakeDb();
+    const { transport, callCount } = fakeTransport(() => Promise.resolve(ACCEPTED_OUTCOME));
+    const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, 'too-short', 1);
+    if (callCount() !== 0) return false;
+    return result.outcome === 'delivery-not-found';
+  });
+  await checkAsync('non-string reminderId/installationId (e.g. a number, an object) -> delivery-not-found, zero transport', async () => {
+    const { db } = makeFakeDb();
+    const { transport, callCount } = fakeTransport(() => Promise.resolve(ACCEPTED_OUTCOME));
+    const result = await freshSenderFor(db, transport).processControlledSendCandidate(12345, { evil: true }, 1);
+    if (callCount() !== 0) return false;
+    return result.outcome === 'delivery-not-found';
+  });
+  await checkAsync('delivery document does not exist at all at an otherwise well-formed path -> delivery-not-found, zero transport', async () => {
+    const { db } = makeFakeDb();
+    const { transport, callCount } = fakeTransport(() => Promise.resolve(ACCEPTED_OUTCOME));
+    const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+    if (callCount() !== 0) return false;
+    return result.outcome === 'delivery-not-found';
   });
 
-  await checkAsync('[3C-4 persistence-failed] no retry work is created (workState stays terminal, never becomes queued)', async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, {
-      attemptHistory: [{ attemptNumber: 1, sendIntentAt: 1, outcomeCategory: 'accepted', httpStatus: 200, outcomeRecordedAt: 2, rawToken: 'X' }],
-    });
-    await commitSendOutcome(db, makeCapability(db), REJECTED_RETRYABLE);
-    const after = readDoc(store, DELIVERY_PATH)!;
-    return after.workState === 'terminal' && after.workAvailableAt === null && after.leaseExpiresAt === null;
-  });
-
-  await checkAsync('[3C-4 persistence-failed] no terminal business outcome (accepted-by-fcm/rejected-final/unknown-outcome) is ever written', async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, {
-      attemptHistory: [{ attemptNumber: 1, sendIntentAt: 1, outcomeCategory: 'accepted', httpStatus: 200, outcomeRecordedAt: 2, rawToken: 'X' }],
-    });
-    await commitSendOutcome(db, makeCapability(db), ACCEPTED_OUTCOME);
-    const after = readDoc(store, DELIVERY_PATH)!;
-    return !['accepted-by-fcm', 'rejected-final', 'unknown-outcome'].includes(after.state as string);
-  });
-
-  await checkAsync("[3C-4 persistence-failed] result reason is a fixed enum string, no secret-bearing value, and clearly reports persistence failure to the caller", async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, {
-      attemptHistory: [{ attemptNumber: 1, sendIntentAt: 1, outcomeCategory: 'accepted', httpStatus: 200, outcomeRecordedAt: 2, rawToken: 'SECRET-SHOULD-NEVER-SURVIVE' }],
-    });
-    const result = await commitSendOutcome(db, makeCapability(db), ACCEPTED_OUTCOME);
-    if (result.outcome !== 'persistence-failed') return false;
-    const serialized = JSON.stringify(result);
-    return result.reason === 'invalid-attempt-history-on-outcome' && !serialized.includes('SECRET-SHOULD-NEVER-SURVIVE');
-  });
-
-  check(
-    "'invalid-delivery' is no longer a reachable SendOutcomeCommitResult outcome anywhere in reminderDeliverySender.ts's source (Codex explicitly rejected it — replaced by 'persistence-failed')",
-    !senderCodeOnly.includes("outcome: 'invalid-delivery'")
+  await assertZeroTransportOutcome(
+    "malformed persisted delivery schema on an otherwise-legitimate 'preparing' document (poisoned pre-existing attemptHistory) -> invalid-delivery/invalid-attempt-history",
+    {
+      rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] },
+      delivery: { attemptHistory: [{ attemptNumber: 1, sendIntentAt: 1, outcomeCategory: 'accepted', httpStatus: 200, outcomeRecordedAt: 2, rawToken: 'SECRET-SHOULD-NEVER-SURVIVE' }] },
+    },
+    { outcome: 'invalid-delivery', reason: 'invalid-attempt-history' }
+  );
+  await assertZeroTransportOutcome(
+    "inconsistent 'preparing' work tuple (workState contradicts the 'preparing' state) -> invalid-delivery/invalid-preparing-work-tuple",
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, delivery: { workState: 'terminal' } },
+    { outcome: 'invalid-delivery', reason: 'invalid-preparing-work-tuple' }
+  );
+  await assertZeroTransportOutcome(
+    'parent reminder document missing entirely -> cancelled/parent-invalid',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, reminder: null },
+    { outcome: 'cancelled', reason: 'parent-invalid' }
+  );
+  await assertZeroTransportOutcome(
+    'parent reminder document schema-malformed (non-string uid) -> cancelled/parent-invalid',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, reminder: { uid: 12345 } },
+    { outcome: 'cancelled', reason: 'parent-invalid' }
+  );
+  await assertZeroTransportOutcome(
+    'parent fanout legitimately completed a DIFFERENT (failed) outcome -> cancelled/parent-fanout-not-completed',
+    {
+      rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] },
+      reminder: { deliveryFanoutState: 'failed', targetInstallationCountAtFanout: null, targetingFailureReason: 'unexpected-preexisting-delivery', fanoutExecutionId: null },
+    },
+    { outcome: 'cancelled', reason: 'parent-fanout-not-completed' }
+  );
+  await assertZeroTransportOutcome(
+    'notification preference explicitly disabled -> cancelled/preference-disabled',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, preference: { enabled: false } },
+    { outcome: 'cancelled', reason: 'preference-disabled' }
+  );
+  await assertZeroTransportOutcome(
+    'notification preference document missing entirely -> cancelled/preference-missing',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, preference: null },
+    { outcome: 'cancelled', reason: 'preference-missing' }
+  );
+  await assertZeroTransportOutcome(
+    'installation document missing entirely -> cancelled/installation-missing',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, installation: null },
+    { outcome: 'cancelled', reason: 'installation-missing' }
+  );
+  await assertZeroTransportOutcome(
+    'installation uid does not match the delivery uid -> cancelled/installation-uid-mismatch',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, installation: { uid: 'someone-else' } },
+    { outcome: 'cancelled', reason: 'installation-uid-mismatch' }
+  );
+  await assertZeroTransportOutcome(
+    'installation generation advanced past the fanout-time target snapshot -> cancelled/installation-generation-changed',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, installation: { generation: 2 } },
+    { outcome: 'cancelled', reason: 'installation-generation-changed' }
+  );
+  await assertZeroTransportOutcome(
+    'installation audience id changed from the fanout-time target snapshot -> cancelled/installation-audience-changed',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, installation: { installationAudienceId: 'B'.repeat(16) } },
+    { outcome: 'cancelled', reason: 'installation-audience-changed' }
+  );
+  await assertZeroTransportOutcome(
+    'installation current token missing/empty -> cancelled/installation-token-missing',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, installation: { token: '' } },
+    { outcome: 'cancelled', reason: 'installation-token-missing' }
+  );
+  await assertZeroTransportOutcome(
+    'token claim document missing entirely -> cancelled/token-claim-missing',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, tokenClaim: null },
+    { outcome: 'cancelled', reason: 'token-claim-missing' }
+  );
+  await assertZeroTransportOutcome(
+    'sendAttemptCount already at MAX_SEND_ATTEMPTS on an otherwise-legitimate preparing document -> invalid-delivery/send-attempt-count-exhausted',
+    { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] }, delivery: { sendAttemptCount: MAX_SEND_ATTEMPTS } },
+    { outcome: 'invalid-delivery', reason: 'send-attempt-count-exhausted' }
   );
 
   // =======================================================================================
-  // CODEX REPAIR ROUND (Step 3C-4, blocker 2) — sendIntentAtMs is now part of the complete
-  // fence, and the attempt-history entry uses the FRESHLY-READ persisted value.
-  // =======================================================================================
-
-  await checkAsync('[3C-4 fence] capability.sendIntentAtMs wrong while state/count/executionId all match the persisted document -> outcome-fence-mismatch, zero write', async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, { sendIntentAtMs: 1700000000000 });
-    const before = readDoc(store, DELIVERY_PATH);
-    const result = await commitSendOutcome(db, makeCapability(db, { sendIntentAtMs: 1700000000000 + 1 }), ACCEPTED_OUTCOME);
-    if (result.outcome !== 'outcome-fence-mismatch') return false;
-    return JSON.stringify(before) === JSON.stringify(readDoc(store, DELIVERY_PATH));
-  });
-
-  await checkAsync('[3C-4 fence] persisted sendIntentAtMs malformed (missing) -> outcome-fence-mismatch, zero write', async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, { sendIntentAtMs: undefined });
-    const before = readDoc(store, DELIVERY_PATH);
-    const result = await commitSendOutcome(db, makeCapability(db), ACCEPTED_OUTCOME);
-    if (result.outcome !== 'outcome-fence-mismatch') return false;
-    return JSON.stringify(before) === JSON.stringify(readDoc(store, DELIVERY_PATH));
-  });
-
-  await checkAsync('[3C-4] attempt-history entry uses the FRESHLY-READ persisted sendIntentAtMs (proven by seeding the store directly with a value equal to the capability\'s, since a mismatch would fail the fence entirely before any append is attempted)', async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store, { sendIntentAtMs: 999888777 });
-    const result = await commitSendOutcome(db, makeCapability(db, { sendIntentAtMs: 999888777 }), ACCEPTED_OUTCOME);
-    if (result.outcome !== 'terminalized') return false;
-    const after = readDoc(store, DELIVERY_PATH)!;
-    const history = after.attemptHistory as { sendIntentAt: number }[];
-    return history[0].sendIntentAt === 999888777;
-  });
-
-  check(
-    "reminderDeliverySender.ts's history-append call site sources sendIntentAt from the freshly-read persisted value (persistedSendIntentAtMs), never directly from capability.sendIntentAtMs — a static source-structure proof, not merely a behavioral one",
-    senderCodeOnly.includes('sendIntentAt: persistedSendIntentAtMs') && !senderCodeOnly.includes('sendIntentAt: capability.sendIntentAtMs')
-  );
-
-  // --- SECRECY ---
-
-  await checkAsync('[3C-4 secrecy] neither installationToken nor accessToken ever appear anywhere in the persisted document after any outcome', async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store);
-    await commitSendOutcome(db, makeCapability(db), ACCEPTED_OUTCOME);
-    const after = readDoc(store, DELIVERY_PATH)!;
-    const serialized = JSON.stringify(after);
-    return !serialized.includes(RAW_INSTALLATION_TOKEN) && !serialized.includes(RAW_ACCESS_TOKEN);
-  });
-
-  await checkAsync('[3C-4 secrecy] neither installationToken nor accessToken ever appear in the returned SendOutcomeCommitResult', async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store);
-    const result = await commitSendOutcome(db, makeCapability(db), ACCEPTED_OUTCOME);
-    const serialized = JSON.stringify(result);
-    return !serialized.includes(RAW_INSTALLATION_TOKEN) && !serialized.includes(RAW_ACCESS_TOKEN);
-  });
-
-  // =======================================================================================
-  // executeControlledSend — the sole transport call site, structurally locked.
-  // =======================================================================================
-  console.log('\n=== executeControlledSend (structural lock) ===');
-
-  check("[3C-4] REAL_DELIVERY_STAGE is 'disabled' (this file's own, independently-declared constant)", REAL_DELIVERY_STAGE === 'disabled');
-
-  await checkAsync('[3C-4] executeControlledSend ALWAYS throws while REAL_DELIVERY_STAGE is disabled, before any network attempt, for an otherwise-fully-valid capability', async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store);
-    try {
-      await executeControlledSend(db, makeCapability(db));
-      return false; // must never reach here.
-    } catch (err) {
-      return err instanceof Error && err.message.includes('REAL_DELIVERY_STAGE');
-    }
-  });
-
-  await checkAsync('[3C-4] executeControlledSend throwing leaves the delivery document completely untouched (zero writes, zero side effects)', async () => {
-    const { db, store } = makeFakeDb();
-    seedActiveSendIntent(store);
-    const before = readDoc(store, DELIVERY_PATH);
-    try {
-      await executeControlledSend(db, makeCapability(db));
-    } catch {
-      // expected
-    }
-    return JSON.stringify(before) === JSON.stringify(readDoc(store, DELIVERY_PATH));
-  });
-
-  // =======================================================================================
-  // STATIC SOURCE CHECKS.
+  // STATIC SOURCE CHECKS — operate on reminderDeliverySender.ts's own single-file source.
   // =======================================================================================
   console.log('\n=== static source checks ===');
 
-  check('reminderDeliverySender.ts contains exactly one source-level call to sendFcmOnce', (senderCodeOnly.match(/sendFcmOnce\(/g) || []).length === 1);
-  check('reminderDeliverySender.ts asserts REAL_DELIVERY_STAGE disabled immediately before that sole sendFcmOnce call', (() => {
-    const idx = senderCodeOnly.indexOf('sendFcmOnce(');
-    const before = senderCodeOnly.slice(0, idx);
-    // The guard must be the LAST REAL_DELIVERY_STAGE check before the call — confirmed by
-    // the guard existing at all before the call site, and by the executeControlledSend
-    // behavioral test above proving it actually fires.
-    return before.includes("if (REAL_DELIVERY_STAGE === 'disabled')");
-  })());
-  check('reminderDeliverySender.ts contains no console.log/console.error/console.warn/console.info/console.debug calls', !/console\.(log|error|warn|info|debug)\(/.test(senderSource));
+  check('reminderDeliverySender.ts contains exactly one source-level call to capturedSendFcmOnce', (senderCodeOnly.match(/await capturedSendFcmOnce\(/g) || []).length === 1);
   check(
-    'reminderDeliverySender.ts has no module-scope Firestore/GoogleAuth/credential construction (no import-time side effects) — every function takes db as an explicit parameter',
-    !senderCodeOnly.includes('getFirestore()') && !senderCodeOnly.includes('new GoogleAuth(') && !senderCodeOnly.includes('initializeApp(')
+    'reminderDeliverySender.ts asserts REAL_DELIVERY_STAGE === "disabled" throws immediately before that sole transport call',
+    (() => {
+      const idx = senderCodeOnly.indexOf('await capturedSendFcmOnce(');
+      const before = senderCodeOnly.slice(0, idx);
+      return before.includes("if (REAL_DELIVERY_STAGE === 'disabled')");
+    })()
   );
   check(
-    "reminderDeliverySender.ts's REAL_DELIVERY_STAGE constant is declared independently in this file, never imported from reminderDeliveryAuth.ts",
-    /export const REAL_DELIVERY_STAGE: RealDeliveryStage = 'disabled';/.test(senderCodeOnly) && !senderCodeOnly.includes("REAL_DELIVERY_STAGE }") // not destructure-imported
+    'reminderDeliverySender.ts imports the real sendFcmOnce VALUE exactly once, and immediately captures it into a top-level const (capturedSendFcmOnce) rather than reading it dynamically elsewhere',
+    (senderCodeOnly.match(/import \{ sendFcmOnce, type FcmSendOutcome \} from '\.\/fcmTransport';/g) || []).length === 1 &&
+      senderCodeOnly.includes('const capturedSendFcmOnce = sendFcmOnce;')
+  );
+  check('reminderDeliverySender.ts contains no console.log/console.error/console.warn/console.info/console.debug calls', !/console\.(log|error|warn|info|debug)\(/.test(senderSource));
+  check(
+    "reminderDeliverySender.ts's REAL_DELIVERY_STAGE constant is declared as its own const in this file (not re-exported from reminderDeliveryAuth.ts)",
+    /export const REAL_DELIVERY_STAGE: RealDeliveryStage = 'allowlisted-only';/.test(senderCodeOnly)
+  );
+  check(
+    "'invalid-delivery' is not a reachable SendOutcomeCommitResult outcome anywhere in that type declaration or commitSendOutcome's own body (module-private, post-authorization outcome commit never reaches invalid-delivery — only pre-send authorization does, via SanitizedSendOrchestrationResult)",
+    (() => {
+      const typeStart = senderCodeOnly.indexOf('type SendOutcomeCommitResult');
+      const fnEnd = senderCodeOnly.indexOf('async function executeControlledSend');
+      if (typeStart === -1 || fnEnd === -1 || fnEnd <= typeStart) {
+        throw new Error('static check anchor text not found — source structure changed unexpectedly');
+      }
+      return !senderCodeOnly.slice(typeStart, fnEnd).includes("outcome: 'invalid-delivery'");
+    })()
+  );
+  check(
+    "reminderDeliverySender.ts's history-append call site sources sendIntentAt from the freshly-read persisted value (persistedSendIntentAtMs), never directly from capability.sendIntentAtMs",
+    senderCodeOnly.includes('sendIntentAt: persistedSendIntentAtMs') && !senderCodeOnly.includes('sendIntentAt: capability.sendIntentAtMs')
+  );
+  check(
+    'commitSendOutcome/executeControlledSend have no `export` keyword immediately preceding their declarations (module-private)',
+    /\n(?:async )?function commitSendOutcome\(/.test(senderCodeOnly) &&
+      !/export (?:async )?function commitSendOutcome\(/.test(senderCodeOnly) &&
+      /\nasync function executeControlledSend\(/.test(senderCodeOnly) &&
+      !/export async function executeControlledSend\(/.test(senderCodeOnly)
   );
 
   // Cross-file: reminderDeliverySender.ts must be the ONLY file in functions/src that ever
-  // calls sendFcmOnce( — fcmTransport.ts itself (the definition site) is excluded.
+  // imports the real sendFcmOnce VALUE — fcmTransport.ts itself (the definition site) is
+  // excluded.
   const allSourceFiles = fs
     .readdirSync(srcDir)
     .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && f !== 'fcmTransport.ts' && f !== 'reminderDeliverySender.ts');
   let foreignCallSite: string | null = null;
   for (const file of allSourceFiles) {
     const content = stripComments(fs.readFileSync(path.join(srcDir, file), 'utf8'));
-    if (content.includes('sendFcmOnce(')) {
+    if (/import \{[^}]*\bsendFcmOnce\b[^}]*\}\s*from\s*'\.\/fcmTransport'/.test(content)) {
       foreignCallSite = file;
       break;
     }
   }
   check(
-    `reminderDeliverySender.ts is the ONLY production source file (besides fcmTransport.ts itself) that calls sendFcmOnce( — checked across all of: ${allSourceFiles.join(', ')}`,
+    `reminderDeliverySender.ts is the ONLY production source file (besides fcmTransport.ts itself) that imports the real sendFcmOnce value — checked across all of: ${allSourceFiles.join(', ')}`,
     foreignCallSite === null,
     foreignCallSite ?? undefined
   );

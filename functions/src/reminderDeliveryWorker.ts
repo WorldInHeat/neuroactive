@@ -3,45 +3,66 @@
 // delivery work queue. Wires the pure, Codex-approved decision functions in
 // reminderDeliveryLogic.ts to real Firestore reads/writes.
 //
-// ***** PRODUCTION REACHABILITY (Phase 3A-3 Step 3C-3, extended Step 3C-4) *****
-// This file now exports exactly ONE Cloud Function, `notificationReminderDeliveryDryRun`
-// (see the bottom of this file), wired into functions/src/index.ts. Every OTHER function
-// above remains a plain, exported, testable, dependency-injected primitive — the scheduled
-// export is a thin wrapper around them, using its own module-scope Firestore singleton
-// (matching reminderScheduler.ts's own established convention) precisely because it is the
-// one and only production call site in this file. Reachability: this Cloud Function calls
-// discoverRecoverableDeliveryWork -> acquireDeliveryProcessingLease ->
-// reminderDeliveryAuth.ts's prepareAndFinalizeDelivery -> (Step 3C-4, ONLY on a
-// 'sending-authorized' finalization outcome) reminderDeliverySender.ts's
-// executeControlledSend. See "SENDER REACHABILITY" immediately below for what that last
-// hop actually means in practice today.
+// ***** PRODUCTION REACHABILITY (Phase 3A-3 Step 3C-3, extended Step 3C-4/3C-5/3C-6) *****
+// This file now exports exactly ONE Cloud Function, `notificationReminderDeliveryWorker`
+// (renamed from `notificationReminderDeliveryDryRun` — see the FUNCTION-IDENTITY REPAIR
+// comment at the bottom of this file for why, and the accompanying migration analysis for
+// why the rename is NOT deployed this turn), wired into functions/src/index.ts. Reachability:
+// this Cloud Function calls runDeliveryWorkerBatch -> discoverRecoverableDeliveryWork ->
+// acquireDeliveryProcessingLease -> reminderDeliverySender.ts's processControlledSendCandidate.
 //
-// ***** SENDER REACHABILITY (Step 3C-4) *****
-// processDeliveryQueueCandidate below now imports and, conditionally, calls
-// reminderDeliverySender.ts's executeControlledSend — the ONLY file that ever calls
-// fcmTransport.ts's sendFcmOnce. That call only happens when
-// reminderDeliveryAuth.ts's finalizeDeliveryAuthorization returns
-// `{ outcome: 'sending-authorized', capability }`, which is itself gated by TWO
-// independent layers inside that file (its own REAL_DELIVERY_STAGE constant, and a fresh
-// rollout+uid re-decision inside its transaction) — see reminderDeliveryAuth.ts's file
-// header for the full three-layer enforcement (this file's own import is not one of the
-// three layers; it is simply the wiring, gated entirely by the other two files' own
-// independent locks). With reminderDeliveryAuth.ts's REAL_DELIVERY_STAGE === 'disabled'
-// (required for this implementation) and reminderDeliverySender.ts's OWN, separately
-// declared REAL_DELIVERY_STAGE also 'disabled', this call path is unreachable in
-// production today: `dry-run-validated` remains the only outcome any currently-armed
-// rollout mode can ever produce.
+// CODEX BUILD-TIME AUTHORITY SEPARATION REPAIR (Step 3C-5, SIXTH round, SECOND pass) —
+// there is no longer a separate "reminderDeliveryWorkerCore.ts" at all. The FIFTH round's
+// separate-core-file design (like reminderDeliverySender.ts's own identical FIFTH-round
+// design) could not actually keep a PARAMETERIZED, transport-capable orchestration function
+// out of the deployed artifact while still having production invoke it: `tsc` re-includes
+// and EMITS any file that an included file `import`s, regardless of `exclude` — verified
+// empirically this round. See reminderDeliverySender.ts's own header for the full
+// explanation; the same reasoning applies here verbatim.
 //
-// DEPENDENCY INJECTION, NOT MODULE-SCOPE db — every exported function below takes an
-// explicit `db: FirebaseFirestore.Firestore` parameter rather than closing over a
-// module-level `getFirestore()` singleton (the convention used by reminderScheduler.ts and
-// pushInstallations.ts). Those files are exercised only by Codex review and production
-// traffic, never by a repository-local unit test. This file's task explicitly requires
-// "PURE-adjacent tests with injected/mocked transaction/document behavior" — that is only
-// possible if the Firestore handle is a parameter, not a captured singleton — so this file
-// deliberately departs from the module-scope-db convention. Because nothing here is wired to
-// a Cloud Function this round, there is no production call site that would need a
-// module-scope default anyway.
+// discoverRecoverableDeliveryWork/acquireDeliveryProcessingLease remain exported and
+// db-parameterized (unchanged from every prior round) — Codex has never objected to these:
+// neither is capable of transitively reaching sendFcmOnce on its own (acquisition only ever
+// moves 'queued'/'preparing' Firestore state; it never calls reminderDeliverySender.ts).
+// processDeliveryQueueCandidate/runDeliveryWorkerBatch — the part that DOES reach transport,
+// via reminderDeliverySender.ts's processControlledSendCandidate — are thin, ZERO/ONE-
+// parameter production entry points that privately (module-scope, never exported, captured
+// immutably at module-evaluation time — see the IMMUTABLE CAPTURE block below) obtain the
+// real Admin Firestore instance. There is no parameter anywhere in either exported function
+// through which any caller could substitute a different db or sendCandidate implementation.
+//
+// HOW TESTS STILL EXERCISE THIS EXACT CODE: see reminderDeliverySender.ts's own header for
+// the full explanation of the require-cache-busting + pre-load-mutation technique this
+// file's own test suite uses identically (mutating firebase-admin/app's/firebase-admin/
+// firestore's exports BEFORE first requiring this file, then clearing
+// require.cache[require.resolve('./reminderDeliveryWorker')] to force a fresh, fake-capturing
+// re-evaluation) — squarely inside the "test controls its own require order before first
+// load" case Codex's own instruction (section 9) explicitly carves out of the threat model.
+//
+// ***** SENDER REACHABILITY (Step 3C-4, ARCHITECTURE REPAIRED IN 3C-5/3C-6) *****
+// This file no longer calls reminderDeliveryAuth.ts's prepareAndFinalizeDelivery or any
+// capability-consuming sender function directly. Instead, processDeliveryQueueCandidate below
+// calls reminderDeliverySender.ts's single exported orchestration entry point,
+// processControlledSendCandidate, which internally performs the ENTIRE authorization-then-
+// send flow (OAuth preparation, the fresh final-authorization transaction, and — only if that
+// transaction itself decided 'sending-authorized' — the one sendFcmOnce call, using ITS OWN
+// immutably-captured authority) and returns an already-sanitized result. This file therefore
+// never receives, holds, or could possibly forward a DeliverySendCapability, a raw FCM token,
+// or a raw OAuth token — there is no such value anywhere in this file's own code at all,
+// structurally, not merely by convention.
+//
+// Real send authorization is reachable only when ALL of: reminderDeliveryAuth.ts's own
+// REAL_DELIVERY_STAGE is not 'disabled' (currently 'allowlisted-only'),
+// reminderDeliverySender.ts's OWN, independently-declared REAL_DELIVERY_STAGE also permits it
+// (currently 'allowlisted-only' too, but changed independently — see that file's header for
+// why two separate constants are required), the production rollout document is actually set
+// to 'allowlisted-real-send', and the requesting uid is present in that document's own
+// allowlist — every one of those is verified fresh, inside finalizeDeliveryAuthorization's
+// own transaction, not trusted from any earlier read. General (unrestricted) real sending
+// remains source-disabled regardless of rollout content. Today, the production rollout
+// document remains `{mode:"paused"}` — a source change alone (this commit, undeployed or
+// deployed) does not touch that document, so no send can occur until a separate, later,
+// explicitly authorized rollout mutation.
 //
 // TARGET SNAPSHOT FIELD SHAPE — the original Step 3C design sketch used flat field names
 // (generationAtFanout/tokenVersionAtFanout/installationAudienceIdAtFanout/
@@ -76,30 +97,19 @@
 // node:crypto randomBytes (the same technique already used for the invocation-count tests)
 // and drive the PUBLIC fanOutReminderDelivery exclusively — see reminderDeliveryWorker.test
 // .ts's header for the full rationale.
+'use strict';
+
 import { randomBytes } from 'node:crypto';
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldPath, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions/v2';
-import {
-  buildTerminalWorkStateFields,
-  isValidAttemptCount,
-  requireAllowedTransition,
-  processWithBoundedConcurrency,
-} from './reminderSchedulerLogic';
-import {
-  prepareAndFinalizeDelivery,
-  createGoogleAuthAccessTokenProvider,
-  type AccessTokenProvider,
-  type PrepareAndFinalizeResult,
-  type FinalAuthorizationReason,
-} from './reminderDeliveryAuth';
-import { executeControlledSend, type SendOutcomeCommitResult } from './reminderDeliverySender';
+import { buildTerminalWorkStateFields, isValidAttemptCount, requireAllowedTransition, processWithBoundedConcurrency } from './reminderSchedulerLogic';
+import { processControlledSendCandidate, type SanitizedSendOrchestrationResult } from './reminderDeliverySender';
 import {
   isValidIdForPath,
   isValidReminderId,
   isValidInstallationIdShape,
-  isTerminalDeliveryState,
   requireAllowedDeliveryTransition,
   computeDeliveryLeaseExpiresAtMs,
   decideDeliveryQueueOutcome,
@@ -127,13 +137,24 @@ import {
   isValidAudienceId,
 } from './pushInstallationEpochLogic';
 
-const APP_ID = 'neuroactive-prod';
+// ---------------------------------------------------------------------------------------
+// IMMUTABLE CAPTURE (CODEX BUILD-TIME AUTHORITY SEPARATION REPAIR, SIXTH round, H4) — the
+// SAME technique as reminderDeliverySender.ts's own identical block (see that file's header
+// for the full rationale): getApps/initializeApp/getFirestore are captured into plain local
+// `const` bindings ONCE, at this module's own evaluation time, and never read through the
+// live `firebase-admin/app`/`firebase-admin/firestore` module namespace again.
+// ---------------------------------------------------------------------------------------
+const capturedGetApps = getApps;
+const capturedInitializeApp = initializeApp;
+const capturedGetFirestore = getFirestore;
+// Captures reminderDeliverySender.ts's own exported entry point too — the same reasoning
+// applies at this module boundary as at the raw-dependency boundary above: an un-captured,
+// live property read through the imported sender module's namespace object at every call
+// site would let a future in-process mutation of reminderDeliverySender.ts's exports
+// redirect what this file calls.
+const capturedProcessControlledSendCandidate = processControlledSendCandidate;
 
-// Retained only to document that isTerminalDeliveryState is deliberately NOT what governs
-// queue-repair branching in this file (see decideDeliveryQueueOutcome's own comment on why
-// 'sending' — not a terminal delivery state — must still be routed through the terminal
-// queue-repair path). Referencing it here keeps the import intentional rather than dead.
-void isTerminalDeliveryState;
+const APP_ID = 'neuroactive-prod';
 
 // ---------------------------------------------------------------------------------------
 // Path helpers — mirrors reminderScheduler.ts's own per-file path-helper convention.
@@ -412,6 +433,8 @@ function commitFanoutOutcome(
 // DELIVERY WORK QUEUE — collection-group discovery + transactional lease acquisition,
 // structural clone of reminderScheduler.ts's discoverRecoverableWork/acquireProcessingLease
 // adapted to delivery states via reminderDeliveryLogic.ts's delivery-specific pure helpers.
+// NOT transport-capable (never reaches reminderDeliverySender.ts) — remains exported and
+// db-parameterized, unchanged from every prior round.
 // ---------------------------------------------------------------------------------------
 
 export const DELIVERY_QUEUE_BATCH_SIZE = 50;
@@ -606,75 +629,39 @@ export async function acquireDeliveryProcessingLease(
 }
 
 // ---------------------------------------------------------------------------------------
-// PHASE 3A-3 STEP 3C-3 — batch orchestration integrating acquireDeliveryProcessingLease
-// with reminderDeliveryAuth.ts's OAuth-preparation + final-authorization pipeline. Kept
-// deliberately separate from acquireDeliveryProcessingLease itself (single responsibility):
-// this function only decides WHETHER to call prepareAndFinalizeDelivery, never duplicates
-// its logic.
+// PRIVATE PRODUCTION AUTHORITY — module-scope, NOT exported. No property on this module's
+// compiled exports object can ever be assigned to redirect what this returns; the only way
+// to change its behavior is to edit this file's own source. Matches
+// reminderDeliverySender.ts's own identical private resolver. Uses ONLY the captured
+// bindings above.
 // ---------------------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------------------
-// CODEX REPAIR ROUND (Step 3C-4) — SANITIZED FINALIZATION RESULT.
-//
-// The real PrepareAndFinalizeResult / FinalAuthorizationResult union has exactly ONE
-// variant — 'sending-authorized' — that carries a secret-bearing DeliverySendCapability
-// (accessToken, installationToken). That object must be consumed immediately by
-// executeControlledSend and MUST NOT survive into any value this file (or its own
-// callers, e.g. a future batch summary/log) returns. SanitizedFinalizationOutcome is a
-// SEPARATE type whose 'sending-authorized' variant has NO capability field AT ALL in its
-// own type declaration — this is a structural guarantee, not a runtime redaction: there is
-// no way to satisfy this type's shape by including a capability, so no future edit to this
-// file can accidentally forward one through undetected by the compiler.
-// ---------------------------------------------------------------------------------------
+let cachedWorkerDb: FirebaseFirestore.Firestore | null = null;
 
-export type SanitizedFinalizationOutcome =
-  | { outcome: 'oauth-preparation-failed' }
-  | { outcome: 'dry-run-validated' }
-  | { outcome: 'sending-authorized' }
-  | { outcome: 'cancelled'; reason: FinalAuthorizationReason }
-  | { outcome: 'invalid-delivery'; reason: string }
-  | { outcome: 'stale-fence'; reason: 'stale-processing-fence' }
-  | { outcome: 'delivery-not-found' };
-
-// Reconstructs a SanitizedFinalizationOutcome field-by-field from the real result — NEVER
-// via `{ ...finalization }` or any other spread of the original object, so a future field
-// added to FinalAuthorizationResult (secret-bearing or not) can never ride along
-// unnoticed. The 'sending-authorized' branch in particular never references
-// `finalization.capability` at all, anywhere in this function.
-function sanitizeFinalizationOutcome(finalization: PrepareAndFinalizeResult): SanitizedFinalizationOutcome {
-  switch (finalization.outcome) {
-    case 'oauth-preparation-failed':
-      return { outcome: 'oauth-preparation-failed' };
-    case 'dry-run-validated':
-      return { outcome: 'dry-run-validated' };
-    case 'sending-authorized':
-      return { outcome: 'sending-authorized' };
-    case 'cancelled':
-      return { outcome: 'cancelled', reason: finalization.reason };
-    case 'invalid-delivery':
-      return { outcome: 'invalid-delivery', reason: finalization.reason };
-    case 'stale-fence':
-      return { outcome: 'stale-fence', reason: finalization.reason };
-    case 'delivery-not-found':
-      return { outcome: 'delivery-not-found' };
+function getProductionWorkerDb(): FirebaseFirestore.Firestore {
+  if (cachedWorkerDb === null) {
+    if (capturedGetApps().length === 0) capturedInitializeApp();
+    cachedWorkerDb = capturedGetFirestore();
   }
+  return cachedWorkerDb;
 }
+
+// ---------------------------------------------------------------------------------------
+// TRANSPORT-CAPABLE BATCH ORCHESTRATION — the wrappers below accept ONLY inert values (a
+// DocumentReference sourced from this file's own trusted discovery / no parameters at all,
+// respectively) and privately compose the real db (from getProductionWorkerDb() above) with
+// the real reminderDeliverySender.ts processControlledSendCandidate. Neither accepts a
+// Firestore instance, an AccessTokenProvider, or a sendCandidate implementation from its
+// own caller.
+// ---------------------------------------------------------------------------------------
 
 export type ProcessDeliveryCandidateResult = {
   acquisition: DeliveryLeaseAcquireResult;
-  finalization?: SanitizedFinalizationOutcome;
-  // Present ONLY when finalization.outcome === 'sending-authorized'. Already secret-free
-  // by construction — SendOutcomeCommitResult never carries a token/capability field (see
-  // reminderDeliverySender.ts). Unreachable in production today; see this file's "SENDER
-  // REACHABILITY" header comment.
-  sendResult?: SendOutcomeCommitResult;
+  outcome?: SanitizedSendOrchestrationResult;
 };
 
-export async function processDeliveryQueueCandidate(
-  db: FirebaseFirestore.Firestore,
-  ref: FirebaseFirestore.DocumentReference,
-  accessTokenProvider: AccessTokenProvider
-): Promise<ProcessDeliveryCandidateResult> {
+export async function processDeliveryQueueCandidate(ref: FirebaseFirestore.DocumentReference): Promise<ProcessDeliveryCandidateResult> {
+  const db = getProductionWorkerDb();
   const acquisition = await acquireDeliveryProcessingLease(db, ref);
   if (acquisition.outcome !== 'acquired') {
     // still-leased / not-found / already-terminal / terminal-repaired /
@@ -682,24 +669,20 @@ export async function processDeliveryQueueCandidate(
     // this candidate this pass.
     return { acquisition };
   }
-  const finalization = await prepareAndFinalizeDelivery(db, ref, acquisition.processingAttemptCount, accessTokenProvider);
-  if (finalization.outcome === 'sending-authorized') {
-    // The ONLY call site, anywhere in this file, that can reach reminderDeliverySender.ts
-    // — and only ever with a capability this exact call just received from a successful
-    // finalization commit, immediately, never retained or passed anywhere else first. The
-    // `capability` local below (and `finalization` itself) goes out of scope the instant
-    // this block ends — only the sanitized outcome and the (already secret-free)
-    // sendResult are ever returned.
-    const { capability } = finalization;
-    const sendResult = await executeControlledSend(db, capability);
-    return { acquisition, finalization: sanitizeFinalizationOutcome(finalization), sendResult };
-  }
-  return { acquisition, finalization: sanitizeFinalizationOutcome(finalization) };
+  // The ONLY call site, anywhere in this file, that reaches reminderDeliverySender.ts —
+  // this single call performs OAuth preparation, the fresh final-authorization
+  // transaction, and (only if that transaction itself authorized it) the one transport
+  // attempt, entirely internally, using ITS OWN immutably-captured authority. This file
+  // never sees a capability, a raw token, or any authorization-relevant secret at any
+  // point. Only the ref's own path-derived identity (never the ref object, never a db)
+  // crosses this call.
+  const outcome = await capturedProcessControlledSendCandidate(ref.parent.parent?.id, ref.id, acquisition.processingAttemptCount);
+  return { acquisition, outcome };
 }
 
 export const DELIVERY_PROCESSING_CONCURRENCY = 10;
 
-export type DeliveryDryRunBatchSummary = {
+export type DeliveryWorkerBatchSummary = {
   candidateCount: number;
   stillLeasedCount: number;
   notFoundCount: number;
@@ -712,26 +695,16 @@ export type DeliveryDryRunBatchSummary = {
   cancelledCount: number;
   staleFenceCount: number;
   deliveryNotFoundCount: number;
-  // Step 3C-4 additions — unreachable in production today (reminderDeliveryAuth.ts's
-  // REAL_DELIVERY_STAGE === 'disabled' guarantees finalization never returns
-  // 'sending-authorized'), kept complete so this summary type covers every possible
-  // finalization/send outcome rather than silently collapsing a future reachable one into
-  // unexpectedFailureCount once a stage change makes them reachable.
   sendAcceptedCount: number;
   sendRejectedFinalCount: number;
   sendUnknownOutcomeCount: number;
   sendRequeuedForRetryCount: number;
   sendOutcomeFenceMismatchCount: number;
-  // CODEX REPAIR ROUND (Step 3C-4): renamed from sendInvalidDeliveryCount —
-  // reminderDeliverySender.ts's commitSendOutcome no longer has an 'invalid-delivery'
-  // outcome at all (see its own file header); this now tallies the replacement
-  // 'persistence-failed' disposition, which performs zero Firestore mutation and leaves
-  // the document in 'sending' for operator review.
   sendPersistenceFailedCount: number;
   unexpectedFailureCount: number;
 };
 
-function emptyDeliveryDryRunBatchSummary(): Omit<DeliveryDryRunBatchSummary, 'candidateCount'> {
+function emptyDeliveryWorkerBatchSummary(): Omit<DeliveryWorkerBatchSummary, 'candidateCount'> {
   return {
     stillLeasedCount: 0,
     notFoundCount: 0,
@@ -757,19 +730,15 @@ function emptyDeliveryDryRunBatchSummary(): Omit<DeliveryDryRunBatchSummary, 'ca
 // Discovers due delivery work and drives each candidate through acquisition + OAuth
 // preparation + final authorization, with the SAME bounded-concurrency worker pool Step 2
 // already uses (reminderSchedulerLogic.ts's processWithBoundedConcurrency, reused rather
-// than reinvented). `accessTokenProvider` is created ONCE by the caller (see
-// notificationReminderDeliveryDryRun below) and shared across every candidate in this
-// batch, so google-auth-library's internal token caching amortizes across the whole batch.
-export async function runDeliveryDryRunBatch(
-  db: FirebaseFirestore.Firestore,
-  accessTokenProvider: AccessTokenProvider
-): Promise<DeliveryDryRunBatchSummary> {
+// than reinvented). Takes ZERO parameters — nothing for a caller to inject.
+export async function runDeliveryWorkerBatch(): Promise<DeliveryWorkerBatchSummary> {
+  const db = getProductionWorkerDb();
   const candidateRefs = await discoverRecoverableDeliveryWork(db);
-  const counters = emptyDeliveryDryRunBatchSummary();
+  const counters = emptyDeliveryWorkerBatchSummary();
 
   await processWithBoundedConcurrency(candidateRefs, DELIVERY_PROCESSING_CONCURRENCY, async (ref) => {
     try {
-      const result = await processDeliveryQueueCandidate(db, ref, accessTokenProvider);
+      const result = await processDeliveryQueueCandidate(ref);
       switch (result.acquisition.outcome) {
         case 'still-leased':
           counters.stillLeasedCount++;
@@ -792,7 +761,10 @@ export async function runDeliveryDryRunBatch(
         case 'acquired':
           break; // fall through to finalization tally below.
       }
-      switch (result.finalization?.outcome) {
+      // A single switch, since processControlledSendCandidate already returns ONE
+      // unified SanitizedSendOrchestrationResult covering both the dry-run/cancellation
+      // outcomes and the real-send outcomes.
+      switch (result.outcome?.outcome) {
         case 'oauth-preparation-failed':
           counters.oauthPreparationFailedCount++;
           return;
@@ -810,33 +782,24 @@ export async function runDeliveryDryRunBatch(
           return;
         case 'invalid-delivery':
           // finalizeDeliveryAuthorization's own invalid-delivery outcome (schema
-          // corruption discovered at final-authorization time, including the Step 3C-4
-          // 'send-attempt-count-exhausted' defensive branch) — distinct from
-          // sendResult's own 'invalid-delivery', tallied separately below.
+          // corruption discovered at final-authorization time, including the
+          // 'send-attempt-count-exhausted' defensive branch).
           counters.unexpectedFailureCount++;
           return;
-        case 'sending-authorized':
-          break; // fall through to sendResult tally below — unreachable in production today.
-        default:
-          counters.unexpectedFailureCount++;
-          return;
-      }
-
-      switch (result.sendResult?.outcome) {
         case 'terminalized':
-          if (result.sendResult.state === 'accepted-by-fcm') counters.sendAcceptedCount++;
-          else if (result.sendResult.state === 'rejected-final') counters.sendRejectedFinalCount++;
+          if (result.outcome.state === 'accepted-by-fcm') counters.sendAcceptedCount++;
+          else if (result.outcome.state === 'rejected-final') counters.sendRejectedFinalCount++;
           else counters.sendUnknownOutcomeCount++;
-          break;
+          return;
         case 'requeued-for-retry':
           counters.sendRequeuedForRetryCount++;
-          break;
+          return;
         case 'outcome-fence-mismatch':
           counters.sendOutcomeFenceMismatchCount++;
-          break;
+          return;
         case 'persistence-failed':
           counters.sendPersistenceFailedCount++;
-          break;
+          return;
         default:
           counters.unexpectedFailureCount++;
       }
@@ -854,28 +817,37 @@ export async function runDeliveryDryRunBatch(
 
 // ---------------------------------------------------------------------------------------
 // SCHEDULED ENTRY POINT — the first (and, this round, only) way anything in this file can
-// run in production. Module-scope Firestore singleton, matching reminderScheduler.ts's own
-// established convention — every function above this point remains fully
-// dependency-injected and testable; only this export uses it. `createGoogleAuthAccessToken
-// Provider()` is called ONCE per invocation (not once per delivery), consistent with
-// runDeliveryDryRunBatch's own doc comment on why that amortizes google-auth-library's
-// internal token caching across the whole batch.
+// run in production. Takes ZERO parameters — there is nothing here for any caller to
+// inject, since this exported value is a registered Cloud Function (invoked only by the
+// Cloud Functions runtime via its own event plumbing, never by a normal same-process
+// function call with attacker-chosen arguments) whose handler body calls the now fully
+// trusted-internal runDeliveryWorkerBatch().
 //
-// NO SENDER: this function calls runDeliveryDryRunBatch and nothing else. There is no
-// import of fcmTransport/sendFcmOnce/getMessaging/node:https/fetch anywhere in this file —
-// see the file header. The deepest reachable delivery state remains 'dry-run-validated'.
+// Whether a real send is EVER actually authorized for a given candidate depends entirely on
+// processControlledSendCandidate's own fresh authorization (both independent
+// REAL_DELIVERY_STAGE constants, and the production rollout document's actual
+// mode/allowlist) — not on anything this scheduled entry point decides. Today the deployed
+// production rollout document remains `{mode:"paused"}`, so 'dry-run-validated' is still the
+// only outcome any real invocation reaches — but that is a rollout-configuration fact, not a
+// structural one enforced by this file.
+//
+// CODEX FUNCTION-IDENTITY REPAIR (M1) — this export was previously named
+// notificationReminderDeliveryDryRun. Once this source is deployed and later armed via a
+// separate rollout mutation, this SAME function can perform real allowlisted sends — a name
+// containing "DryRun" would then be operationally false. Renamed to
+// notificationReminderDeliveryWorker, an accurate, durable name that does not claim a
+// behavior this function no longer structurally guarantees. runDeliveryDryRunBatch/
+// DeliveryDryRunBatchSummary were likewise renamed to runDeliveryWorkerBatch/
+// DeliveryWorkerBatchSummary — genuinely dry-run-SPECIFIC names (dryRunValidatedCount, the
+// 'dry-run-validated' outcome itself, etc.) are UNCHANGED, since those name a real, still-
+// existing state distinct from an actual send, not the batch-level operation as a whole. See
+// the accompanying migration analysis (Codex report, this round) for why the Cloud Function
+// rename is NOT deployed this turn.
 // ---------------------------------------------------------------------------------------
-if (getApps().length === 0) initializeApp();
-const productionDb = getFirestore();
-
-export const notificationReminderDeliveryDryRun = onSchedule(
-  { schedule: 'every 5 minutes', timeoutSeconds: 300, memory: '256MiB' },
-  async () => {
-    const accessTokenProvider = createGoogleAuthAccessTokenProvider();
-    const summary = await runDeliveryDryRunBatch(productionDb, accessTokenProvider);
-    logger.info('[ReminderDeliveryWorker] dry-run batch summary', summary);
-  }
-);
+export const notificationReminderDeliveryWorker = onSchedule({ schedule: 'every 5 minutes', timeoutSeconds: 300, memory: '256MiB' }, async () => {
+  const summary = await runDeliveryWorkerBatch();
+  logger.info('[ReminderDeliveryWorker] delivery worker batch summary', summary);
+});
 
 // Exposed for tests only (per the approved design's "3C-2 itself may expose helper
 // functions for fenced no-op/test finalization if needed, but do NOT invent send

@@ -36,7 +36,7 @@
 //
 // HOW TO RUN:
 //   cd functions
-//   npm run build
+//   npm run build:test
 //   node lib/reminderDeliveryWorker.test.js
 import * as fs from 'fs';
 import * as path from 'path';
@@ -44,18 +44,18 @@ import nodeCrypto = require('node:crypto');
 import { FieldValue, FieldPath, Timestamp } from 'firebase-admin/firestore';
 import {
   fanOutReminderDelivery,
+  __test__,
   discoverRecoverableDeliveryWork,
   acquireDeliveryProcessingLease,
-  processDeliveryQueueCandidate,
-  runDeliveryDryRunBatch,
   DELIVERY_QUEUE_BATCH_SIZE,
   DELIVERY_PUBLIC_ID_LENGTH,
   DELIVERY_PROCESSING_CONCURRENCY,
-  __test__,
   type FanoutExecutionResult,
 } from './reminderDeliveryWorker';
-import { DELIVERY_STATES, FANOUT_NONCE_BYTE_LENGTH, deriveDeliveryPublicId, MAX_SEND_ATTEMPTS } from './reminderDeliveryLogic';
+import type * as WorkerModule from './reminderDeliveryWorker';
 import type { AccessTokenProvider } from './reminderDeliveryAuth';
+import type { FcmSendOutcome, SendFcmOnceParams } from './fcmTransport';
+import { DELIVERY_STATES, FANOUT_NONCE_BYTE_LENGTH, deriveDeliveryPublicId, MAX_SEND_ATTEMPTS } from './reminderDeliveryLogic';
 
 let pass = 0;
 let fail = 0;
@@ -516,6 +516,76 @@ const ALLOWED_CHILD_KEYS = new Set([
   'createdAt',
   'updatedAt',
 ]);
+
+// =========================================================================================
+// REQUIRE-CACHE-BUSTING LOADER (Step 3C-5, SIXTH round, SECOND pass) — see
+// reminderDeliverySender.test.ts's own header for the full rationale. processDeliveryQueueCandidate
+// / runDeliveryWorkerBatch privately resolve their own db authority AND their own captured
+// reference to reminderDeliverySender.ts's processControlledSendCandidate — there is no
+// parameter through which to inject fakes. This loader mutates the 4 underlying dependency
+// modules' exports to fakes, then freshly (cache-busted) requires reminderDeliverySender.ts
+// FIRST (so it captures the fakes) and reminderDeliveryWorker.ts SECOND (so its own capture
+// of processControlledSendCandidate picks up that same fresh, fake-wired sender instance),
+// then restores the real exports immediately. This drives the REAL production wiring
+// end-to-end — acquisition -> OAuth preparation -> fresh final-authorization -> transport —
+// through genuinely unmodified code, never a reimplementation.
+// =========================================================================================
+
+interface DependencyFakes {
+  db: FirebaseFirestore.Firestore;
+  accessTokenProvider: AccessTokenProvider;
+  transport: (params: SendFcmOnceParams) => Promise<FcmSendOutcome>;
+}
+
+// firebase-admin's own named exports (getApps/initializeApp) are getter-only accessor
+// properties (ESM/CJS interop), not plain writable values like our own compiled modules'
+// exports — a bare `mod.prop = fake` assignment throws against a getter-only property.
+// Object.defineProperty works uniformly against both shapes and lets the original descriptor
+// (accessor or data) be restored exactly.
+function setExport(mod: object, key: string, value: unknown): PropertyDescriptor | undefined {
+  const original = Object.getOwnPropertyDescriptor(mod, key);
+  Object.defineProperty(mod, key, { value, writable: true, configurable: true, enumerable: true });
+  return original;
+}
+function restoreExport(mod: object, key: string, original: PropertyDescriptor | undefined): void {
+  if (original) Object.defineProperty(mod, key, original);
+}
+
+function loadFreshWorkerModule(fakes: DependencyFakes): typeof WorkerModule {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const appMod = require('firebase-admin/app') as object;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const firestoreMod = require('firebase-admin/firestore') as object;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const authMod = require('./reminderDeliveryAuth') as object;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const transportMod = require('./fcmTransport') as object;
+
+  const originals = {
+    getApps: setExport(appMod, 'getApps', () => []),
+    initializeApp: setExport(appMod, 'initializeApp', () => undefined),
+    getFirestore: setExport(firestoreMod, 'getFirestore', () => fakes.db),
+    createGoogleAuthAccessTokenProvider: setExport(authMod, 'createGoogleAuthAccessTokenProvider', () => fakes.accessTokenProvider),
+    sendFcmOnce: setExport(transportMod, 'sendFcmOnce', fakes.transport),
+  };
+
+  try {
+    const senderResolved = require.resolve('./reminderDeliverySender');
+    delete require.cache[senderResolved];
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    require('./reminderDeliverySender'); // fresh sender instance captures the fakes; the worker require below picks up THIS cached instance.
+    const workerResolved = require.resolve('./reminderDeliveryWorker');
+    delete require.cache[workerResolved];
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require('./reminderDeliveryWorker') as typeof WorkerModule;
+  } finally {
+    restoreExport(appMod, 'getApps', originals.getApps);
+    restoreExport(appMod, 'initializeApp', originals.initializeApp);
+    restoreExport(firestoreMod, 'getFirestore', originals.getFirestore);
+    restoreExport(authMod, 'createGoogleAuthAccessTokenProvider', originals.createGoogleAuthAccessTokenProvider);
+    restoreExport(transportMod, 'sendFcmOnce', originals.sendFcmOnce);
+  }
+}
 
 async function main(): Promise<void> {
   // =======================================================================================
@@ -1195,8 +1265,17 @@ async function main(): Promise<void> {
   // =======================================================================================
   // PHASE 3A-3 STEP 3C-3 — integration: acquireDeliveryProcessingLease ->
   // prepareAndFinalizeDelivery, and the bounded batch runner. Exhaustive final-authorization
-  // scenario coverage lives in reminderDeliveryAuth.test.ts; these tests only prove the
-  // WIRING between acquisition and finalization behaves correctly end to end.
+  // scenario coverage lives in reminderDeliveryAuth.test.ts / reminderDeliverySender.test.ts;
+  // these tests only prove the WIRING between acquisition and finalization behaves correctly
+  // end to end.
+  //
+  // CODEX BUILD-TIME AUTHORITY SEPARATION REPAIR (SIXTH round) — processDeliveryQueueCandidate
+  // and runDeliveryWorkerBatch (now merged directly into reminderDeliveryWorker.ts) accept NO
+  // db/sendCandidate parameters at all; both privately resolve real production authority.
+  // These tests drive them through loadFreshWorkerModule (see its own header above), which
+  // wires a fake db/OAuth-provider/transport through the SAME require-cache-busting technique
+  // reminderDeliverySender.test.ts uses — proving genuine end-to-end wiring through real,
+  // unmodified production authorization code, never a reimplementation.
   // =======================================================================================
 
   function sha256Hex(value: string): string {
@@ -1256,13 +1335,17 @@ async function main(): Promise<void> {
     return { uid, reminderId, installationId };
   }
 
+  const neverCalledTransport = async (): Promise<FcmSendOutcome> => {
+    throw new Error('test bug: transport must never be called in a dry-run-rollout scenario');
+  };
+
   await checkAsync('[3C-3] processDeliveryQueueCandidate: full happy path acquires and dry-run-validates', async () => {
     const { db, store } = makeFakeDb();
     const { reminderId, installationId } = seedFullDryRunPipeline(store);
-    const provider: AccessTokenProvider = async () => 'fake-oauth-token';
-    const result = await processDeliveryQueueCandidate(db, __test__.deliveryRef(db, reminderId, installationId), provider);
+    const worker = loadFreshWorkerModule({ db, accessTokenProvider: async () => 'fake-oauth-token', transport: neverCalledTransport });
+    const result = await worker.processDeliveryQueueCandidate(worker.__test__.deliveryRef(db, reminderId, installationId));
     if (result.acquisition.outcome !== 'acquired') return false;
-    if (result.finalization?.outcome !== 'dry-run-validated') return false;
+    if (result.outcome?.outcome !== 'dry-run-validated') return false;
     const after = readDoc(store, deliveryPath(reminderId, installationId))!;
     return after.state === 'dry-run-validated' && after.workState === 'terminal';
   });
@@ -1273,15 +1356,21 @@ async function main(): Promise<void> {
     const failingProvider: AccessTokenProvider = async () => {
       throw new Error('synthetic OAuth failure');
     };
-    const result = await processDeliveryQueueCandidate(db, __test__.deliveryRef(db, reminderId, installationId), failingProvider);
+    const worker = loadFreshWorkerModule({ db, accessTokenProvider: failingProvider, transport: neverCalledTransport });
+    const result = await worker.processDeliveryQueueCandidate(worker.__test__.deliveryRef(db, reminderId, installationId));
     if (result.acquisition.outcome !== 'acquired') return false;
-    if (result.finalization?.outcome !== 'oauth-preparation-failed') return false;
+    if (result.outcome?.outcome !== 'oauth-preparation-failed') return false;
     const after = readDoc(store, deliveryPath(reminderId, installationId))!;
     return after.state === 'preparing'; // untouched by the failed finalization attempt.
   });
 
   await checkAsync('[3C-3] processDeliveryQueueCandidate: non-acquired outcomes never invoke finalization at all', async () => {
     const { db, store } = makeFakeDb();
+    let providerCalled = false;
+    const provider: AccessTokenProvider = async () => {
+      providerCalled = true;
+      return 'unused';
+    };
     const reminderId = `${UID}_3c3_notleased`;
     const installationId = hex32(4001);
     seedDoc(
@@ -1289,30 +1378,26 @@ async function main(): Promise<void> {
       deliveryPath(reminderId, installationId),
       validQueuedDeliveryFields(installationId, { workAvailableAt: Timestamp.fromMillis(Date.now() + 60_000) })
     );
-    let providerCalled = false;
-    const provider: AccessTokenProvider = async () => {
-      providerCalled = true;
-      return 'unused';
-    };
-    const result = await processDeliveryQueueCandidate(db, __test__.deliveryRef(db, reminderId, installationId), provider);
-    return result.acquisition.outcome === 'still-leased' && result.finalization === undefined && !providerCalled;
+    const worker = loadFreshWorkerModule({ db, accessTokenProvider: provider, transport: neverCalledTransport });
+    const result = await worker.processDeliveryQueueCandidate(worker.__test__.deliveryRef(db, reminderId, installationId));
+    return result.acquisition.outcome === 'still-leased' && result.outcome === undefined && !providerCalled;
   });
 
-  await checkAsync('[3C-3] runDeliveryDryRunBatch: end-to-end batch discovers, acquires, and dry-run-validates', async () => {
+  await checkAsync('[3C-3] runDeliveryWorkerBatch: end-to-end batch discovers, acquires, and dry-run-validates', async () => {
     const { db, store } = makeFakeDb();
     seedFullDryRunPipeline(store);
-    const provider: AccessTokenProvider = async () => 'fake-oauth-token';
-    const summary = await runDeliveryDryRunBatch(db, provider);
+    const worker = loadFreshWorkerModule({ db, accessTokenProvider: async () => 'fake-oauth-token', transport: neverCalledTransport });
+    const summary = await worker.runDeliveryWorkerBatch();
     return summary.candidateCount === 1 && summary.dryRunValidatedCount === 1 && summary.unexpectedFailureCount === 0;
   });
 
   await checkAsync(
-    "[3C-4] runDeliveryDryRunBatch: even on a real dry-run-validated pass, every new send-related counter stays exactly 0 (proves 'sending-authorized' genuinely never occurs while reminderDeliveryAuth.ts's REAL_DELIVERY_STAGE is disabled, not merely that nothing tests for it)",
+    "[3C-4] runDeliveryWorkerBatch: even on a real dry-run-validated pass, every new send-related counter stays exactly 0 (proves 'sending-authorized' genuinely never occurs for this fixture's rollout mode 'dry-run' — regardless of either file's own REAL_DELIVERY_STAGE, which is now 'allowlisted-only' in both, dry-run mode itself never authorizes a real send — see decideFinalAuthorizationRolloutDisposition)",
     async () => {
       const { db, store } = makeFakeDb();
       seedFullDryRunPipeline(store);
-      const provider: AccessTokenProvider = async () => 'fake-oauth-token';
-      const summary = await runDeliveryDryRunBatch(db, provider);
+      const worker = loadFreshWorkerModule({ db, accessTokenProvider: async () => 'fake-oauth-token', transport: neverCalledTransport });
+      const summary = await worker.runDeliveryWorkerBatch();
       return (
         summary.sendAcceptedCount === 0 &&
         summary.sendRejectedFinalCount === 0 &&
@@ -1324,11 +1409,11 @@ async function main(): Promise<void> {
     }
   );
 
-  await checkAsync('[3C-3] runDeliveryDryRunBatch: bounded batch size and concurrency constants are sane', async () => {
+  await checkAsync('[3C-3] runDeliveryWorkerBatch: bounded batch size and concurrency constants are sane', async () => {
     return DELIVERY_PROCESSING_CONCURRENCY > 0 && DELIVERY_PROCESSING_CONCURRENCY <= DELIVERY_QUEUE_BATCH_SIZE;
   });
 
-  await checkAsync('[3C-3] runDeliveryDryRunBatch: rollout paused (default/missing) -> zero dry-run-validated even with due work present', async () => {
+  await checkAsync('[3C-3] runDeliveryWorkerBatch: rollout paused (default/missing) -> zero dry-run-validated even with due work present', async () => {
     const { db, store } = makeFakeDb();
     // A queued, due delivery exists, but its parent was never fanned out under dry-run
     // rollout (simulating the CURRENT production default where no rollout document exists
@@ -1341,8 +1426,8 @@ async function main(): Promise<void> {
     // Deliberately no rollout document, no parent, no preference, no installation, no claim
     // — proving the batch runner surfaces a 'cancelled'/failure outcome rather than crashing
     // or silently validating.
-    const provider: AccessTokenProvider = async () => 'fake-oauth-token';
-    const summary = await runDeliveryDryRunBatch(db, provider);
+    const worker = loadFreshWorkerModule({ db, accessTokenProvider: async () => 'fake-oauth-token', transport: neverCalledTransport });
+    const summary = await worker.runDeliveryWorkerBatch();
     return summary.candidateCount === 1 && summary.dryRunValidatedCount === 0 && summary.cancelledCount === 1;
   });
 
@@ -1515,6 +1600,17 @@ async function main(): Promise<void> {
 
   // =======================================================================================
   // STATIC NO-SENDER GUARD (report section 25) + PRIVACY AUDIT (section 26).
+  //
+  // CODEX BUILD-TIME AUTHORITY SEPARATION REPAIR (SIXTH round, SECOND pass) — the
+  // acquisition-vs-transport tally logic that FIFTH round's reminderDeliveryWorkerCore.ts
+  // held now lives directly in THIS file (module-private, behind zero-authority-parameter
+  // exports — see this file's own header for why a separate importable core file could
+  // never actually stay out of the deployed artifact). As a direct consequence, this file's
+  // own source DOES now reference the literal delivery states 'sending'/'accepted-by-fcm'/
+  // 'rejected-final'/'dry-run-validated' (in the tally switch inside runDeliveryWorkerBatch)
+  // — the checks below are updated accordingly: this file still never imports fcmTransport.ts
+  // or google-auth-library directly, and never touches a raw token/capability, but it is no
+  // longer literally state-blind the way the FIFTH round's thin wrapper was.
   // =======================================================================================
 
   const workerSourcePath = path.join(__dirname, '..', 'src', 'reminderDeliveryWorker.ts');
@@ -1530,57 +1626,69 @@ async function main(): Promise<void> {
   check('reminderDeliveryWorker.ts never references globalThis.fetch', !codeOnly.includes('globalThis.fetch'));
   check("reminderDeliveryWorker.ts never imports 'google-auth-library'", !codeOnly.includes('google-auth-library'));
   check(
-    "reminderDeliveryWorker.ts never imports 'google-auth-library' directly and never constructs a GoogleAuth instance or calls .getAccessToken( itself — it only imports createGoogleAuthAccessTokenProvider FROM reminderDeliveryAuth.ts, which owns all OAuth logic exclusively (Phase 3A-3 Step 3C-3)",
+    "reminderDeliveryWorker.ts never imports 'google-auth-library' directly and never constructs a GoogleAuth instance or calls .getAccessToken( itself — OAuth logic remains exclusively owned by reminderDeliveryAuth.ts, reached only transitively through reminderDeliverySender.ts",
     !codeOnly.includes("from 'google-auth-library'") && !codeOnly.includes('new GoogleAuth(') && !codeOnly.includes('.getAccessToken(')
   );
   check(
-    "reminderDeliveryWorker.ts never itself references the literal delivery state 'sending' at all (unlike 'accepted-by-fcm'/'rejected-final' below, it never even needs to COMPARE against it — the sendResult union it tallies distinguishes outcomes without ever naming the intermediate state)",
-    !codeOnly.includes("'sending'")
+    "reminderDeliveryWorker.ts never imports or references a DeliverySendCapability-shaped type, and never imports the module-private executeControlledSend/commitSendOutcome from reminderDeliverySender.ts — its only touchpoint with the sender is the single safe orchestration entry point, processControlledSendCandidate",
+    !codeOnly.includes('DeliverySendCapability') && !codeOnly.includes('executeControlledSend') && !codeOnly.includes('commitSendOutcome')
   );
   check(
-    "reminderDeliveryWorker.ts never WRITES the literal delivery states 'accepted-by-fcm'/'rejected-final' (Step 3C-4: it now legitimately COMPARES against them exactly once each, only inside runDeliveryDryRunBatch's sendResult tally switch, to bucket an already-committed outcome into a summary counter — never as the right-hand side of a `state:` write)",
-    !codeOnly.includes("state: 'accepted-by-fcm'") && !codeOnly.includes("state: 'rejected-final'")
+    'no raw installation/FCM token or raw OAuth access token literal identifier (installationToken/accessToken) appears anywhere in this file',
+    !codeOnly.includes('installationToken') && !/\baccessToken\b/.test(codeOnly)
   );
 
   // =======================================================================================
-  // STEP 3C-4 — SENDER WIRING. Behaviorally unreachable while reminderDeliveryAuth.ts's
-  // REAL_DELIVERY_STAGE is 'disabled' (proven above via the send-counter-stays-zero test),
-  // so the wiring itself is verified statically here instead.
+  // STEP 3C-4/3C-5/3C-6 — SENDER WIRING. Both reminderDeliveryAuth.ts's and
+  // reminderDeliverySender.ts's own independent REAL_DELIVERY_STAGE constants are
+  // 'allowlisted-only', but a real send additionally requires the production rollout
+  // document itself to be 'allowlisted-real-send' with the calling uid allowlisted — the
+  // production rollout document remains `{mode:"paused"}` today, so this wiring is still
+  // behaviorally unreachable in production regardless of source stage, verified statically
+  // here. This worker imports processControlledSendCandidate from ./reminderDeliverySender
+  // and immediately, immutably captures it (H3/H4-style) — see the immutable capture section
+  // below.
   // =======================================================================================
   check(
-    'reminderDeliveryWorker.ts imports executeControlledSend from ./reminderDeliverySender, and from no other module',
-    codeOnly.includes("import { executeControlledSend, type SendOutcomeCommitResult } from './reminderDeliverySender';")
+    "reminderDeliveryWorker.ts imports processControlledSendCandidate (plus the SanitizedSendOrchestrationResult type) from ./reminderDeliverySender, and immediately captures it into a top-level const (capturedProcessControlledSendCandidate)",
+    /import \{ processControlledSendCandidate, type SanitizedSendOrchestrationResult \} from '\.\/reminderDeliverySender';/.test(codeOnly) &&
+      codeOnly.includes('const capturedProcessControlledSendCandidate = processControlledSendCandidate;')
   );
   check(
-    'reminderDeliveryWorker.ts contains exactly one call to executeControlledSend, gated behind an explicit check for finalization.outcome === \'sending-authorized\'',
-    (codeOnly.match(/executeControlledSend\(/g) || []).length === 1 && codeOnly.includes("finalization.outcome === 'sending-authorized'")
+    'reminderDeliveryWorker.ts references the bare identifier processControlledSendCandidate exactly twice in its own code (the import + the one capture line) — every actual call site below the capture block uses ONLY the captured local (capturedProcessControlledSendCandidate), never the live import binding again',
+    (codeOnly.match(/(?<!captured)processControlledSendCandidate/g) || []).length === 2
   );
   check(
     'reminderDeliveryWorker.ts never itself imports fcmTransport.ts directly — the only path to it is transitively through reminderDeliverySender.ts',
     !codeOnly.includes("from './fcmTransport'") && !codeOnly.includes('sendFcmOnce')
   );
-  check(
-    "reminderDeliveryWorker.ts never WRITES 'dry-run-validated' itself (only reminderDeliveryAuth.ts's final-authorization transaction may) — the string legitimately appears only in a switch-case comparison against reminderDeliveryAuth.ts's own result type",
-    !codeOnly.includes("state: 'dry-run-validated'")
-  );
-  check(
-    "reminderDeliveryWorker.ts never writes state: 'sending' — the deepest reachable outcome remains 'dry-run-validated', authorized only by reminderDeliveryAuth.ts",
-    !codeOnly.includes("state: 'sending'")
-  );
 
   // =======================================================================================
   // Phase 3A-3 Step 3C-3 — production reachability changed intentionally this round: this
-  // file now exports exactly one Cloud Function, notificationReminderDeliveryDryRun, and
-  // reminderScheduler.ts now calls fanOutReminderDelivery under an explicit rollout gate.
-  // These checks replace the prior round's "not reachable at all" assertions with "reachable
-  // only through the one intended, name-explicit, structurally-no-sender path" assertions.
+  // file now exports exactly one Cloud Function, and reminderScheduler.ts now calls
+  // fanOutReminderDelivery under an explicit rollout gate. These checks replace the prior
+  // round's "not reachable at all" assertions with "reachable only through the one intended
+  // path" assertions. CODEX SENDER-BOUNDARY REPAIR — "structurally-no-sender" is no longer
+  // an accurate description of this path: this file now transitively reaches
+  // processControlledSendCandidate (and, through it, fcmTransport/sendFcmOnce) for every
+  // candidate it processes. Whether a real send is ever actually authorized depends on
+  // rollout configuration and both files' independent REAL_DELIVERY_STAGE constants, not on
+  // this file's own structure.
+  //
+  // CODEX FUNCTION-IDENTITY REPAIR (M1) — the exported Cloud Function was renamed this round
+  // from notificationReminderDeliveryDryRun to notificationReminderDeliveryWorker: once
+  // deployed and later armed, it can perform real allowlisted sends, so a name containing
+  // "DryRun" would be operationally false. This source rename is NOT deployed this turn.
   // =======================================================================================
 
   check(
-    'reminderDeliveryWorker.ts IS now exported from index.ts, exactly as notificationReminderDeliveryDryRun (name makes dry-run-only nature explicit)',
+    'reminderDeliveryWorker.ts IS now exported from index.ts, exactly as notificationReminderDeliveryWorker (renamed from notificationReminderDeliveryDryRun this round — see M1)',
     (() => {
       const indexSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.ts'), 'utf8');
-      return indexSource.includes("export { notificationReminderDeliveryDryRun } from './reminderDeliveryWorker';");
+      return (
+        indexSource.includes("export { notificationReminderDeliveryWorker } from './reminderDeliveryWorker';") &&
+        !indexSource.includes('notificationReminderDeliveryDryRun')
+      );
     })()
   );
   check(
@@ -1588,8 +1696,8 @@ async function main(): Promise<void> {
     (codeOnly.match(/export const \w+ = onSchedule\(/g) || []).length === 1
   );
   check(
-    "the scheduled export's name contains 'DryRun', making its non-sending nature explicit rather than using a generic name that could later conceal real sending",
-    codeOnly.includes('export const notificationReminderDeliveryDryRun = onSchedule(')
+    "the scheduled export's name is notificationReminderDeliveryWorker — no longer contains 'DryRun', which would now be operationally false once this source is deployed and armed (M1); the old name is gone from this file entirely",
+    codeOnly.includes('export const notificationReminderDeliveryWorker = onSchedule(') && !codeOnly.includes('notificationReminderDeliveryDryRun')
   );
   check(
     'reminderScheduler.ts now calls fanOutReminderDelivery, gated behind decideShouldFanOut (never unconditionally)',
@@ -1673,14 +1781,136 @@ async function main(): Promise<void> {
     typeof compiledWorkerModule.fanOutReminderDelivery === 'function'
   );
   check(
-    'no exported runtime function on the compiled module has arity suggesting a 4th (nonce) parameter',
+    'no exported runtime function on the compiled reminderDeliveryWorker.js module has arity suggesting a 4th (nonce) parameter',
     Object.entries(compiledWorkerModule).every(([name, value]) => {
       if (typeof value !== 'function') return true;
       // fanOutReminderDelivery: (db, reminderId, expectedAttemptCount) -> length 3.
-      // acquireDeliveryProcessingLease: (db, ref) -> length 2. discoverRecoverableDeliveryWork:
-      // (db) -> length 1. Every real exported function has arity <= 3; nothing takes 4 params.
+      // processDeliveryQueueCandidate: (ref) -> length 1. runDeliveryWorkerBatch: () ->
+      // length 0. Every real exported function has arity <= 3; nothing takes 4 params.
       return value.length <= 3;
     })
+  );
+
+  // =======================================================================================
+  // TRUSTED-AUTHORITY ATTACK TESTS A/D, K/L (carried forward from the FIFTH round, updated
+  // for the SIXTH round's single-file architecture — there is no longer a separate
+  // reminderDeliveryWorkerCore.js to check; both the acquisition-only helpers and the
+  // transport-capable batch orchestration now live in the same compiled module).
+  // =======================================================================================
+  check(
+    '[trusted-authority A/D] compiled reminderDeliveryWorker.js processDeliveryQueueCandidate has EXACTLY 1 runtime parameter (ref only) — no db, no sendCandidate; it privately obtains its own Firestore authority and the real, immutably-captured sendCandidate',
+    (compiledWorkerModule.processDeliveryQueueCandidate as (...args: unknown[]) => unknown).length === 1
+  );
+  check(
+    '[trusted-authority A/D] compiled reminderDeliveryWorker.js runDeliveryWorkerBatch has EXACTLY 0 runtime parameters — there is nothing left for any caller to inject at all',
+    (compiledWorkerModule.runDeliveryWorkerBatch as (...args: unknown[]) => unknown).length === 0
+  );
+  check(
+    "[trusted-authority] reminderDeliveryWorker.ts privately obtains its own Firestore authority via a non-exported module-scope function (getProductionWorkerDb) — that name does not appear anywhere in this file's own compiled export names, and reminderDeliveryTrustedRuntime.ts (the FOURTH round's writable shared getter module, itself the vulnerability) no longer exists at all in this codebase",
+    codeOnly.includes('function getProductionWorkerDb()') &&
+      !compiledExportNames.includes('getProductionWorkerDb') &&
+      !fs.existsSync(path.join(__dirname, '..', 'src', 'reminderDeliveryTrustedRuntime.ts'))
+  );
+  check(
+    'compiled lib/reminderDeliveryWorker.js exports EXACTLY the expected runtime surface (fanout API + acquisition helpers + zero-authority-parameter batch orchestration + test path helpers — no db/sendCandidate-accepting core export anywhere)',
+    (() => {
+      const expected = [
+        'DELIVERY_PROCESSING_CONCURRENCY',
+        'DELIVERY_PUBLIC_ID_LENGTH',
+        'DELIVERY_QUEUE_BATCH_SIZE',
+        '__test__',
+        'acquireDeliveryProcessingLease',
+        'discoverRecoverableDeliveryWork',
+        'fanOutReminderDelivery',
+        'isValidDeliveryPublicIdFormat',
+        'notificationReminderDeliveryWorker',
+        'processDeliveryQueueCandidate',
+        'runDeliveryWorkerBatch',
+      ].sort();
+      return JSON.stringify(compiledExportNames.slice().sort()) === JSON.stringify(expected);
+    })()
+  );
+
+  // =======================================================================================
+  // CODEX BUILD-TIME AUTHORITY SEPARATION REPAIR (SIXTH round) — H1 regression protection
+  // (see reminderDeliverySender.test.ts's own identical section for why this is a static
+  // config check rather than a real rebuild-from-inside-a-running-test-file) and H4
+  // immutable-capture static proof for THIS file's own private db resolver.
+  // =======================================================================================
+  console.log('\n=== build-time authority separation (H1) + immutable authority capture (H4) ===');
+
+  check(
+    "functions/tsconfig.json excludes 'src/**/*.test.ts' from the PRODUCTION build (there is no longer a testsupport/ directory to exclude — the deleted core files never existed as separately compiled artifacts at all)",
+    (() => {
+      const tsconfig = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'tsconfig.json'), 'utf8')) as { exclude?: string[] };
+      return (tsconfig.exclude ?? []).includes('src/**/*.test.ts');
+    })()
+  );
+
+  const compiledWorkerJsPath = path.join(__dirname, 'reminderDeliveryWorker.js');
+  const compiledWorkerJs = fs.readFileSync(compiledWorkerJsPath, 'utf8');
+  // capturedProcessControlledSendCandidate is included here too (H3/H4-style, applied at the
+  // worker/sender module boundary — see reminderDeliveryWorker.ts's own header comment on
+  // that capture line): an un-captured `sender_1.processControlledSendCandidate(...)` read
+  // would let a future in-process mutation of reminderDeliverySender.ts's own exports
+  // redirect what this file calls, exactly like the 5 raw-dependency captures below.
+  const WORKER_CAPTURED_NAMES = ['capturedGetApps', 'capturedInitializeApp', 'capturedGetFirestore', 'capturedProcessControlledSendCandidate'];
+  const WORKER_DEPENDENCY_FN_NAMES = ['getApps', 'initializeApp', 'getFirestore', 'processControlledSendCandidate'];
+
+  check(
+    'compiled lib/reminderDeliveryWorker.js captures getApps/initializeApp/getFirestore/processControlledSendCandidate into plain top-level `const captured<Name> = <module>_1.<name>;` bindings — exactly one capture line per dependency',
+    WORKER_CAPTURED_NAMES.every((name) => (compiledWorkerJs.match(new RegExp(`const ${name} = \\w+_\\d+\\.\\w+;`, 'g')) || []).length === 1)
+  );
+  check(
+    'after removing the 4 capture lines, none of getApps/initializeApp/getFirestore/processControlledSendCandidate is read a second time through any `<module>_<n>.<name>` property access anywhere else in the compiled file',
+    (() => {
+      let withoutCaptureLines = compiledWorkerJs;
+      for (const name of WORKER_CAPTURED_NAMES) {
+        withoutCaptureLines = withoutCaptureLines.replace(new RegExp(`const ${name} = \\w+_\\d+\\.\\w+;\\n`), '');
+      }
+      const dynamicReadPattern = new RegExp(`\\w+_\\d+\\.(${WORKER_DEPENDENCY_FN_NAMES.join('|')})\\b`);
+      return !dynamicReadPattern.test(withoutCaptureLines);
+    })()
+  );
+
+  await checkAsync(
+    '[module-load-order] requiring the production worker module FIRST, then mutating firebase-admin/app+firestore exports AFTERWARD genuinely changes what those dependency modules expose (attack vector is real) — combined with the static capture proof above, the mutation cannot reach reminderDeliveryWorker.ts\'s own already-captured binding. Never invokes runDeliveryWorkerBatch/processDeliveryQueueCandidate itself (would require real network).',
+    async () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      require('./reminderDeliveryWorker'); // production wrapper loaded and captured FIRST.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const firestoreMod = require('firebase-admin/firestore') as { getFirestore: unknown };
+      const original = firestoreMod.getFirestore;
+      const fake = () => {
+        throw new Error('fake getFirestore should never be reached by the production wrapper');
+      };
+      try {
+        (firestoreMod as { getFirestore: unknown }).getFirestore = fake;
+        return firestoreMod.getFirestore === fake && firestoreMod.getFirestore !== original;
+      } finally {
+        (firestoreMod as { getFirestore: unknown }).getFirestore = original;
+      }
+    }
+  );
+
+  await checkAsync(
+    '[module-load-order, worker/sender boundary] requiring the production worker module FIRST (capturing processControlledSendCandidate), then mutating reminderDeliverySender.js\'s own exported processControlledSendCandidate AFTERWARD genuinely changes what that module exposes — but cannot reach reminderDeliveryWorker.ts\'s own already-captured binding',
+    async () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      require('./reminderDeliveryWorker'); // captured FIRST.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const senderMod = require('./reminderDeliverySender') as { processControlledSendCandidate: unknown };
+      const original = senderMod.processControlledSendCandidate;
+      const fake = async () => {
+        throw new Error('fake processControlledSendCandidate should never be reached by the production worker');
+      };
+      try {
+        (senderMod as { processControlledSendCandidate: unknown }).processControlledSendCandidate = fake;
+        return senderMod.processControlledSendCandidate === fake && senderMod.processControlledSendCandidate !== original;
+      } finally {
+        (senderMod as { processControlledSendCandidate: unknown }).processControlledSendCandidate = original;
+      }
+    }
   );
 
   // Repository-wide nonce-bypass search (report item 7): scan every NON-TEST source file for
