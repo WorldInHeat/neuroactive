@@ -844,7 +844,7 @@ export async function runDeliveryWorkerBatch(): Promise<DeliveryWorkerBatchSumma
 // the accompanying migration analysis (Codex report, this round) for why the Cloud Function
 // rename is NOT deployed this turn.
 // ---------------------------------------------------------------------------------------
-export const notificationReminderDeliveryWorker = onSchedule({ schedule: 'every 5 minutes', timeoutSeconds: 300, memory: '256MiB' }, async () => {
+export const notificationReminderDeliveryWorker = onSchedule({ schedule: 'every 5 minutes', timeoutSeconds: 300, memory: '256MiB', serviceAccount: 'notification-delivery-worker@neuroactive.iam.gserviceaccount.com' }, async () => {
   const summary = await runDeliveryWorkerBatch();
   logger.info('[ReminderDeliveryWorker] delivery worker batch summary', summary);
 });

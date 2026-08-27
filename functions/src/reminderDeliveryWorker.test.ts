@@ -1699,6 +1699,28 @@ async function main(): Promise<void> {
     "the scheduled export's name is notificationReminderDeliveryWorker — no longer contains 'DryRun', which would now be operationally false once this source is deployed and armed (M1); the old name is gone from this file entirely",
     codeOnly.includes('export const notificationReminderDeliveryWorker = onSchedule(') && !codeOnly.includes('notificationReminderDeliveryDryRun')
   );
+
+  // =======================================================================================
+  // PHASE 3A-3 STEP 3C-6C — DEDICATED RUNTIME IDENTITY REGRESSION GUARD. Bound tightly to
+  // notificationReminderDeliveryWorker's own onSchedule(...) options object (captured via a
+  // regex anchored to that exact export name), never to a bare substring search across the
+  // whole file — an unrelated comment or constant mentioning either service-account email
+  // cannot satisfy this check the way a file-wide `codeOnly.includes(...)` could.
+  // =======================================================================================
+  {
+    const workerOnScheduleOptionsMatch = codeOnly.match(
+      /export const notificationReminderDeliveryWorker = onSchedule\(\{([^}]*)\}/
+    );
+    const workerOnScheduleOptions = workerOnScheduleOptionsMatch ? workerOnScheduleOptionsMatch[1] : '';
+    check(
+      "notificationReminderDeliveryWorker's own onSchedule(...) options object declares the dedicated least-privilege runtime service account (Step 3C-6 IAM Gates A-E) — not the shared default Compute SA",
+      workerOnScheduleOptions.includes("serviceAccount: 'notification-delivery-worker@neuroactive.iam.gserviceaccount.com'")
+    );
+    check(
+      "notificationReminderDeliveryWorker's own onSchedule(...) options object does NOT declare the old shared default Compute SA as its runtime identity",
+      workerOnScheduleOptionsMatch !== null && !workerOnScheduleOptions.includes('1010503840940-compute@developer.gserviceaccount.com')
+    );
+  }
   check(
     'reminderScheduler.ts now calls fanOutReminderDelivery, gated behind decideShouldFanOut (never unconditionally)',
     (() => {
