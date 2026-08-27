@@ -22,11 +22,13 @@ import {
   prepareAndFinalizeDelivery,
   acquireOAuthAccessToken,
   decideFinalAuthorizationRolloutDisposition,
+  validateExperimentGateSchema,
   REAL_DELIVERY_STAGE,
   type AccessTokenProvider,
   type FinalAuthorizationResult,
 } from './reminderDeliveryAuth';
 import { OPAQUE_ID_LENGTH, MAX_SEND_ATTEMPTS } from './reminderDeliveryLogic';
+import { buildReminderId } from './reminderSchedulerLogic';
 
 // A well-formed OAuth token, used as the 4th `accessToken` argument every
 // finalizeDeliveryAuthorization call site below now requires (Step 3C-4). Never asserted
@@ -135,8 +137,24 @@ class FakeTransaction {
   }
 }
 
-function makeFakeDb(): { db: FirebaseFirestore.Firestore; store: Store } {
+// Step 3C-7 (Codex commit-semantics repair round) — commit-failure simulation. The callback
+// result must NOT escape to the caller until a simulated atomic commit succeeds: on a
+// simulated failure, the outer runTransaction promise REJECTS, none of the callback's
+// staged writes ever reach the durable store, and the caller never sees the would-be
+// result. `failWholeCommit` simulates the entire commit being rejected (e.g. a transient
+// backend error) independent of which documents were touched; `failPaths` simulates one
+// specific document's write being rejected within an otherwise-fine commit — Firestore's
+// commit is all-or-nothing, so EITHER failure mode must still leave every pending write
+// unapplied, never a partial subset. Both are checked (fail case) BEFORE any write is
+// applied (success case), modeling atomicity rather than mid-loop partial application.
+interface CommitControl {
+  failWholeCommit: boolean;
+  failPaths: Set<string>;
+}
+
+function makeFakeDb(): { db: FirebaseFirestore.Firestore; store: Store; commitControl: CommitControl } {
   const store: Store = new Map();
+  const commitControl: CommitControl = { failWholeCommit: false, failPaths: new Set() };
   const db = {
     doc(p: string) {
       return new FakeDocumentRef(store, p);
@@ -144,6 +162,17 @@ function makeFakeDb(): { db: FirebaseFirestore.Firestore; store: Store } {
     async runTransaction<T>(cb: (t: FakeTransaction) => Promise<T>): Promise<T> {
       const transaction = new FakeTransaction(store);
       const result = await cb(transaction);
+      if (commitControl.failWholeCommit) {
+        throw new Error('SIMULATED_COMMIT_FAILURE: whole transaction commit rejected');
+      }
+      for (const write of transaction.pendingWrites) {
+        if (commitControl.failPaths.has(write.path)) {
+          throw new Error(`SIMULATED_COMMIT_FAILURE: write to ${write.path} rejected`);
+        }
+      }
+      // All simulated-failure checks passed above (BEFORE any write below) — models
+      // Firestore's atomic all-or-nothing commit: either every pending write applies, or
+      // (via the throws above) none does.
       for (const write of transaction.pendingWrites) {
         const existing = store.get(write.path) ?? {};
         store.set(write.path, { ...existing, ...resolveFieldValues(write.data) });
@@ -151,7 +180,7 @@ function makeFakeDb(): { db: FirebaseFirestore.Firestore; store: Store } {
       return result;
     },
   };
-  return { db: db as unknown as FirebaseFirestore.Firestore, store };
+  return { db: db as unknown as FirebaseFirestore.Firestore, store, commitControl };
 }
 
 function seedDoc(store: Store, docPath: string, data: Record<string, unknown>): void {
@@ -192,6 +221,9 @@ function rolloutPath(): string {
 function tokenClaimPath(tokenHash: string): string {
   return `artifacts/${APP_ID}/pushTokenClaims/${tokenHash}`;
 }
+function experimentGatePath(): string {
+  return `artifacts/${APP_ID}/systemConfig/firstRealSendExperimentGate`;
+}
 
 const RAW_TOKEN = 'raw-fcm-token-should-never-persist-or-log';
 const VALID_FANOUT_EXECUTION_ID = 'D'.repeat(OPAQUE_ID_LENGTH);
@@ -213,10 +245,20 @@ function seedHappyPath(
     tokenClaim?: Record<string, unknown> | null;
     installationId?: string;
     token?: string;
+    // Step 3C-7 — omitted (the default) means NO gate document is seeded at all, which is
+    // the correct default for the overwhelming majority of scenarios below that never reach
+    // the real-send continuation (dry-run/paused/non-allowlisted all return or cancel before
+    // the gate is ever read) and is also exactly the fixture the dedicated
+    // 'experiment-gate-missing' test needs. Pass `{}` to seed a valid ARMED gate matching
+    // this fixture's own uid/reminderId/installationId exactly; pass a partial object to
+    // override specific fields on top of that valid-armed base (e.g. to build a malformed,
+    // consumed, or identity-mismatched gate for the dedicated gate tests below).
+    experimentGate?: Record<string, unknown>;
   } = {}
 ): Fixture {
   const uid = 'user-1';
   const reminderId = `${uid}_1000`;
+  const scheduledForMs = 1000;
   const installationId = overrides.installationId ?? hex32(1);
   const token = overrides.token ?? RAW_TOKEN;
   const tokenHash = sha256Hex(token);
@@ -296,6 +338,20 @@ function seedHappyPath(
 
   if (overrides.tokenClaim !== null) {
     seedDoc(store, tokenClaimPath(tokenHash), { installationId, uid, ...overrides.tokenClaim });
+  }
+
+  if (overrides.experimentGate !== undefined) {
+    seedDoc(store, experimentGatePath(), {
+      state: 'armed',
+      expectedUid: uid,
+      expectedReminderId: reminderId,
+      expectedScheduledForMs: scheduledForMs,
+      expectedInstallationId: installationId,
+      createdAt: Timestamp.now(),
+      consumedAt: null,
+      consumedByExecutionId: null,
+      ...overrides.experimentGate,
+    });
   }
 
   return { uid, reminderId, installationId, deliveryRef: db.doc(deliveryPath(reminderId, installationId)) };
@@ -421,7 +477,7 @@ async function main(): Promise<void> {
   await checkAsync(
     "[3C-5] rollout allowlisted-real-send, uid ON the allowlist -> sending-authorized, with a well-formed one-shot capability",
     async () => {
-      const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] } });
+      const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, experimentGate: {} });
       if (result.outcome !== 'sending-authorized') return false;
       const cap = result.capability;
       return (
@@ -457,14 +513,14 @@ async function main(): Promise<void> {
   );
 
   await checkAsync("[3C-5] rollout allowlisted-real-send, DUPLICATE uid entries, one matching -> still authorized (parser does not dedupe, membership check is a plain .includes())", async () => {
-    const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1', 'user-1', 'someone-else'] } });
+    const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1', 'user-1', 'someone-else'] }, experimentGate: {} });
     return result.outcome === 'sending-authorized';
   });
 
   await checkAsync(
     '[3C-5] rollout allowlisted-real-send with an extra, unrecognized rollout document field -> still authorized (parseRolloutConfig only ever reads mode/allowlistUids; unknown fields are silently ignored, matching its existing, established contract — not a new behavior introduced this round)',
     async () => {
-      const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'], unexpectedField: 'ignored-value' } });
+      const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'], unexpectedField: 'ignored-value' }, experimentGate: {} });
       return result.outcome === 'sending-authorized';
     }
   );
@@ -504,7 +560,7 @@ async function main(): Promise<void> {
     "[3C-5] sending-authorized write: exact atomic shape (state='sending', workState='terminal', sendAttemptCount=1, sendExecutionId/sendIntentAtMs present, neither installationToken nor accessToken ever persisted)",
     async () => {
       const { db, store } = makeFakeDb();
-      const fixture = seedHappyPath(db, store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] } });
+      const fixture = seedHappyPath(db, store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, experimentGate: {} });
       await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
       const after = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!;
       const serialized = JSON.stringify(after);
@@ -525,7 +581,7 @@ async function main(): Promise<void> {
   await checkAsync(
     '[3C-5] sending-authorized outcome: neither installationToken nor accessToken appear in the returned result when serialized carelessly by a hypothetical logging call (capability fields are only ever consumed by the immediate caller, never logged by this file itself — see the static no-console check below)',
     async () => {
-      const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] } });
+      const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, experimentGate: {} });
       if (result.outcome !== 'sending-authorized') return false;
       // This assertion documents that the CAPABILITY OBJECT ITSELF necessarily contains the
       // secrets (by design — that's its whole purpose) — the safety property is that
@@ -967,6 +1023,24 @@ async function main(): Promise<void> {
     "reminderDeliveryAuth.ts's H1 provenance equality check compares fanoutExecutionIdAtCreation to the parent's own fanoutExecutionId via strict !== (exact equality required, not a weaker comparison)",
     codeOnly.includes('fanoutExecutionIdAtCreation !== fanoutTupleValidation.outcome.fanoutExecutionId')
   );
+  check(
+    "[Step 3C-7 / A27] reminderDeliveryAuth.ts contains exactly ONE transaction.update call site targeting the experiment gate, and it writes state: 'consumed' — no production code path ever re-arms the gate back to 'armed'",
+    (codeOnly.match(/transaction\.update\(experimentGateRef\(db\)/g) || []).length === 1 &&
+      /transaction\.update\(experimentGateRef\(db\),\s*\{\s*state:\s*'consumed'/.test(codeOnly)
+  );
+  check(
+    '[Step 3C-7 / A27] reminderDeliveryWorker.ts and reminderDeliverySender.ts never reference the experiment gate at all (neither the literal path segment nor an "experimentGateRef"-shaped helper) — only reminderDeliveryAuth.ts ever touches this document',
+    (() => {
+      const workerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'reminderDeliveryWorker.ts'), 'utf8');
+      const senderSourceForGateCheck = fs.readFileSync(path.join(__dirname, '..', 'src', 'reminderDeliverySender.ts'), 'utf8');
+      return (
+        !workerSource.includes('firstRealSendExperimentGate') &&
+        !workerSource.includes('experimentGateRef') &&
+        !senderSourceForGateCheck.includes('firstRealSendExperimentGate') &&
+        !senderSourceForGateCheck.includes('experimentGateRef')
+      );
+    })()
+  );
 
   // =======================================================================================
   // STEP 3C-4/3C-5 — STAGED REAL-SEND LOCK, SENDING-INTENT COMMIT, AND SECRET HANDOFF.
@@ -1007,6 +1081,7 @@ async function main(): Promise<void> {
       const result = await runHappyPath({
         rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] },
         delivery: { sendAttemptCount: MAX_SEND_ATTEMPTS },
+        experimentGate: {},
       });
       return result.outcome === 'invalid-delivery' && result.reason === 'send-attempt-count-exhausted';
     }
@@ -1018,10 +1093,453 @@ async function main(): Promise<void> {
       const fixture = seedHappyPath(db, store, {
         rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] },
         delivery: { sendAttemptCount: MAX_SEND_ATTEMPTS },
+        experimentGate: {},
       });
       await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
       const after = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!;
       return after.state === 'invalid-delivery' && after.invalidDeliveryReason === 'send-attempt-count-exhausted';
+    }
+  );
+
+  // =======================================================================================
+  // SECTION 35 — EXPERIMENT-WIDE ONE-SHOT GATE (PHASE 3A-3 STEP 3C-7)
+  // =======================================================================================
+  console.log('\n=== experiment gate: pure validator (validateExperimentGateSchema) ===');
+
+  const GATE_VALID_UID = 'user-1';
+  const GATE_VALID_SCHEDULED_MS = 1_700_000_000_000;
+  const GATE_VALID_REMINDER_ID = buildReminderId(GATE_VALID_UID, GATE_VALID_SCHEDULED_MS);
+  const GATE_VALID_INSTALLATION_ID = hex32(7);
+  const GATE_VALID_EXECUTION_ID = 'K'.repeat(OPAQUE_ID_LENGTH);
+
+  function validArmedGateFields(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      state: 'armed',
+      expectedUid: GATE_VALID_UID,
+      expectedReminderId: GATE_VALID_REMINDER_ID,
+      expectedScheduledForMs: GATE_VALID_SCHEDULED_MS,
+      expectedInstallationId: GATE_VALID_INSTALLATION_ID,
+      createdAt: Timestamp.now(),
+      consumedAt: null,
+      consumedByExecutionId: null,
+      ...overrides,
+    };
+  }
+  function validConsumedGateFields(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    const createdAt = Timestamp.now();
+    return {
+      state: 'consumed',
+      expectedUid: GATE_VALID_UID,
+      expectedReminderId: GATE_VALID_REMINDER_ID,
+      expectedScheduledForMs: GATE_VALID_SCHEDULED_MS,
+      expectedInstallationId: GATE_VALID_INSTALLATION_ID,
+      createdAt,
+      consumedAt: Timestamp.fromMillis(createdAt.toMillis() + 1000),
+      consumedByExecutionId: GATE_VALID_EXECUTION_ID,
+      ...overrides,
+    };
+  }
+
+  check('[gate validator] exact valid armed gate -> valid', validateExperimentGateSchema(validArmedGateFields()).valid === true);
+  check('[gate validator] exact valid consumed gate -> valid', validateExperimentGateSchema(validConsumedGateFields()).valid === true);
+
+  for (const key of [
+    'state',
+    'expectedUid',
+    'expectedReminderId',
+    'expectedScheduledForMs',
+    'expectedInstallationId',
+    'createdAt',
+    'consumedAt',
+    'consumedByExecutionId',
+  ]) {
+    const fields = validArmedGateFields();
+    delete fields[key];
+    check(`[gate validator] armed gate missing required key '${key}' -> invalid`, validateExperimentGateSchema(fields).valid === false);
+  }
+
+  check('[gate validator] extra unknown key -> invalid', validateExperimentGateSchema(validArmedGateFields({ extraField: 'x' })).valid === false);
+  check('[gate validator] unrecognized state value -> invalid', validateExperimentGateSchema(validArmedGateFields({ state: 'not-a-real-state' })).valid === false);
+
+  check('[gate validator] expectedUid null -> invalid', validateExperimentGateSchema(validArmedGateFields({ expectedUid: null })).valid === false);
+  check('[gate validator] expectedUid number -> invalid', validateExperimentGateSchema(validArmedGateFields({ expectedUid: 12345 })).valid === false);
+  check('[gate validator] expectedUid malformed (contains "/") -> invalid', validateExperimentGateSchema(validArmedGateFields({ expectedUid: 'user/1' })).valid === false);
+
+  check('[gate validator] expectedReminderId null -> invalid', validateExperimentGateSchema(validArmedGateFields({ expectedReminderId: null })).valid === false);
+  check('[gate validator] expectedReminderId number -> invalid', validateExperimentGateSchema(validArmedGateFields({ expectedReminderId: 12345 })).valid === false);
+  check('[gate validator] expectedReminderId malformed (contains "/") -> invalid', validateExperimentGateSchema(validArmedGateFields({ expectedReminderId: 'bad/id' })).valid === false);
+  check(
+    '[gate validator] expectedReminderId valid SHAPE but does not equal buildReminderId(expectedUid, expectedScheduledForMs) -> invalid (structural binding, not three independent strings)',
+    validateExperimentGateSchema(validArmedGateFields({ expectedReminderId: `${GATE_VALID_UID}_999999` })).valid === false
+  );
+
+  check('[gate validator] expectedScheduledForMs null -> invalid', validateExperimentGateSchema(validArmedGateFields({ expectedScheduledForMs: null })).valid === false);
+  check(
+    '[gate validator] expectedScheduledForMs string -> invalid',
+    validateExperimentGateSchema(validArmedGateFields({ expectedScheduledForMs: String(GATE_VALID_SCHEDULED_MS) })).valid === false
+  );
+  check('[gate validator] expectedScheduledForMs NaN -> invalid', validateExperimentGateSchema(validArmedGateFields({ expectedScheduledForMs: NaN })).valid === false);
+  check('[gate validator] expectedScheduledForMs Infinity -> invalid', validateExperimentGateSchema(validArmedGateFields({ expectedScheduledForMs: Infinity })).valid === false);
+  check(
+    '[gate validator] expectedScheduledForMs fractional -> invalid',
+    validateExperimentGateSchema(validArmedGateFields({ expectedScheduledForMs: GATE_VALID_SCHEDULED_MS + 0.5 })).valid === false
+  );
+  check('[gate validator] expectedScheduledForMs negative -> invalid', validateExperimentGateSchema(validArmedGateFields({ expectedScheduledForMs: -1 })).valid === false);
+  check(
+    '[gate validator] expectedScheduledForMs unsafe integer -> invalid',
+    validateExperimentGateSchema(validArmedGateFields({ expectedScheduledForMs: Number.MAX_SAFE_INTEGER + 2 })).valid === false
+  );
+
+  check('[gate validator] expectedInstallationId null -> invalid', validateExperimentGateSchema(validArmedGateFields({ expectedInstallationId: null })).valid === false);
+  check('[gate validator] expectedInstallationId number -> invalid', validateExperimentGateSchema(validArmedGateFields({ expectedInstallationId: 12345 })).valid === false);
+  check(
+    '[gate validator] expectedInstallationId malformed (not UUIDv4/hex32) -> invalid',
+    validateExperimentGateSchema(validArmedGateFields({ expectedInstallationId: 'not-a-valid-installation-id' })).valid === false
+  );
+
+  check('[gate validator] createdAt null -> invalid', validateExperimentGateSchema(validArmedGateFields({ createdAt: null })).valid === false);
+  check('[gate validator] createdAt number -> invalid', validateExperimentGateSchema(validArmedGateFields({ createdAt: Date.now() })).valid === false);
+  check('[gate validator] createdAt string -> invalid', validateExperimentGateSchema(validArmedGateFields({ createdAt: new Date().toISOString() })).valid === false);
+
+  check('[gate validator] armed with non-null consumedAt -> invalid', validateExperimentGateSchema(validArmedGateFields({ consumedAt: Timestamp.now() })).valid === false);
+  check(
+    '[gate validator] armed with non-null consumedByExecutionId -> invalid',
+    validateExperimentGateSchema(validArmedGateFields({ consumedByExecutionId: GATE_VALID_EXECUTION_ID })).valid === false
+  );
+
+  check('[gate validator] consumed with null consumedAt -> invalid', validateExperimentGateSchema(validConsumedGateFields({ consumedAt: null })).valid === false);
+  check(
+    '[gate validator] consumed with wrong-type consumedAt (number) -> invalid',
+    validateExperimentGateSchema(validConsumedGateFields({ consumedAt: Date.now() })).valid === false
+  );
+  check(
+    '[gate validator] consumed with null consumedByExecutionId -> invalid',
+    validateExperimentGateSchema(validConsumedGateFields({ consumedByExecutionId: null })).valid === false
+  );
+  check(
+    '[gate validator] consumed with wrong-type consumedByExecutionId (number) -> invalid',
+    validateExperimentGateSchema(validConsumedGateFields({ consumedByExecutionId: 12345 })).valid === false
+  );
+  check(
+    '[gate validator] consumed with malformed consumedByExecutionId (wrong length/charset) -> invalid',
+    validateExperimentGateSchema(validConsumedGateFields({ consumedByExecutionId: 'too-short' })).valid === false
+  );
+  check(
+    '[gate validator] consumed with consumedAt earlier than createdAt -> invalid',
+    (() => {
+      const createdAt = Timestamp.now();
+      return validateExperimentGateSchema(validConsumedGateFields({ createdAt, consumedAt: Timestamp.fromMillis(createdAt.toMillis() - 1000) })).valid === false;
+    })()
+  );
+
+  // =======================================================================================
+  // COMMIT-SEMANTICS (Codex commit-failure repair round) — the fake transaction harness now
+  // supports simulating a rejected commit; the callback's would-be result must never escape
+  // to the caller unless the (simulated) commit actually succeeds.
+  // =======================================================================================
+  console.log('\n=== experiment gate: fake-transaction commit semantics ===');
+
+  await checkAsync('[commit] normal successful commit -> capability returned, delivery sending, gate consumed', async () => {
+    const { db, store } = makeFakeDb();
+    const fixture = seedHappyPath(db, store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, experimentGate: {} });
+    const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+    if (result.outcome !== 'sending-authorized') return false;
+    return readDoc(store, experimentGatePath())!.state === 'consumed';
+  });
+
+  await checkAsync('[commit] whole-commit simulated failure -> outer promise rejects, delivery unchanged, gate unchanged, no capability', async () => {
+    const { db, store, commitControl } = makeFakeDb();
+    const fixture = seedHappyPath(db, store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, experimentGate: {} });
+    const beforeDelivery = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId));
+    const beforeGate = readDoc(store, experimentGatePath());
+    commitControl.failWholeCommit = true;
+    try {
+      await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+      return false; // must have thrown
+    } catch {
+      const afterDelivery = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId));
+      const afterGate = readDoc(store, experimentGatePath());
+      return JSON.stringify(beforeDelivery) === JSON.stringify(afterDelivery) && JSON.stringify(beforeGate) === JSON.stringify(afterGate);
+    }
+  });
+
+  await checkAsync('[commit] gate-update simulated failure -> whole transaction rejects, delivery unchanged, gate unchanged, no capability', async () => {
+    const { db, store, commitControl } = makeFakeDb();
+    const fixture = seedHappyPath(db, store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, experimentGate: {} });
+    const beforeDelivery = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId));
+    const beforeGate = readDoc(store, experimentGatePath());
+    commitControl.failPaths.add(experimentGatePath());
+    try {
+      await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+      return false;
+    } catch {
+      const afterDelivery = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId));
+      const afterGate = readDoc(store, experimentGatePath());
+      return JSON.stringify(beforeDelivery) === JSON.stringify(afterDelivery) && JSON.stringify(beforeGate) === JSON.stringify(afterGate);
+    }
+  });
+
+  await checkAsync('[commit] delivery-update simulated failure -> whole transaction rejects, delivery unchanged, gate unchanged, no capability', async () => {
+    const { db, store, commitControl } = makeFakeDb();
+    const fixture = seedHappyPath(db, store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, experimentGate: {} });
+    const beforeDelivery = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId));
+    const beforeGate = readDoc(store, experimentGatePath());
+    commitControl.failPaths.add(deliveryPath(fixture.reminderId, fixture.installationId));
+    try {
+      await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+      return false;
+    } catch {
+      const afterDelivery = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId));
+      const afterGate = readDoc(store, experimentGatePath());
+      return JSON.stringify(beforeDelivery) === JSON.stringify(afterDelivery) && JSON.stringify(beforeGate) === JSON.stringify(afterGate);
+    }
+  });
+
+  // =======================================================================================
+  // AUTHORIZATION INTEGRATION (A1-A29 per the approved Step 3C-7 matrix; A30's faithful
+  // concurrent-race proof is emulator-only — see reminderDeliveryAuth.emulatorSuite.ts).
+  // =======================================================================================
+  console.log('\n=== experiment gate: authorization integration ===');
+
+  await checkAsync('[A1] matching armed gate -> sending-authorized, delivery sending, gate consumed, capability yes', async () => {
+    const { db, store } = makeFakeDb();
+    const fixture = seedHappyPath(db, store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, experimentGate: {} });
+    const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+    if (result.outcome !== 'sending-authorized') return false;
+    const delivery = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!;
+    const gate = readDoc(store, experimentGatePath())!;
+    return delivery.state === 'sending' && gate.state === 'consumed';
+  });
+
+  await checkAsync('[A2] audit binding: gate.consumedByExecutionId === delivery.sendExecutionId', async () => {
+    const { db, store } = makeFakeDb();
+    const fixture = seedHappyPath(db, store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, experimentGate: {} });
+    await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+    const delivery = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!;
+    const gate = readDoc(store, experimentGatePath())!;
+    return typeof delivery.sendExecutionId === 'string' && gate.consumedByExecutionId === delivery.sendExecutionId;
+  });
+
+  await checkAsync('[A3] missing gate -> cancelled experiment-gate-missing, no capability', async () => {
+    const result = await runHappyPath({ rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] } });
+    return result.outcome === 'cancelled' && result.reason === 'experiment-gate-missing';
+  });
+
+  await checkAsync('[A4] malformed gate (extra key) -> cancelled experiment-gate-malformed', async () => {
+    const result = await runHappyPath({
+      rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] },
+      experimentGate: { extraField: 'unexpected' },
+    });
+    return result.outcome === 'cancelled' && result.reason === 'experiment-gate-malformed';
+  });
+
+  await checkAsync('[A5] already-consumed gate -> cancelled experiment-gate-consumed', async () => {
+    const result = await runHappyPath({
+      rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] },
+      experimentGate: { state: 'consumed', consumedAt: Timestamp.now(), consumedByExecutionId: 'Z'.repeat(OPAQUE_ID_LENGTH) },
+    });
+    return result.outcome === 'cancelled' && result.reason === 'experiment-gate-consumed';
+  });
+
+  await checkAsync(
+    "[A6] TEST-ONLY gate-level wrong-UID fixture: rollout allowlist deliberately contains BOTH the gate's expected uid ('user-2') and the candidate's real uid ('user-1'), so the candidate legitimately clears the rollout stage and genuinely reaches the gate check -> experiment-gate-identity-mismatch, gate remains armed, no capability. This two-uid allowlist shape is a TEST FIXTURE ONLY, never a real production configuration.",
+    async () => {
+      const { db, store } = makeFakeDb();
+      const fixture = seedHappyPath(db, store, {
+        rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-2', 'user-1'] },
+        experimentGate: { expectedUid: 'user-2', expectedReminderId: buildReminderId('user-2', 1000) },
+      });
+      const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+      if (result.outcome !== 'cancelled' || result.reason !== 'experiment-gate-identity-mismatch') return false;
+      return readDoc(store, experimentGatePath())!.state === 'armed';
+    }
+  );
+
+  await checkAsync('[A7] wrong reminderId on an otherwise self-consistent gate -> experiment-gate-identity-mismatch', async () => {
+    const result = await runHappyPath({
+      rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] },
+      experimentGate: { expectedReminderId: buildReminderId('user-1', 9999), expectedScheduledForMs: 9999 },
+    });
+    return result.outcome === 'cancelled' && result.reason === 'experiment-gate-identity-mismatch';
+  });
+
+  await checkAsync('[A8] wrong installationId on an otherwise self-consistent gate -> experiment-gate-identity-mismatch', async () => {
+    const result = await runHappyPath({
+      rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] },
+      experimentGate: { expectedInstallationId: hex32(999) },
+    });
+    return result.outcome === 'cancelled' && result.reason === 'experiment-gate-identity-mismatch';
+  });
+
+  await checkAsync('[A9] whole commit failure on the real-send path -> gate unchanged, no capability', async () => {
+    const { db, store, commitControl } = makeFakeDb();
+    const fixture = seedHappyPath(db, store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, experimentGate: {} });
+    const beforeGate = readDoc(store, experimentGatePath());
+    commitControl.failWholeCommit = true;
+    try {
+      await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+      return false;
+    } catch {
+      return JSON.stringify(readDoc(store, experimentGatePath())) === JSON.stringify(beforeGate);
+    }
+  });
+
+  await checkAsync(
+    '[A12/A13/A16/A29] first authorization succeeds and consumes the gate; every later, independent re-authorization attempt against the SAME delivery (a re-lease after a retryable outcome, a fresh process, or simply a later call) is denied by the consumed gate -> experiment-gate-consumed, never a second sending-authorized, never a second capability, tried twice more for good measure',
+    async () => {
+      const { db, store } = makeFakeDb();
+      const fixture = seedHappyPath(db, store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, experimentGate: {} });
+      const firstResult = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+      if (firstResult.outcome !== 'sending-authorized') return false;
+
+      const path = deliveryPath(fixture.reminderId, fixture.installationId);
+      const releaseBackToPreparing = (processingAttemptCount: number) => {
+        const existing = readDoc(store, path)!;
+        const leaseMs = Date.now() + 5 * 60 * 1000;
+        seedDoc(store, path, {
+          ...existing,
+          state: 'preparing',
+          workState: 'queued',
+          workAvailableAt: Timestamp.fromMillis(leaseMs),
+          leaseExpiresAt: Timestamp.fromMillis(leaseMs),
+          processingAttemptCount,
+        });
+      };
+
+      releaseBackToPreparing(2);
+      const secondResult = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 2, TEST_ACCESS_TOKEN);
+      if (secondResult.outcome !== 'cancelled' || secondResult.reason !== 'experiment-gate-consumed') return false;
+
+      releaseBackToPreparing(3);
+      const thirdResult = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 3, TEST_ACCESS_TOKEN);
+      return thirdResult.outcome === 'cancelled' && thirdResult.reason === 'experiment-gate-consumed';
+    }
+  );
+
+  await checkAsync('[A14] a later reminder occurrence for the same uid/installation, after the gate is already consumed -> experiment-gate-consumed, no sending intent', async () => {
+    const { db, store } = makeFakeDb();
+    const first = seedHappyPath(db, store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, experimentGate: {} });
+    const firstResult = await finalizeDeliveryAuthorization(db, first.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+    if (firstResult.outcome !== 'sending-authorized') return false;
+
+    const laterReminderId = buildReminderId('user-1', 5000);
+    const leaseMs = Date.now() + 5 * 60 * 1000;
+    seedDoc(store, reminderPath(laterReminderId), {
+      uid: 'user-1',
+      status: 'delivery-fanned-out',
+      deliveryFanoutState: 'completed',
+      targetInstallationCountAtFanout: 1,
+      excludedMalformedInstallationCount: 0,
+      fanoutExecutionId: VALID_FANOUT_EXECUTION_ID,
+      workState: 'terminal',
+      workAvailableAt: null,
+      leaseExpiresAt: null,
+      attemptCount: 1,
+      preferenceRevisionAtClaim: 1,
+      scheduleTypeAtClaim: 'daily',
+      weekdaysAtClaim: [0, 1, 2, 3, 4, 5, 6],
+      localTimeAtClaim: '07:00',
+      timezoneAtClaim: 'UTC',
+    });
+    seedDoc(store, deliveryPath(laterReminderId, first.installationId), {
+      state: 'preparing',
+      workState: 'queued',
+      workAvailableAt: Timestamp.fromMillis(leaseMs),
+      leaseExpiresAt: Timestamp.fromMillis(leaseMs),
+      uid: 'user-1',
+      installationId: first.installationId,
+      deliveryPublicId: 'B'.repeat(OPAQUE_ID_LENGTH),
+      fanoutExecutionIdAtCreation: VALID_FANOUT_EXECUTION_ID,
+      sendAttemptCount: 0,
+      processingAttemptCount: 1,
+      attemptHistory: [],
+      targetSnapshot: { generation: 1, tokenVersion: 1, installationAudienceId: 'A'.repeat(16) },
+    });
+    const secondResult = await finalizeDeliveryAuthorization(db, db.doc(deliveryPath(laterReminderId, first.installationId)), 1, TEST_ACCESS_TOKEN);
+    return secondResult.outcome === 'cancelled' && secondResult.reason === 'experiment-gate-consumed';
+  });
+
+  await checkAsync('[A15] a second installation for the same uid, after the gate is already consumed by the first installation -> denied, no sending intent', async () => {
+    const { db, store } = makeFakeDb();
+    const first = seedHappyPath(db, store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, experimentGate: {} });
+    const firstResult = await finalizeDeliveryAuthorization(db, first.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+    if (firstResult.outcome !== 'sending-authorized') return false;
+
+    const secondInstallationId = hex32(2);
+    const leaseMs = Date.now() + 5 * 60 * 1000;
+    seedDoc(store, deliveryPath(first.reminderId, secondInstallationId), {
+      state: 'preparing',
+      workState: 'queued',
+      workAvailableAt: Timestamp.fromMillis(leaseMs),
+      leaseExpiresAt: Timestamp.fromMillis(leaseMs),
+      uid: 'user-1',
+      installationId: secondInstallationId,
+      deliveryPublicId: 'C'.repeat(OPAQUE_ID_LENGTH),
+      fanoutExecutionIdAtCreation: VALID_FANOUT_EXECUTION_ID,
+      sendAttemptCount: 0,
+      processingAttemptCount: 1,
+      attemptHistory: [],
+      targetSnapshot: { generation: 1, tokenVersion: 1, installationAudienceId: 'B'.repeat(16) },
+    });
+    seedDoc(store, installationPath(secondInstallationId), {
+      uid: 'user-1',
+      state: 'active',
+      epochSchemaVersion: 1,
+      tokenVersion: 1,
+      installationAudienceId: 'B'.repeat(16),
+      generation: 1,
+      token: 'second-installation-raw-token',
+    });
+    seedDoc(store, tokenClaimPath(sha256Hex('second-installation-raw-token')), { installationId: secondInstallationId, uid: 'user-1' });
+
+    const secondResult = await finalizeDeliveryAuthorization(db, db.doc(deliveryPath(first.reminderId, secondInstallationId)), 1, TEST_ACCESS_TOKEN);
+    return secondResult.outcome === 'cancelled' && (secondResult.reason === 'experiment-gate-consumed' || secondResult.reason === 'experiment-gate-identity-mismatch');
+  });
+
+  await checkAsync('[A17] dry-run rollout -> gate never read (none seeded; outcome is still dry-run-validated, not experiment-gate-missing) -> gate document remains absent throughout', async () => {
+    const { db, store } = makeFakeDb();
+    const fixture = seedHappyPath(db, store, { rollout: { mode: 'dry-run' } });
+    const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+    return result.outcome === 'dry-run-validated' && readDoc(store, experimentGatePath()) === undefined;
+  });
+
+  await checkAsync('[A18] paused rollout -> gate never read (none seeded; outcome is rollout-paused, not experiment-gate-missing)', async () => {
+    const { db, store } = makeFakeDb();
+    const fixture = seedHappyPath(db, store, { rollout: { mode: 'paused' } });
+    const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+    return result.outcome === 'cancelled' && result.reason === 'rollout-paused' && readDoc(store, experimentGatePath()) === undefined;
+  });
+
+  await checkAsync('[A19] general-real-send under allowlisted-only stage -> gate never read (none seeded; outcome is the existing stage-rejection reason, not experiment-gate-missing)', async () => {
+    const { db, store } = makeFakeDb();
+    const fixture = seedHappyPath(db, store, { rollout: { mode: 'general-real-send' } });
+    const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+    return result.outcome === 'cancelled' && result.reason === 'rollout-real-send-mode-not-permitted-at-stage' && readDoc(store, experimentGatePath()) === undefined;
+  });
+
+  await checkAsync('[A20] non-allowlisted uid under allowlisted-real-send -> gate never read (none seeded; outcome is rollout-real-send-not-allowlisted, not experiment-gate-missing)', async () => {
+    const { db, store } = makeFakeDb();
+    const fixture = seedHappyPath(db, store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['someone-else'] } });
+    const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+    return result.outcome === 'cancelled' && result.reason === 'rollout-real-send-not-allowlisted' && readDoc(store, experimentGatePath()) === undefined;
+  });
+
+  await checkAsync(
+    '[A28] the consume-write preserves expectedUid/expectedReminderId/expectedScheduledForMs/expectedInstallationId/createdAt EXACTLY (update-construction invariant, proven behaviorally, not merely validator-claimed)',
+    async () => {
+      const { db, store } = makeFakeDb();
+      const fixture = seedHappyPath(db, store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, experimentGate: {} });
+      const before = readDoc(store, experimentGatePath())!;
+      const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+      if (result.outcome !== 'sending-authorized') return false;
+      const after = readDoc(store, experimentGatePath())!;
+      return (
+        after.expectedUid === before.expectedUid &&
+        after.expectedReminderId === before.expectedReminderId &&
+        after.expectedScheduledForMs === before.expectedScheduledForMs &&
+        after.expectedInstallationId === before.expectedInstallationId &&
+        (after.createdAt as Timestamp).toMillis() === (before.createdAt as Timestamp).toMillis()
+      );
     }
   );
 

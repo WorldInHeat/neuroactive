@@ -318,6 +318,21 @@ function seedOrchestrationPreparingFixture(store: Store, overrides: Orchestratio
     });
   }
   seedDoc(store, 'artifacts/neuroactive-prod/systemConfig/notificationRollout', overrides.rollout ?? { mode: 'paused' });
+  // Step 3C-7 — the experiment-wide one-shot gate is now an unconditional precondition for
+  // EVERY real-send authorization (see reminderDeliveryAuth.ts). Every scenario in this file
+  // that reaches 'sending-authorized' needs a matching armed gate; none of them are testing
+  // gate behavior itself (that is reminderDeliveryAuth.test.ts's job), so it is seeded here,
+  // unconditionally, matching this fixture's own fixed ORCH identity.
+  seedDoc(store, 'artifacts/neuroactive-prod/systemConfig/firstRealSendExperimentGate', {
+    state: 'armed',
+    expectedUid: ORCH_UID,
+    expectedReminderId: ORCH_REMINDER_ID,
+    expectedScheduledForMs: 2000,
+    expectedInstallationId: ORCH_INSTALLATION_ID,
+    createdAt: Timestamp.now(),
+    consumedAt: null,
+    consumedByExecutionId: null,
+  });
   if (overrides.installation !== null) {
     seedDoc(store, `artifacts/neuroactive-prod/pushInstallations/${ORCH_INSTALLATION_ID}`, {
       uid: ORCH_UID,
@@ -548,6 +563,22 @@ async function main(): Promise<void> {
     })()
   );
   check(
+    "functions/tsconfig.json excludes 'src/**/*.emulatorSuite.ts' from the PRODUCTION build (Step 3C-7), so the Firestore-emulator-only gate concurrency harness can never be compiled into lib/ and shipped as part of the deployed Function",
+    (() => {
+      const tsconfigPath = path.join(__dirname, '..', 'tsconfig.json');
+      const tsconfig = JSON.parse(fs.readFileSync(tsconfigPath, 'utf8')) as { exclude?: string[] };
+      return (tsconfig.exclude ?? []).includes('src/**/*.emulatorSuite.ts');
+    })()
+  );
+  check(
+    "functions/tsconfig.test.json's exclude array does NOT exclude '*.emulatorSuite.ts' (it is empty, so nothing under src/ is excluded from the TEST build) — the emulator suite still compiles into lib-test/",
+    (() => {
+      const testTsconfigPath = path.join(__dirname, '..', 'tsconfig.test.json');
+      const testTsconfig = JSON.parse(fs.readFileSync(testTsconfigPath, 'utf8')) as { exclude?: unknown[] };
+      return Array.isArray(testTsconfig.exclude) && !testTsconfig.exclude.includes('src/**/*.emulatorSuite.ts');
+    })()
+  );
+  check(
     "functions/tsconfig.test.json exists, extends the production config, overrides 'exclude' to compile everything (including *.test.ts), and emits into 'lib-test' — a directory distinct from the production config's 'lib' outDir, so a test build can never overlap production output",
     (() => {
       const testTsconfigPath = path.join(__dirname, '..', 'tsconfig.test.json');
@@ -753,43 +784,47 @@ async function main(): Promise<void> {
     return after.state === 'rejected-final' && after.sendAttemptCount === MAX_SEND_ATTEMPTS;
   });
 
-  await checkAsync('TWO sequential real authorized attempts (first retryable-later requeued, then a later worker reacquires and this attempt is accepted) -> attemptHistory records attemptNumber 1 then 2, each attempt uses a DIFFERENT sendExecutionId, transport called exactly once PER call', async () => {
-    const { db, store } = makeFakeDb();
-    seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
+  await checkAsync(
+    '[Step 3C-7] a coherent 429 on attempt 1 consumes the experiment gate and correctly requeues the delivery, but a later worker\'s attempt 2 authorization is now DENIED by the consumed gate (experiment-gate-consumed) rather than reaching a second transport call — the one-shot gate, not per-delivery attempt bookkeeping, is what ultimately bounds real sends to exactly one during the first controlled experiment',
+    async () => {
+      const { db, store } = makeFakeDb();
+      seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
 
-    let firstExecutionId: unknown;
-    const first = fakeTransport(() => {
-      firstExecutionId = (readDoc(store, ORCH_DELIVERY_PATH) as { sendExecutionId?: unknown }).sendExecutionId;
-      return Promise.resolve(REJECTED_RETRYABLE);
-    });
-    const firstResult = await freshSenderFor(db, first.transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
-    if (firstResult.outcome !== 'requeued-for-retry') return false;
+      let firstExecutionId: unknown;
+      const first = fakeTransport(() => {
+        firstExecutionId = (readDoc(store, ORCH_DELIVERY_PATH) as { sendExecutionId?: unknown }).sendExecutionId;
+        return Promise.resolve(REJECTED_RETRYABLE);
+      });
+      const firstResult = await freshSenderFor(db, first.transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+      if (firstResult.outcome !== 'requeued-for-retry') return false;
+      if (firstExecutionId === undefined) return false;
 
-    const afterRequeue = readDoc(store, ORCH_DELIVERY_PATH)!;
-    const secondPreparingLeaseMs = Date.now() + 5 * 60 * 1000;
-    seedDoc(store, ORCH_DELIVERY_PATH, {
-      ...afterRequeue,
-      state: 'preparing',
-      workState: 'queued',
-      workAvailableAt: Timestamp.fromMillis(secondPreparingLeaseMs),
-      leaseExpiresAt: Timestamp.fromMillis(secondPreparingLeaseMs),
-      processingAttemptCount: 2,
-    });
+      const gateAfterFirst = readDoc(store, 'artifacts/neuroactive-prod/systemConfig/firstRealSendExperimentGate')!;
+      if (gateAfterFirst.state !== 'consumed' || gateAfterFirst.consumedByExecutionId !== firstExecutionId) return false;
 
-    let secondExecutionId: unknown;
-    const second = fakeTransport(() => {
-      secondExecutionId = (readDoc(store, ORCH_DELIVERY_PATH) as { sendExecutionId?: unknown }).sendExecutionId;
-      return Promise.resolve(ACCEPTED_OUTCOME);
-    });
-    const secondResult = await freshSenderFor(db, second.transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 2);
-    if (second.callCount() !== 1) return false;
-    if (secondResult.outcome !== 'terminalized' || secondResult.state !== 'accepted-by-fcm') return false;
-    if (firstExecutionId === undefined || secondExecutionId === undefined || firstExecutionId === secondExecutionId) return false;
+      const afterRequeue = readDoc(store, ORCH_DELIVERY_PATH)!;
+      const secondPreparingLeaseMs = Date.now() + 5 * 60 * 1000;
+      seedDoc(store, ORCH_DELIVERY_PATH, {
+        ...afterRequeue,
+        state: 'preparing',
+        workState: 'queued',
+        workAvailableAt: Timestamp.fromMillis(secondPreparingLeaseMs),
+        leaseExpiresAt: Timestamp.fromMillis(secondPreparingLeaseMs),
+        processingAttemptCount: 2,
+      });
 
-    const after = readDoc(store, ORCH_DELIVERY_PATH)!;
-    const history = after.attemptHistory as { attemptNumber: number }[];
-    return history.length === 2 && history[0].attemptNumber === 1 && history[1].attemptNumber === 2;
-  });
+      const second = fakeTransport(() => Promise.resolve(ACCEPTED_OUTCOME));
+      const secondResult = await freshSenderFor(db, second.transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 2);
+      if (second.callCount() !== 0) return false; // transport must NEVER be reached for attempt 2
+      if (secondResult.outcome !== 'cancelled' || secondResult.reason !== 'experiment-gate-consumed') return false;
+
+      const after = readDoc(store, ORCH_DELIVERY_PATH)!;
+      // Attempt 1's history entry is preserved; no second entry was ever added, and the
+      // delivery ends terminally cancelled, never a second 'sending'/'accepted-by-fcm'.
+      const history = after.attemptHistory as { attemptNumber: number }[];
+      return after.state === 'cancelled' && history.length === 1 && history[0].attemptNumber === 1;
+    }
+  );
 
   await checkAsync('attemptHistory corrupted DURING the (fake) transport call (after authorization, before outcome commit) -> persistence-failed AFTER a real transport call was already made, document stays exactly "sending", secret in the corrupted entry never leaks into the result', async () => {
     const { db, store } = makeFakeDb();
@@ -1139,6 +1174,11 @@ async function main(): Promise<void> {
   // STATIC SOURCE CHECKS — operate on reminderDeliverySender.ts's own single-file source.
   // =======================================================================================
   console.log('\n=== static source checks ===');
+
+  check(
+    "[Step 3C-7 / A21-A26] reminderDeliverySender.ts never references the experiment gate (neither the literal path segment nor an 'experimentGateRef'-shaped helper) — the gate is consumed atomically inside reminderDeliveryAuth.ts's own authorization transaction, BEFORE transport is ever reached, so no downstream FCM outcome class (accepted, any rejection category, any unknown-outcome reason, a coherent 429, a persistence failure, or a fence mismatch) can ever touch gate state — proven once, structurally, for every outcome class at once, rather than one dynamic test per category",
+    !senderSource.includes('firstRealSendExperimentGate') && !senderCodeOnly.includes('experimentGateRef')
+  );
 
   check('reminderDeliverySender.ts contains exactly one source-level call to capturedSendFcmOnce', (senderCodeOnly.match(/await capturedSendFcmOnce\(/g) || []).length === 1);
   check(

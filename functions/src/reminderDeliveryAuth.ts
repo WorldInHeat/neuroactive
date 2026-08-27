@@ -60,6 +60,8 @@ import { GoogleAuth } from 'google-auth-library';
 import {
   isValidReminderId,
   isValidInstallationIdShape,
+  isValidIdForPath,
+  isValidEpochMs,
   validateFanoutTuple,
   requireAllowedDeliveryTransition,
   buildDeliveryTerminalWorkStateFields,
@@ -74,7 +76,7 @@ import {
   isValidOpaqueIdFormat,
   type RealDeliveryStage,
 } from './reminderDeliveryLogic';
-import { validateReminderSchema, validateSchedule, revalidateConsent, isValidAttemptCount } from './reminderSchedulerLogic';
+import { validateReminderSchema, validateSchedule, revalidateConsent, isValidAttemptCount, buildReminderId } from './reminderSchedulerLogic';
 import { classifyEpochSchemaMarker, readFieldPresence, isValidTokenVersion, isValidAudienceId } from './pushInstallationEpochLogic';
 
 const APP_ID = 'neuroactive-prod';
@@ -116,6 +118,17 @@ function tokenClaimRef(db: FirebaseFirestore.Firestore, tokenHash: string) {
 // codebase treats as server-authoritative.
 function rolloutConfigRef(db: FirebaseFirestore.Firestore) {
   return db.doc(`artifacts/${APP_ID}/systemConfig/notificationRollout`);
+}
+// PHASE 3A-3 STEP 3C-7 — experiment-wide one-shot real-send authorization gate. A single,
+// fixed-path document (never queried, never client-accessible — see firestore.rules, which
+// default-denies any path with no matching rule, exactly like notificationRollout) that can
+// authorize at most one real-send intent across the ENTIRE first-controlled-send
+// experiment, independent of any single delivery's own per-attempt bookkeeping. Exists
+// specifically because the rollout allowlist alone only constrains WHICH uid may be
+// authorized, not HOW MANY TIMES across retries/later occurrences/other installations — see
+// validateExperimentGateSchema below for the schema this document must satisfy.
+function experimentGateRef(db: FirebaseFirestore.Firestore) {
+  return db.doc(`artifacts/${APP_ID}/systemConfig/firstRealSendExperimentGate`);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -211,6 +224,105 @@ export interface DeliverySendCapability {
 }
 
 // ---------------------------------------------------------------------------------------
+// EXPERIMENT GATE VALIDATOR — Timestamp-aware, so it lives here rather than in
+// reminderDeliveryLogic.ts (which deliberately has no firebase-admin/firestore dependency).
+// Reuses this file's own already-imported `Timestamp` and reminderDeliveryLogic.ts's/
+// reminderSchedulerLogic.ts's existing pure validators — no new grammar is invented.
+//
+// The validator proves only that a SINGLE SNAPSHOT is internally well-formed. It does NOT
+// and cannot prove that a 'consumed' document's identity fields are unchanged from when it
+// was armed — a document read has no memory of a prior state. That guarantee is instead an
+// UPDATE-CONSTRUCTION invariant: the one authorized consume-write (see
+// finalizeDeliveryAuthorizationInner below) touches only `state`/`consumedAt`/
+// `consumedByExecutionId`, so the four identity fields and `createdAt` are physically
+// incapable of changing across that write — proven by test, not claimed by this function.
+// ---------------------------------------------------------------------------------------
+
+export interface ExperimentGateArmed {
+  state: 'armed';
+  expectedUid: string;
+  expectedReminderId: string;
+  expectedScheduledForMs: number;
+  expectedInstallationId: string;
+  createdAt: Timestamp;
+  consumedAt: null;
+  consumedByExecutionId: null;
+}
+
+export interface ExperimentGateConsumed {
+  state: 'consumed';
+  expectedUid: string;
+  expectedReminderId: string;
+  expectedScheduledForMs: number;
+  expectedInstallationId: string;
+  createdAt: Timestamp;
+  consumedAt: Timestamp;
+  consumedByExecutionId: string;
+}
+
+export type ExperimentGateValidationResult = { valid: true; gate: ExperimentGateArmed | ExperimentGateConsumed } | { valid: false };
+
+const EXPERIMENT_GATE_KEYS: ReadonlySet<string> = new Set([
+  'state',
+  'expectedUid',
+  'expectedReminderId',
+  'expectedScheduledForMs',
+  'expectedInstallationId',
+  'createdAt',
+  'consumedAt',
+  'consumedByExecutionId',
+]);
+
+export function validateExperimentGateSchema(raw: unknown): ExperimentGateValidationResult {
+  if (typeof raw !== 'object' || raw === null) return { valid: false };
+  const data = raw as Record<string, unknown>;
+
+  // Exact key set — no extra keys, none missing.
+  const keys = Object.keys(data);
+  if (keys.length !== EXPERIMENT_GATE_KEYS.size) return { valid: false };
+  for (const k of keys) {
+    if (!EXPERIMENT_GATE_KEYS.has(k)) return { valid: false };
+  }
+
+  if (data.state !== 'armed' && data.state !== 'consumed') return { valid: false };
+
+  const expectedUid = data.expectedUid;
+  if (!isValidIdForPath(expectedUid)) return { valid: false };
+  const expectedScheduledForMs = data.expectedScheduledForMs;
+  if (!isValidEpochMs(expectedScheduledForMs)) return { valid: false };
+  const expectedReminderId = data.expectedReminderId;
+  if (!isValidReminderId(expectedReminderId)) return { valid: false };
+  // Structural binding, not three independently-checked arbitrary strings: the reminderId
+  // must be the EXACT reconstruction of uid+scheduledForMs via the real, shared formula —
+  // never a hand-duplicated template literal (see buildReminderId in reminderSchedulerLogic.ts).
+  if (expectedReminderId !== buildReminderId(expectedUid, expectedScheduledForMs)) return { valid: false };
+  const expectedInstallationId = data.expectedInstallationId;
+  if (!isValidInstallationIdShape(expectedInstallationId)) return { valid: false };
+  const createdAt = data.createdAt;
+  if (!(createdAt instanceof Timestamp)) return { valid: false };
+
+  if (data.state === 'armed') {
+    if (data.consumedAt !== null) return { valid: false };
+    if (data.consumedByExecutionId !== null) return { valid: false };
+    return {
+      valid: true,
+      gate: { state: 'armed', expectedUid, expectedReminderId, expectedScheduledForMs, expectedInstallationId, createdAt, consumedAt: null, consumedByExecutionId: null },
+    };
+  }
+
+  // state === 'consumed'
+  const consumedAt = data.consumedAt;
+  if (!(consumedAt instanceof Timestamp)) return { valid: false };
+  if (consumedAt.toMillis() < createdAt.toMillis()) return { valid: false };
+  const consumedByExecutionId = data.consumedByExecutionId;
+  if (!isValidOpaqueIdFormat(consumedByExecutionId)) return { valid: false };
+  return {
+    valid: true,
+    gate: { state: 'consumed', expectedUid, expectedReminderId, expectedScheduledForMs, expectedInstallationId, createdAt, consumedAt, consumedByExecutionId },
+  };
+}
+
+// ---------------------------------------------------------------------------------------
 // ROLLOUT DISPOSITION — pure decision, reusing reminderDeliveryLogic.ts's approved
 // parseRolloutConfig rather than re-parsing the raw document.
 // ---------------------------------------------------------------------------------------
@@ -247,7 +359,16 @@ export type FinalAuthorizationReason =
   | 'rollout-real-send-stage-disabled'
   | 'rollout-real-send-not-allowlisted'
   | 'rollout-real-send-mode-not-permitted-at-stage'
-  | 'rollout-real-send-invalid-uid';
+  | 'rollout-real-send-invalid-uid'
+  // Step 3C-7 additions — the experiment-wide one-shot gate (see experimentGateRef /
+  // validateExperimentGateSchema above). Reached ONLY on the real-send continuation, after
+  // every check above (including the rollout/preference/installation/token-claim checks)
+  // has already passed — never on the dry-run/paused/non-allowlisted branches, which return
+  // before this gate is ever read.
+  | 'experiment-gate-missing'
+  | 'experiment-gate-malformed'
+  | 'experiment-gate-consumed'
+  | 'experiment-gate-identity-mismatch';
 
 export type RolloutDisposition =
   | { decision: 'proceed-dry-run' }
@@ -597,6 +718,22 @@ function finalizeDeliveryAuthorizationInner(
       return { outcome: 'dry-run-validated' };
     }
 
+    // --- EXPERIMENT-WIDE ONE-SHOT GATE (Step 3C-7) — real-send continuation ONLY; the
+    // dry-run branch above already returned, so this read never executes for dry-run/paused/
+    // non-allowlisted deliveries. Read fresh, inside this same transaction, immediately
+    // after every other existing check (including the token claim above) and strictly
+    // before the first write of this branch — see the Step 3C-7 design report for the full
+    // ordering proof. ---
+    const gateSnap = await transaction.get(experimentGateRef(db));
+    if (!gateSnap.exists) return cancel('experiment-gate-missing');
+    const gateValidation = validateExperimentGateSchema(gateSnap.data());
+    if (!gateValidation.valid) return cancel('experiment-gate-malformed');
+    const gate = gateValidation.gate;
+    if (gate.state === 'consumed') return cancel('experiment-gate-consumed');
+    if (gate.expectedUid !== deliveryUid || gate.expectedReminderId !== reminderId || gate.expectedInstallationId !== installationId) {
+      return cancel('experiment-gate-identity-mismatch');
+    }
+
     // Step 3C-4 real-send authorization branch — unreachable in production today (see
     // REAL_DELIVERY_STAGE), but implemented and tested so a future, separately-reviewed
     // stage change has a proven-correct path to arm rather than a stub.
@@ -619,6 +756,16 @@ function finalizeDeliveryAuthorizationInner(
     transaction.update(deliveryRef, {
       ...buildDeliverySendingIntentFields(sendExecutionId, sendAttemptCountAfterThisIntent, sendIntentAtMs),
       updatedAt: FieldValue.serverTimestamp(),
+    });
+    // Same transaction, same commit as the delivery write above — Firestore's atomic
+    // multi-document commit is what makes "exactly one real-send intent, ever" hold: either
+    // BOTH writes land together or NEITHER does. Touches ONLY these three fields — the four
+    // expected* identity fields and createdAt are never rewritten (see the update-
+    // construction invariant documented on validateExperimentGateSchema above).
+    transaction.update(experimentGateRef(db), {
+      state: 'consumed',
+      consumedAt: FieldValue.serverTimestamp(),
+      consumedByExecutionId: sendExecutionId,
     });
     return {
       outcome: 'sending-authorized',
