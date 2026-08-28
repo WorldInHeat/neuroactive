@@ -99,6 +99,40 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Calendar subscription owner-facing management metadata (Calendar Integration Phase 1,
+    // Stage 1). Owner-read only — the client never writes this document directly; the only
+    // paths are createCalendarSubscription/revokeCalendarSubscription/
+    // revokeAllCalendarSubscriptions (Admin SDK, bypasses these rules) and the
+    // onCalendarUserDeleted Auth-deletion trigger. Same trust shape as notificationPreferences/
+    // entitlement above. Contains a SHA-256 hash of the subscription secret (never the raw
+    // secret itself) — safe for the owner to read, since a hash cannot be reversed into the
+    // credential it was derived from.
+    match /artifacts/{appId}/users/{uid}/calendarSubscriptions/{subscriptionId} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // Calendar subscription secret-hash lookup index (Calendar Integration Phase 1, Stage 1).
+    // Server-only, same shape/reasoning as pushTokenClaims above. No client read (would leak
+    // other users' uid/subscriptionId pairs keyed by hash) or write (would let a client forge
+    // a working calendar credential). No public feed endpoint exists yet in Stage 1 — this
+    // collection is currently written and deleted only by the callables/trigger in
+    // functions/src/calendarSubscriptions.ts, never yet read by anything.
+    match /artifacts/{appId}/calendarSubscriptionsByHash/{hash} {
+      allow read, write: if false;
+    }
+
+    // Calendar per-uid deletion tombstone / account-state (Calendar Integration Phase 1,
+    // Stage 1, Codex repair pass 2 — closes a create-versus-account-deletion race). Fully
+    // server-only: no client may read this collection, since the mere ability to check
+    // whether a tombstone exists for a given uid would let anyone probe which accounts have
+    // been deleted. Written only by the onCalendarUserDeleted trigger (sets it, permanently)
+    // and read only inside that trigger's and createCalendarSubscriptionCore's own Firestore
+    // transactions in functions/src/calendarSubscriptions.ts.
+    match /artifacts/{appId}/calendarAccountState/{uid} {
+      allow read, write: if false;
+    }
+
     // Stripe customer data (written by the Firebase Stripe extension)
     match /customers/{uid} {
       allow read: if request.auth != null && request.auth.uid == uid;

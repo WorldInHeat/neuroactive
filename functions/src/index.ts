@@ -21,6 +21,14 @@ export {
   cancelPushInstallationTransfer,
 } from './pushInstallations';
 export { updateNotificationPreferences, refreshNotificationTimezone } from './notificationPreferences';
+// Calendar Integration Phase 1, Stage 1 — account-deletion + token-lifecycle foundation
+// only. No relationship to, and no imports from, the reminder/notification pipeline below.
+export {
+  createCalendarSubscription,
+  revokeCalendarSubscription,
+  revokeAllCalendarSubscriptions,
+  onCalendarUserDeleted,
+} from './calendarSubscriptions';
 export { notificationReminderSchedulerDryRun } from './reminderScheduler';
 // Phase 3A-3 Step 3C-3, renamed Step 3C-5 (M1) — the delivery-pipeline export. This function
 // transitively reaches real FCM transport via reminderDeliverySender.ts, but whether a real

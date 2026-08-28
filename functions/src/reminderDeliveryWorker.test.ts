@@ -1951,7 +1951,7 @@ async function main(): Promise<void> {
     // OWN, independent generation of sendExecutionId (mirroring, not reusing, the fanout
     // module's per-attempt-identity pattern). Added to the allowlist deliberately, not
     // silently — this is a reviewed, expected new call site, not scope creep.
-    const RANDOMBYTES_ALLOWED_FILES = new Set(['reminderDeliveryWorker.ts', 'reminderDeliveryAuth.ts', 'pushInstallations.ts', 'pushInstallationEpochLogic.ts']);
+    const RANDOMBYTES_ALLOWED_FILES = new Set(['reminderDeliveryWorker.ts', 'reminderDeliveryAuth.ts', 'pushInstallations.ts', 'pushInstallationEpochLogic.ts', 'calendarSubscriptions.ts']);
     const FANOUT_NONCE_IDENTIFIER_ALLOWED_FILES = new Set(['reminderDeliveryWorker.ts', 'reminderDeliveryLogic.ts']);
 
     check(
@@ -1971,7 +1971,7 @@ async function main(): Promise<void> {
       })
     );
     check(
-      'randomBytes( is called only from reminderDeliveryWorker.ts and the two pre-existing, unrelated credential-generation files',
+      'randomBytes( is called only from reminderDeliveryWorker.ts and the pre-existing/unrelated credential-generation files (pushInstallations.ts, pushInstallationEpochLogic.ts, reminderDeliveryAuth.ts, calendarSubscriptions.ts)',
       allSourceFiles.every((f) => {
         if (RANDOMBYTES_ALLOWED_FILES.has(f)) return true;
         const src = fs.readFileSync(path.join(srcDir, f), 'utf8');
