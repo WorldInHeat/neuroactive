@@ -108,19 +108,37 @@ const DELIVERY_APP_ID = 'neuroactive-prod';
 // ---------------------------------------------------------------------------------------
 // FIXED FIRST-SEND MESSAGE SCHEMA — pure, directly unit-testable, no Firestore/network
 // access. Deliberately fixed, server-authored content: no arbitrary user-controlled keys,
-// no health/progress information, and no UID, reminder ID, audience ID, token, provenance
-// ID, execution ID, or other internal identifier anywhere in visible text. The only
-// variable input is the current, already-validated installation token.
+// no health/progress information, no lesson number, no day number, no health/pain
+// information, no user-specific text, and no UID, reminder ID, audience ID, token,
+// provenance ID, execution ID, or other internal identifier anywhere in visible text. The
+// only variable input is the current, already-validated installation token.
 //
 // COMPATIBILITY — inspected directly against the actual deployed service worker
 // (public/firebase-messaging-sw.js): its onBackgroundMessage handler explicitly skips
 // manual display whenever `payload.notification` is present, and its notificationclick
 // handler always focuses/opens the app root ('/'), never reading any custom data field
 // from the payload. Including a `notification` object (title/body) is therefore both
-// necessary and sufficient. Deliberately does NOT include a custom deep-link field.
+// necessary and sufficient. Codex Step 3C-9 repair pass 2: `webpush.fcmOptions.link` MUST
+// be an absolute URL, not a relative '/' — FCM's documented contract for this field is an
+// absolute URL, and a relative path has undefined/unspecified behavior across web push
+// implementations. The canonical production PWA origin, `https://neuroactivehealth.com/`,
+// was independently established (not assumed) from three agreeing pieces of committed,
+// already-deployed production configuration — `authDomain: 'neuroactivehealth.com'` in both
+// src/services/firebase.ts (frontend) and this service worker's own firebase.initializeApp
+// config above; this repository's root firebase.json CSP `frame-src` explicitly allowlisting
+// `https://neuroactivehealth.com`; and functions/src/dnsCheckout.ts's own production Stripe
+// checkout success/cancel redirect targets, which point at exactly `https://
+// neuroactivehealth.com/?payment=success`/`...=canceled` (root path) — plus a live read-only
+// HTTPS HEAD request confirming HTTP 200, `text/html`, and no redirect. This click target
+// governs a notification the browser/FCM SDK itself auto-displays (distinct from this
+// service worker's own notificationclick handler, which already unconditionally focuses/
+// opens the same app root regardless of this field). Both paths agree on the same
+// destination, so there is no conflict, and the existing safe fallback focus/open behavior
+// in the service worker is left completely unmodified.
 // ---------------------------------------------------------------------------------------
 const FIRST_SEND_NOTIFICATION_TITLE = 'NeuroActive';
-const FIRST_SEND_NOTIFICATION_BODY = 'You have a session reminder.';
+const FIRST_SEND_NOTIFICATION_BODY = 'Your next session is ready.';
+const FIRST_SEND_WEBPUSH_LINK = 'https://neuroactivehealth.com/';
 
 export function buildFirstSendNotificationMessage(installationToken: unknown): Record<string, unknown> {
   if (typeof installationToken !== 'string' || installationToken.length === 0) {
@@ -131,6 +149,11 @@ export function buildFirstSendNotificationMessage(installationToken: unknown): R
     notification: {
       title: FIRST_SEND_NOTIFICATION_TITLE,
       body: FIRST_SEND_NOTIFICATION_BODY,
+    },
+    webpush: {
+      fcmOptions: {
+        link: FIRST_SEND_WEBPUSH_LINK,
+      },
     },
   };
 }

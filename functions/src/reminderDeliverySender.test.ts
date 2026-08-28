@@ -406,9 +406,55 @@ async function main(): Promise<void> {
       return typeof notification.title === 'string' && notification.title.length > 0 && typeof notification.body === 'string' && notification.body.length > 0;
     })()
   );
-  check('message contains no other top-level keys beyond token/notification', (() => {
+  // Step 3C-9 — exact first-real-send contract, pinned precisely (not just "nonempty").
+  check("notification.title === 'NeuroActive'", (() => {
     const msg = buildFirstSendNotificationMessage('some-token');
-    return JSON.stringify(Object.keys(msg).sort()) === JSON.stringify(['notification', 'token']);
+    return (msg.notification as { title: string }).title === 'NeuroActive';
+  })());
+  check("notification.body === 'Your next session is ready.'", (() => {
+    const msg = buildFirstSendNotificationMessage('some-token');
+    return (msg.notification as { body: string }).body === 'Your next session is ready.';
+  })());
+  check("webpush.fcmOptions.link === 'https://neuroactivehealth.com/' (exact approved absolute URL, not a relative path)", (() => {
+    const msg = buildFirstSendNotificationMessage('some-token');
+    const webpush = msg.webpush as { fcmOptions?: { link?: unknown } } | undefined;
+    return webpush?.fcmOptions?.link === 'https://neuroactivehealth.com/';
+  })());
+  check("webpush.fcmOptions.link parses as a URL whose protocol === 'https:'", (() => {
+    const msg = buildFirstSendNotificationMessage('some-token');
+    const webpush = msg.webpush as { fcmOptions: { link: string } };
+    return new URL(webpush.fcmOptions.link).protocol === 'https:';
+  })());
+  check("webpush.fcmOptions.link's origin === 'https://neuroactivehealth.com' exactly", (() => {
+    const msg = buildFirstSendNotificationMessage('some-token');
+    const webpush = msg.webpush as { fcmOptions: { link: string } };
+    return new URL(webpush.fcmOptions.link).origin === 'https://neuroactivehealth.com';
+  })());
+  check("webpush.fcmOptions.link's pathname === '/' exactly (the PWA root landing/open target, no sub-path)", (() => {
+    const msg = buildFirstSendNotificationMessage('some-token');
+    const webpush = msg.webpush as { fcmOptions: { link: string } };
+    return new URL(webpush.fcmOptions.link).pathname === '/';
+  })());
+  check('message contains no other top-level keys beyond token/notification/webpush', (() => {
+    const msg = buildFirstSendNotificationMessage('some-token');
+    return JSON.stringify(Object.keys(msg).sort()) === JSON.stringify(['notification', 'token', 'webpush']);
+  })());
+  check('webpush object contains no other top-level keys beyond fcmOptions, and fcmOptions contains no other keys beyond link', (() => {
+    const msg = buildFirstSendNotificationMessage('some-token');
+    const webpush = msg.webpush as Record<string, unknown>;
+    const fcmOptions = webpush.fcmOptions as Record<string, unknown>;
+    return JSON.stringify(Object.keys(webpush).sort()) === JSON.stringify(['fcmOptions']) && JSON.stringify(Object.keys(fcmOptions).sort()) === JSON.stringify(['link']);
+  })());
+  check('notification content is not user-specific: no lesson number, day number, health/pain wording, UID, or reminder ID appears anywhere in the visible notification.title/body (the token field is deliberately excluded — it is an opaque installation token, not visible text; the webpush.fcmOptions.link is checked separately below since it legitimately contains the company domain, which itself contains the substring "health")', (() => {
+    const msg = buildFirstSendNotificationMessage('some-token');
+    const serialized = JSON.stringify(msg.notification).toLowerCase();
+    const forbidden = ['lesson', 'day ', 'pain', 'health', 'uid', 'reminderid', 'user-1', 'session-1'];
+    return forbidden.every((needle) => !serialized.includes(needle));
+  })());
+  check('webpush.fcmOptions.link is exactly the one approved production URL and nothing else (never a caller-influenced or dynamically-built value)', (() => {
+    const msg = buildFirstSendNotificationMessage('some-token');
+    const webpush = msg.webpush as { fcmOptions: { link: string } };
+    return webpush.fcmOptions.link === 'https://neuroactivehealth.com/';
   })());
   check('empty-string token throws', (() => {
     try {
@@ -698,6 +744,39 @@ async function main(): Promise<void> {
   // once, never zero and never twice.
   // =======================================================================================
   console.log('\n=== processControlledSendCandidate — behavioral composition (fake transport) ===');
+
+  // Step 3C-9 — proves the ACTUAL outbound FCM v1 `message` object, as constructed by the
+  // real, unmodified production orchestration path (not a reimplementation), contains
+  // exactly the approved first-real-send contract: fixed title/body, webpush.fcmOptions.link
+  // === '/', no other top-level keys, and exactly one physical transport call (no additional
+  // FCM calls, no retry).
+  await checkAsync(
+    "[payload contract] the exact outbound FCM v1 message reaching the transport has notification.title === 'NeuroActive', notification.body === 'Your next session is ready.', webpush.fcmOptions.link === 'https://neuroactivehealth.com/', and no other top-level keys beyond token/notification/webpush — exactly one physical transport call",
+    async () => {
+      const { db, store } = makeFakeDb();
+      seedOrchestrationPreparingFixture(store, { rollout: { mode: 'allowlisted-real-send', allowlistUids: [ORCH_UID] } });
+      let capturedMessage: Record<string, unknown> | undefined;
+      const { transport, callCount } = fakeTransport((params) => {
+        capturedMessage = params.message;
+        return Promise.resolve(ACCEPTED_OUTCOME);
+      });
+      const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+      if (callCount() !== 1) return false;
+      if (result.outcome !== 'terminalized' || result.state !== 'accepted-by-fcm') return false;
+      if (!capturedMessage) return false;
+      if (JSON.stringify(Object.keys(capturedMessage).sort()) !== JSON.stringify(['notification', 'token', 'webpush'])) return false;
+      const notification = capturedMessage.notification as { title: unknown; body: unknown };
+      if (notification.title !== 'NeuroActive' || notification.body !== 'Your next session is ready.') return false;
+      const webpush = capturedMessage.webpush as { fcmOptions?: { link?: unknown } };
+      if (webpush?.fcmOptions?.link !== 'https://neuroactivehealth.com/') return false;
+      // No user-specific content anywhere in the visible notification (the webpush link is
+      // checked separately above for its exact expected value — it legitimately contains
+      // the company domain, which itself contains the substring "health").
+      const serializedNotification = JSON.stringify(capturedMessage.notification).toLowerCase();
+      const forbidden = ['lesson', 'day ', 'pain', 'health', ORCH_UID.toLowerCase(), ORCH_REMINDER_ID.toLowerCase(), ORCH_INSTALLATION_ID.toLowerCase()];
+      return forbidden.every((needle) => !serializedNotification.includes(needle));
+    }
+  );
 
   await checkAsync('authorized + accepted transport outcome -> terminalized accepted-by-fcm, transport called EXACTLY ONCE with the real capability token/accessToken', async () => {
     const { db, store } = makeFakeDb();
