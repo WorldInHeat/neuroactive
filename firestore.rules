@@ -133,6 +133,18 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Calendar schedule preferences (Calendar Integration Phase 1, Stage 2). Owner-read
+    // only, same trust shape as notificationPreferences/entitlement above — the client
+    // never writes this document directly; the only path is the updateCalendarPreferences
+    // callable (Admin SDK, bypasses these rules), which re-validates and re-normalizes
+    // every field server-side. Deliberately independent of, and does not reference,
+    // notificationPreferences or any course-progress collection — see
+    // functions/src/calendarPreferences.ts's own header for the full decoupling guarantee.
+    match /artifacts/{appId}/users/{uid}/calendarPreferences/{doc} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
     // Stripe customer data (written by the Firebase Stripe extension)
     match /customers/{uid} {
       allow read: if request.auth != null && request.auth.uid == uid;

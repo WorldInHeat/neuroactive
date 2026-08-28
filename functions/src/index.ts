@@ -29,6 +29,12 @@ export {
   revokeAllCalendarSubscriptions,
   onCalendarUserDeleted,
 } from './calendarSubscriptions';
+// Calendar Integration Phase 1, Stage 2 — calendar schedule preferences only. No
+// dependency on, or coupling with, notificationPreferences/reminder/course-progress state
+// — see functions/src/calendarPreferences.ts's own header for the full decoupling
+// guarantee. Deliberately does NOT export any Auth-deletion trigger for this document —
+// see that file's own ACCOUNT DELETION section for the explicit, documented reasoning.
+export { updateCalendarPreferences } from './calendarPreferences';
 export { notificationReminderSchedulerDryRun } from './reminderScheduler';
 // Phase 3A-3 Step 3C-3, renamed Step 3C-5 (M1) — the delivery-pipeline export. This function
 // transitively reaches real FCM transport via reminderDeliverySender.ts, but whether a real
