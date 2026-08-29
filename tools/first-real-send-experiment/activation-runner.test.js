@@ -152,7 +152,7 @@ const INSTALLATION_ID = 'c'.repeat(32);
 const TOKEN = 'fake-installation-token';
 const { createHash } = require('node:crypto');
 const TOKEN_HASH = createHash('sha256').update(TOKEN).digest('hex');
-const APPROVED_SCHEDULE_FIXTURE = { revision: 8, scheduleType: 'daily', weekdays: [0, 1, 2, 3, 4, 5, 6], localTime: '21:15', timezone: 'America/Chicago' };
+const APPROVED_SCHEDULE_FIXTURE = { revision: 10, scheduleType: 'daily', weekdays: [0, 1, 2, 3, 4, 5, 6], localTime: '15:30', timezone: 'America/Chicago' };
 
 function gateDoc(overrides) {
   return {
@@ -179,7 +179,7 @@ function baseSeed(overrides) {
     [`artifacts/${APP_ID}/pushInstallations/${INSTALLATION_ID}`]: { uid: UID, state: 'active', epochSchemaVersion: 1, tokenVersion: 1, installationAudienceId: 'a'.repeat(16), generation: 1, token: TOKEN },
     [`artifacts/${APP_ID}/pushTokenClaims/${TOKEN_HASH}`]: { installationId: INSTALLATION_ID, uid: UID },
   };
-  for (let i = 0; i < 7; i++) seed[`artifacts/${APP_ID}/reminders/other-reminder-${i}`] = { uid: 'unrelated-uid', workState: 'terminal', status: 'delivery-fanned-out' };
+  for (let i = 0; i < 8; i++) seed[`artifacts/${APP_ID}/reminders/other-reminder-${i}`] = { uid: 'unrelated-uid', workState: 'terminal', status: 'delivery-fanned-out' };
   // Codex Step 3C-9 repair pass 5, item 3: matches REAL production's actual approved
   // baseline (verified live: all 4 existing deliveries are 'dry-run-validated', never
   // 'accepted-by-fcm'/'rejected-final'/'unknown-outcome'/'sending') — this fixture must stay

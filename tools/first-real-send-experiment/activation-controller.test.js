@@ -137,7 +137,7 @@ const { Timestamp } = require('C:/Users/adamb/neuroactive/functions/node_modules
 const { validateExperimentGateSchema } = require('C:/Users/adamb/neuroactive/functions/lib/reminderDeliveryAuth.js');
 const { isValidIdForPath } = require('C:/Users/adamb/neuroactive/functions/lib/reminderDeliveryLogic.js');
 
-const APPROVED_SCHEDULE_FIXTURE = { revision: 8, scheduleType: 'daily', weekdays: [0, 1, 2, 3, 4, 5, 6], localTime: '21:15', timezone: 'America/Chicago' };
+const APPROVED_SCHEDULE_FIXTURE = { revision: 10, scheduleType: 'daily', weekdays: [0, 1, 2, 3, 4, 5, 6], localTime: '15:30', timezone: 'America/Chicago' };
 
 function gateDoc(overrides) {
   return {
@@ -182,7 +182,7 @@ function baseSeed(overrides) {
     },
     [`artifacts/${APP_ID}/pushTokenClaims/${TOKEN_HASH}`]: { installationId: INSTALLATION_ID, uid: UID },
   };
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < 8; i++) {
     seed[`artifacts/${APP_ID}/reminders/other-reminder-${i}`] = { uid: 'unrelated-uid', workState: 'terminal', status: 'delivery-fanned-out' };
   }
   // Codex Step 3C-9 repair pass 5, item 3: matches real production's actual approved
@@ -251,9 +251,13 @@ async function main() {
   })());
 
   console.log('\n=== approved census / schedule baselines ===');
-  check('exact approved census -> isApprovedCensusBaseline true', gal.isApprovedCensusBaseline({ reminders: { total: 7, terminal: 7, nonterminal: 0 }, deliveries: { total: 4, terminal: 4, nonterminal: 0 } }));
+  check('exact approved census -> isApprovedCensusBaseline true', gal.isApprovedCensusBaseline({ reminders: { total: 8, terminal: 8, nonterminal: 0 }, deliveries: { total: 4, terminal: 4, nonterminal: 0 } }));
+  check('former 7/7/0 reminder census -> isApprovedCensusBaseline false', !gal.isApprovedCensusBaseline({ reminders: { total: 7, terminal: 7, nonterminal: 0 }, deliveries: { total: 4, terminal: 4, nonterminal: 0 } }));
+  check('wrong delivery census -> isApprovedCensusBaseline false', !gal.isApprovedCensusBaseline({ reminders: { total: 8, terminal: 8, nonterminal: 0 }, deliveries: { total: 5, terminal: 5, nonterminal: 0 } }));
   check('exact approved schedule -> isApprovedScheduleBaseline true', gal.isApprovedScheduleBaseline(APPROVED_SCHEDULE_FIXTURE));
+  check('former revision 8 / 21:15 schedule -> isApprovedScheduleBaseline false', !gal.isApprovedScheduleBaseline({ ...APPROVED_SCHEDULE_FIXTURE, revision: 8, localTime: '21:15' }));
   check('wrong revision -> isApprovedScheduleBaseline false', !gal.isApprovedScheduleBaseline({ ...APPROVED_SCHEDULE_FIXTURE, revision: 9 }));
+  check('wrong localTime -> isApprovedScheduleBaseline false', !gal.isApprovedScheduleBaseline({ ...APPROVED_SCHEDULE_FIXTURE, localTime: '21:15' }));
 
   console.log('\n=== timing window / [item 10] observation deadline cap ===');
   check('exactly 12 minutes before occurrence -> within activation window', gal.isWithinActivationWindow(Date.now(), Date.now() + 12 * 60 * 1000));
@@ -441,6 +445,23 @@ async function main() {
     if (!gate) return false;
     const pf = await controller.runActivationPreflight(db, gate);
     return pf.ok === true;
+  });
+
+  await checkAsync('former revision 8 / 21:15 schedule fails closed with schedule-baseline-drift', async () => {
+    const prefPath = `artifacts/${APP_ID}/users/${UID}/notificationPreferences/main`;
+    const seed = baseSeed({
+      [prefPath]: {
+        enabled: true,
+        ...APPROVED_SCHEDULE_FIXTURE,
+        revision: 8,
+        localTime: '21:15',
+        nextReminderDueAt: Timestamp.fromMillis(SCHEDULED_MS),
+      },
+    });
+    const { db } = makeFakeDb(seed);
+    const gate = await controller.loadArmedGate(db);
+    const pf = await controller.runActivationPreflight(db, gate);
+    return pf.ok === false && pf.reason === 'schedule-baseline-drift';
   });
 
   await checkAsync('[item 3] a SECOND active installation for the same uid BLOCKS activation', async () => {
