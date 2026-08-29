@@ -182,7 +182,7 @@ function baseSeed(overrides) {
     },
     [`artifacts/${APP_ID}/pushTokenClaims/${TOKEN_HASH}`]: { installationId: INSTALLATION_ID, uid: UID },
   };
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 7; i++) {
     seed[`artifacts/${APP_ID}/reminders/other-reminder-${i}`] = { uid: 'unrelated-uid', workState: 'terminal', status: 'delivery-fanned-out' };
   }
   // Codex Step 3C-9 repair pass 5, item 3: matches real production's actual approved
@@ -251,7 +251,7 @@ async function main() {
   })());
 
   console.log('\n=== approved census / schedule baselines ===');
-  check('exact approved census -> isApprovedCensusBaseline true', gal.isApprovedCensusBaseline({ reminders: { total: 6, terminal: 6, nonterminal: 0 }, deliveries: { total: 4, terminal: 4, nonterminal: 0 } }));
+  check('exact approved census -> isApprovedCensusBaseline true', gal.isApprovedCensusBaseline({ reminders: { total: 7, terminal: 7, nonterminal: 0 }, deliveries: { total: 4, terminal: 4, nonterminal: 0 } }));
   check('exact approved schedule -> isApprovedScheduleBaseline true', gal.isApprovedScheduleBaseline(APPROVED_SCHEDULE_FIXTURE));
   check('wrong revision -> isApprovedScheduleBaseline false', !gal.isApprovedScheduleBaseline({ ...APPROVED_SCHEDULE_FIXTURE, revision: 9 }));
 

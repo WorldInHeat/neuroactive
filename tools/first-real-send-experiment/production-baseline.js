@@ -109,7 +109,7 @@ async function runProductionBaseline() {
   const censusCounts = await gateIo.captureApprovedCensusCounts(db);
   log('reminders total/terminal/nonterminal', `${censusCounts.reminders.total}/${censusCounts.reminders.terminal}/${censusCounts.reminders.nonterminal}`);
   log('deliveries total/terminal/nonterminal', `${censusCounts.deliveries.total}/${censusCounts.deliveries.terminal}/${censusCounts.deliveries.nonterminal}`);
-  log('matches the reviewed approved census baseline (6/6/0 reminders, 4/4/0 deliveries)', gal.isApprovedCensusBaseline(censusCounts));
+  log('matches the reviewed approved census baseline (7/7/0 reminders, 4/4/0 deliveries)', gal.isApprovedCensusBaseline(censusCounts));
 
   const deliveryStateBreakdown = await gateIo.captureDeliveryStateBreakdown(db);
   log('zero FCM/transport evidence across all deliveries', gal.hasZeroFcmEvidence(deliveryStateBreakdown));

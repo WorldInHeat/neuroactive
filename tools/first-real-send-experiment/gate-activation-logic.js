@@ -19,7 +19,7 @@ const { createHash, randomBytes } = require('node:crypto');
 // "expected" values.
 // ---------------------------------------------------------------------------------------
 const APPROVED_CENSUS_BASELINE = Object.freeze({
-  reminders: Object.freeze({ total: 6, terminal: 6, nonterminal: 0 }),
+  reminders: Object.freeze({ total: 7, terminal: 7, nonterminal: 0 }),
   deliveries: Object.freeze({ total: 4, terminal: 4, nonterminal: 0 }),
 });
 
