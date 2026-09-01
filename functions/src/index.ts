@@ -35,6 +35,14 @@ export {
 // guarantee. Deliberately does NOT export any Auth-deletion trigger for this document —
 // see that file's own ACCOUNT DELETION section for the explicit, documented reasoning.
 export { updateCalendarPreferences } from './calendarPreferences';
+// Calendar Integration Phase 1, Stage 4 — the private subscribed calendar feed endpoint
+// (firebase.json Hosting rewrites `/calendar/**` to this function). Reads the preserved
+// Stage 1 token/subscription lifecycle, Stage 2 preference model, and Stage 3 feed
+// adapter/generator; adds no new calendar business logic beyond HTTP request handling and
+// the six-step Stage 1 feed-authorization contract — see calendarFeedEndpoint.ts's own
+// header. NOT YET DEPLOYED — see STAGE4_LOGGING_SECURITY_PLAN.md for the pre-deployment
+// gate this function is blocked behind.
+export { calendarFeed } from './calendarFeedEndpoint';
 export { notificationReminderSchedulerDryRun } from './reminderScheduler';
 // Phase 3A-3 Step 3C-3, renamed Step 3C-5 (M1) — the delivery-pipeline export. This function
 // transitively reaches real FCM transport via reminderDeliverySender.ts, but whether a real
