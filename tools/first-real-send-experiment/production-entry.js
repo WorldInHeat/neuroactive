@@ -55,6 +55,45 @@ function log(label, value) {
   else console.log(label + ':', value);
 }
 
+const SAFE_FAILURE_PHASES = Object.freeze({
+  CONTROLLER_DATABASE_CONSTRUCTION: 'controller-database-construction',
+  SECOND_PREFLIGHT: 'second-preflight',
+  READINESS_CLEANUP: 'readiness-cleanup',
+  WATCHDOG_LAUNCH: 'watchdog-launch',
+  READINESS_ESTABLISHMENT: 'readiness-establishment',
+  CONTROLLER_ORCHESTRATION_PRE_CAS: 'controller-orchestration-pre-cas',
+  CAS_OR_AMBIGUITY: 'cas-or-ambiguity',
+  UNCLASSIFIED: 'unclassified',
+});
+const SAFE_FAILURE_PHASE_VALUES = new Set(Object.values(SAFE_FAILURE_PHASES));
+
+class SafePhaseError extends Error {
+  constructor(phase) {
+    super('production-entry-safe-phase-failure');
+    this.safePhase = SAFE_FAILURE_PHASE_VALUES.has(phase) ? phase : SAFE_FAILURE_PHASES.UNCLASSIFIED;
+  }
+}
+
+function safePhaseOf(err) {
+  return err && SAFE_FAILURE_PHASE_VALUES.has(err.safePhase) ? err.safePhase : SAFE_FAILURE_PHASES.UNCLASSIFIED;
+}
+
+function runSyncPhase(phase, fn) {
+  try {
+    return fn();
+  } catch {
+    throw new SafePhaseError(phase);
+  }
+}
+
+async function runAsyncPhase(phase, fn) {
+  try {
+    return await fn();
+  } catch {
+    throw new SafePhaseError(phase);
+  }
+}
+
 // =========================================================================================
 // EXIT-CODE MAPPING — Codex item 3. Exit 0 ONLY for a conclusively-contained result. Every
 // other case gets a DISTINCT nonzero code so a caller/operator can tell categories apart
@@ -152,14 +191,14 @@ function requireOperatorAuthorizationForTest(promptFn) {
 // runProductionActivation(), which itself accepts no arguments.
 // =========================================================================================
 async function runProductionOrchestration(capabilityToken, adcBindingContext) {
-  const db = controller.buildControllerDb();
+  const db = runSyncPhase(SAFE_FAILURE_PHASES.CONTROLLER_DATABASE_CONSTRUCTION, () => controller.buildControllerDb());
   const readinessPath = path.join(os.tmpdir(), 'first-real-send-production-readiness.json');
 
   // Inline the SAME watchdog-launch/readiness-wait/orphan-cleanup sequence
   // runActivationCore's test path uses, via the legitimately-exported (non-mutation-capable)
   // pieces of activation-runner.js, plus controller.runControllerOrchestration for the actual
   // mutation-capable orchestration (capability-gated — see that file).
-  const precheck = await runnerInternals.runRunnerPreconditions(db);
+  const precheck = await runAsyncPhase(SAFE_FAILURE_PHASES.SECOND_PREFLIGHT, () => runnerInternals.runRunnerPreconditions(db));
   if (!precheck.ok) return { outcome: 'stop', reason: precheck.reason, activationAttempted: false };
   const { gate } = precheck;
 
@@ -167,13 +206,17 @@ async function runProductionOrchestration(capabilityToken, adcBindingContext) {
   const withinWindow = runnerInternals.requireWithinStartWindow(Date.now(), window);
   if (!withinWindow.ok) return { outcome: 'stop', reason: withinWindow.reason, activationAttempted: false };
 
-  readinessArtifact.clearStaleReadinessArtifact(readinessPath);
-  try {
-    require('node:fs').unlinkSync(readinessPath + '.status.json');
-  } catch {}
+  runSyncPhase(SAFE_FAILURE_PHASES.READINESS_CLEANUP, () => {
+    readinessArtifact.clearStaleReadinessArtifact(readinessPath);
+    try {
+      require('node:fs').unlinkSync(readinessPath + '.status.json');
+    } catch (err) {
+      if (!err || err.code !== 'ENOENT') throw err;
+    }
+  });
 
   const challenge = gal.generateChallenge();
-  const child = runnerInternals.launchWatchdog(readinessPath, challenge);
+  const child = runSyncPhase(SAFE_FAILURE_PHASES.WATCHDOG_LAUNCH, () => runnerInternals.launchWatchdog(readinessPath, challenge));
 
   const postLaunchPollMs = 100;
   const postLaunchTimeoutMs = 30000;
@@ -193,6 +236,7 @@ async function runProductionOrchestration(capabilityToken, adcBindingContext) {
   // because the previous design's exception path bypassed that field entirely.
   const attemptState = { activationMayHaveBeenAttempted: false };
 
+  let activePhase = SAFE_FAILURE_PHASES.READINESS_ESTABLISHMENT;
   try {
     while (!readinessFileAppeared && Date.now() < startupDeadline) {
       if (!gal.isPidAlive(child.pid)) return { outcome: 'stop', reason: 'watchdog-failed-to-start', activationAttempted: false };
@@ -211,7 +255,16 @@ async function runProductionOrchestration(capabilityToken, adcBindingContext) {
       adcBindingContext,
       attemptState,
     };
-    const result = await controller.runControllerOrchestration(db, readinessPath, challenge, orchestrationDeps);
+    activePhase = SAFE_FAILURE_PHASES.CONTROLLER_ORCHESTRATION_PRE_CAS;
+    let result = await controller.runControllerOrchestration(db, readinessPath, challenge, orchestrationDeps);
+    if (result && result.outcome !== 'contained' && !result.safeFailurePhase) {
+      result = {
+        ...result,
+        safeFailurePhase: result.activationAttempted
+          ? SAFE_FAILURE_PHASES.CAS_OR_AMBIGUITY
+          : SAFE_FAILURE_PHASES.CONTROLLER_ORCHESTRATION_PRE_CAS,
+      };
+    }
 
     // Codex item 4: the watchdog is terminated ONLY when activation is DEFINITELY not
     // attempted — checked via the externally-held attemptState object, not merely
@@ -236,13 +289,13 @@ async function runProductionOrchestration(capabilityToken, adcBindingContext) {
       // CLI classifies this as nonzero (see exitCodeForActivationResult — falls through to the
       // generic STOP code, which is nonzero) and the watchdog remains running independently,
       // exactly as its whole design intends for this scenario.
-      return { outcome: 'stop', reason: 'post-activation-exception-attempt-state-preserved', activationAttempted: true };
+      return { outcome: 'stop', reason: 'post-activation-exception-attempt-state-preserved', activationAttempted: true, safeFailurePhase: SAFE_FAILURE_PHASES.CAS_OR_AMBIGUITY };
     }
     // Activation was DEFINITELY not attempted (the exception occurred before the CAS call, in
     // this glue code) — safe to terminate the now-genuinely-orphaned watchdog, bounded + PID
     // verified, exactly as the normal pre-activation STOP path does.
     const termination = await runnerInternals.terminateOrphanedWatchdog(child);
-    return { outcome: 'stop', reason: 'pre-activation-exception-in-runner-glue', activationAttempted: false, watchdogTerminated: termination.terminated };
+    return { outcome: 'stop', reason: 'pre-activation-exception-in-runner-glue', activationAttempted: false, watchdogTerminated: termination.terminated, safeFailurePhase: activePhase };
   }
 }
 
@@ -282,7 +335,7 @@ async function runProductionActivation() {
   // reviewed preflight. This is an EARLY check only, purely so the operator is never prompted
   // for authorization when activation could not possibly proceed — the real orchestration
   // re-derives and re-validates all of this fresh, from scratch, independent of this check.
-  const earlyDb = controller.buildControllerDb();
+  const earlyDb = runSyncPhase(SAFE_FAILURE_PHASES.CONTROLLER_DATABASE_CONSTRUCTION, () => controller.buildControllerDb());
   const precheck = await runnerInternals.runRunnerPreconditions(earlyDb);
   if (!precheck.ok) {
     log('PRODUCTION_ENTRY: STOP — precondition failed:', precheck.reason);
@@ -333,10 +386,13 @@ if (require.main === module) {
     .then((result) => {
       log('PRODUCTION_ENTRY: final outcome:', result && result.outcome);
       if (result && result.reason) log('PRODUCTION_ENTRY: reason:', result.reason);
+      if (result && SAFE_FAILURE_PHASE_VALUES.has(result.safeFailurePhase)) {
+        log('PRODUCTION_ENTRY: fixed failure phase:', result.safeFailurePhase);
+      }
       process.exitCode = exitCodeForActivationResult(result);
     })
-    .catch(() => {
-      log('PRODUCTION_ENTRY: FAILED (fixed label only).');
+    .catch((err) => {
+      log('PRODUCTION_ENTRY: FAILED fixed phase:', safePhaseOf(err));
       process.exitCode = ACTIVATION_EXIT_CODES.EXCEPTION;
     });
 }

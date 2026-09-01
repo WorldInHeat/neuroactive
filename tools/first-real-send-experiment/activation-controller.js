@@ -47,7 +47,7 @@
 'use strict';
 
 const { getFirestore, Timestamp } = require('C:/Users/adamb/neuroactive/functions/node_modules/firebase-admin/lib/firestore/index.js');
-const { initializeApp, applicationDefault } = require('C:/Users/adamb/neuroactive/functions/node_modules/firebase-admin/lib/app/index.js');
+const { initializeApp, applicationDefault, getApp } = require('C:/Users/adamb/neuroactive/functions/node_modules/firebase-admin/lib/app/index.js');
 
 const { buildReminderId, validateSchedule } = require('C:/Users/adamb/neuroactive/functions/lib/reminderSchedulerLogic.js');
 const { isValidIdForPath, isValidInstallationIdShape } = require('C:/Users/adamb/neuroactive/functions/lib/reminderDeliveryLogic.js');
@@ -595,9 +595,38 @@ async function runControllerOrchestration(db, readinessPath, challenge, deps) {
 // PRODUCTION FIRESTORE CLIENT — same repaired construction as armGate.js (applicationDefault
 // + explicit named app), distinct app name to avoid any collision.
 // ---------------------------------------------------------------------------------------
+let controllerAppOwnedByThisModule = null;
+
+function requireExactControllerAppBinding(app) {
+  if (!app || !app.options || app.options.projectId !== PROJECT_ID) {
+    throw new Error('activation-controller-app-project-binding-mismatch');
+  }
+}
+
 function buildControllerDb() {
-  const app = initializeApp({ credential: applicationDefault(), projectId: PROJECT_ID }, 'activation-controller');
-  return getFirestore(app);
+  if (controllerAppOwnedByThisModule) {
+    const registeredApp = getApp('activation-controller');
+    if (registeredApp !== controllerAppOwnedByThisModule) {
+      throw new Error('activation-controller-app-ownership-mismatch');
+    }
+    requireExactControllerAppBinding(registeredApp);
+    return getFirestore(registeredApp);
+  }
+
+  try {
+    getApp('activation-controller');
+  } catch (err) {
+    if (!err || err.code !== 'app/no-app') throw err;
+    const app = initializeApp({ credential: applicationDefault(), projectId: PROJECT_ID }, 'activation-controller');
+    requireExactControllerAppBinding(app);
+    const db = getFirestore(app);
+    controllerAppOwnedByThisModule = app;
+    return db;
+  }
+
+  // A same-name app that predates this module's own successful construction has unknown
+  // credential provenance. Project-string equality is insufficient: refuse it unconditionally.
+  throw new Error('activation-controller-app-ownership-not-established');
 }
 
 module.exports = {
