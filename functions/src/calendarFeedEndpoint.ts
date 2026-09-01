@@ -508,8 +508,27 @@ async function realAccountExists(uid: string): Promise<boolean> {
 // requiring any deployment-time IAM/Cloud Armor configuration. The exact number is a
 // conservative starting point only; see STAGE4_LOGGING_SECURITY_PLAN.md's sibling
 // pre-deployment note on tuning it against real expected subscriber volume before deploy.
+//
+// cors: false IS REQUIRED, NOT OPTIONAL. For onRequest, an omitted `cors` key does NOT
+// itself mean CORS is enabled — the framework's cors-wrapping middleware installs only when
+// `"cors" in opts` (any value, including `false`) OR when FIREBASE_DEBUG_MODE is active with
+// its "enableCors" debug feature. The real Firebase Functions emulator sets BOTH
+// unconditionally for every function it spawns (confirmed directly against firebase-tools'
+// own functionsEmulator.js), so an omitted `cors` key still triggers the middleware there —
+// which answers every OPTIONS request itself (before handleCalendarFeedRequestCore ever
+// runs) and reflects an arbitrary request `Origin` back as `Access-Control-Allow-Origin` —
+// verified directly against a real emulator-hosted request with `Origin:
+// https://evil.example.com`. (onCall, the adjacent v2 export, has its own different default
+// — it resolves an omitted `cors` to `true` unconditionally; that default does not apply
+// here.) Explicitly setting `cors: false` resolves to a falsy `origin` inside the installed
+// `cors` package's own middleware wrapper, which — traced directly in its source — takes
+// the early `next()` branch with no header manipulation and no OPTIONS auto-response, in
+// both the normal and the debug/emulator case, letting every request reach this handler and
+// `applyOutcome` exactly as designed. Not a general CORS policy choice (no legitimate
+// browser-JS cross-origin use case exists for a bearer-secret calendar feed) — it is what
+// makes this file's own response contract actually govern every real response.
 // ---------------------------------------------------------------------------------------
-export const calendarFeed = onRequest({ maxInstances: 20 }, async (request: Request, response: Response) => {
+export const calendarFeed = onRequest({ maxInstances: 20, cors: false }, async (request: Request, response: Response) => {
   let outcome: FeedResponseOutcome;
   try {
     outcome = await handleCalendarFeedRequestCore(db, realAccountExists, {

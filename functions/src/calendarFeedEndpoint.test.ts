@@ -2,19 +2,41 @@
 // Calendar Integration Phase 1, Stage 4 tests.
 //
 // Same caveat as calendarSubscriptions.test.ts/calendarPreferences.test.ts: no live
-// Firebase emulator in this environment, so these exercise the db-parameterized Core
-// functions (resolveCalendarFeedInputCore, handleCalendarFeedRequestCore) and the pure
-// applyOutcome/extractToken/isFreshFor helpers against a minimal FAKE Firestore and a fake
-// AccountExistsChecker — never a live HTTP request/response, never real Firebase Admin
-// Auth. See this project's REAL-EMULATOR GATE status note in the Stage 4 completion report
-// for what real-emulator verification remains outstanding before deployment.
+// Firebase CLI/firebase-tools emulator in this environment, so most of these exercise the
+// db-parameterized Core functions (resolveCalendarFeedInputCore, handleCalendarFeedRequestCore)
+// and the pure applyOutcome/extractToken/isFreshFor helpers against a minimal FAKE Firestore
+// and a fake AccountExistsChecker. See this project's REAL-EMULATOR GATE status note in the
+// Stage 4 completion report for what real-emulator verification remains outstanding before
+// deployment.
+//
+// TWO EXCEPTIONS, DELIBERATELY:
+//   1. The "HTTP FRAMEWORK LAYER" section below exercises the REAL, exported `calendarFeed`
+//      value (the actual `onRequest(...)`-wrapped closure, cors middleware included) over a
+//      real, loopback-only Node HTTP server, in THIS process's own (non-debug-mode)
+//      environment. This proves the wrapper behaves correctly under ordinary/production-like
+//      conditions -- a source-string assertion that `cors: false` appears somewhere would not
+//      have proven that.
+//   2. The "ISOLATED-PROCESS DEBUG-MODE REGRESSION" section further below spawns a genuinely
+//      separate Node PROCESS, with FIREBASE_DEBUG_MODE/FIREBASE_DEBUG_FEATURES already set in
+//      that process's own environment before it starts. This is the regression coverage for
+//      the SPECIFIC condition that originally exposed the CORS defect: the real Firebase
+//      Functions emulator unconditionally sets those two env vars (confirmed directly against
+//      firebase-tools' own functionsEmulator.js) for every function it spawns, and
+//      firebase-functions/lib/common/debug.js captures FIREBASE_DEBUG_MODE into a
+//      module-level const the first time it is required -- which section 1's same-process
+//      test can never observe, since this test file's own process never runs under that
+//      condition. See calendarFeedEndpoint.ts's own comment on its onRequest call for the
+//      full mechanism this section reproduces.
 'use strict';
 
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as http from 'node:http';
+import { spawn } from 'node:child_process';
+import express from 'express';
 import { Timestamp } from 'firebase-admin/firestore';
-import { resolveCalendarFeedInputCore, handleCalendarFeedRequestCore, __test__ } from './calendarFeedEndpoint';
+import { resolveCalendarFeedInputCore, handleCalendarFeedRequestCore, calendarFeed, __test__ } from './calendarFeedEndpoint';
 import { generateCalendarIcs } from './calendarIcsGenerator';
 
 let pass = 0;
@@ -230,6 +252,153 @@ function makeFakeResponse() {
     },
   };
   return { response: response as unknown as import('express').Response, recorded };
+}
+
+// Wraps the REAL exported `calendarFeed` value (the actual onRequest(...)-wrapped closure,
+// cors middleware included) in a minimal Express app served over a real, loopback-only
+// ('127.0.0.1', ephemeral port, never externally reachable) Node HTTP server -- the smallest
+// seam that can observe genuine `firebase-functions` v2 framework behavior (its cors
+// middleware in particular) without depending on firebase-tools, a live Firestore/Java
+// emulator, or any network access. Server is created and torn down fresh per call.
+async function withRealCalendarFeedServer<T>(fn: (baseUrl: string) => Promise<T>): Promise<T> {
+  const app = express();
+  app.use(calendarFeed as unknown as express.RequestHandler);
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') {
+    throw new Error('withRealCalendarFeedServer: failed to bind a loopback test port');
+  }
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  try {
+    return await fn(baseUrl);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+}
+
+// ---------------------------------------------------------------------------------------
+// ISOLATED-PROCESS DEBUG-MODE REGRESSION -- see this file's own header, exception 2, for
+// why a genuinely separate OS process (not merely a same-process module-cache trick) is the
+// only mechanism that can reliably guarantee FIREBASE_DEBUG_MODE is visible to
+// firebase-functions' own module-level `debugMode` const at its very first `require`.
+//
+// The child's own entry script is generated here, at test-run time, into the already
+// git-ignored `lib-test/` build-output directory (never the tracked `src/` tree) and deleted
+// immediately after use -- this avoids a new permanent source file for what is, in effect, a
+// disposable process bootstrap, while still giving the child a real `.js` file on disk that
+// `require('./calendarFeedEndpoint')` can resolve siblings from exactly as the compiled test
+// suite itself does.
+// ---------------------------------------------------------------------------------------
+const DEBUG_MODE_CHILD_SCRIPT = `'use strict';
+const http = require('node:http');
+const express = require('express');
+
+async function fetchResult(baseUrl, pathSuffix, init) {
+  const res = await fetch(baseUrl + pathSuffix, init);
+  const headers = {};
+  for (const [k, v] of res.headers.entries()) headers[k] = v;
+  const body = await res.text();
+  return { status: res.status, headers, body };
+}
+
+async function main() {
+  const results = {
+    debugModeEnv: process.env.FIREBASE_DEBUG_MODE,
+    debugFeaturesEnv: process.env.FIREBASE_DEBUG_FEATURES,
+    firebaseFunctionsAlreadyCachedBeforeRequire: Object.keys(require.cache || {}).some((k) => k.indexOf('firebase-functions') !== -1),
+  };
+
+  const { calendarFeed } = require('./calendarFeedEndpoint');
+
+  const app = express();
+  app.use(calendarFeed);
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const baseUrl = 'http://127.0.0.1:' + address.port;
+  const token = process.argv[2];
+
+  results.options = await fetchResult(baseUrl, '/calendar/' + token + '.ics', { method: 'OPTIONS' });
+  results.optionsWithOrigin = await fetchResult(baseUrl, '/calendar/' + token + '.ics', { method: 'OPTIONS', headers: { Origin: 'https://evil.example.com' } });
+  results.getWithOrigin = await fetchResult(baseUrl, '/calendar/tooshort.ics', { method: 'GET', headers: { Origin: 'https://evil.example.com' } });
+  results.getMalformed = await fetchResult(baseUrl, '/calendar/tooshort.ics', { method: 'GET' });
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+    results['method_' + method] = await fetchResult(baseUrl, '/calendar/' + token + '.ics', { method });
+  }
+
+  await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  process.stdout.write(JSON.stringify(results));
+}
+
+main().catch((err) => {
+  process.stderr.write(String((err && err.stack) || err));
+  process.exitCode = 1;
+});
+`;
+
+type DebugModeChildResult = {
+  debugModeEnv: string | undefined;
+  debugFeaturesEnv: string | undefined;
+  firebaseFunctionsAlreadyCachedBeforeRequire: boolean;
+  options: { status: number; headers: Record<string, string>; body: string };
+  optionsWithOrigin: { status: number; headers: Record<string, string>; body: string };
+  getWithOrigin: { status: number; headers: Record<string, string>; body: string };
+  getMalformed: { status: number; headers: Record<string, string>; body: string };
+  method_POST: { status: number; headers: Record<string, string>; body: string };
+  method_PUT: { status: number; headers: Record<string, string>; body: string };
+  method_PATCH: { status: number; headers: Record<string, string>; body: string };
+  method_DELETE: { status: number; headers: Record<string, string>; body: string };
+};
+
+// Runs the generated child script in a FRESH `node` process whose OWN environment (set via
+// `spawn`'s `env` option, present before the process even starts -- not mutated on
+// `process.env` after the fact) carries FIREBASE_DEBUG_MODE/FIREBASE_DEBUG_FEATURES set to
+// EXACTLY the values firebase-tools' own functionsEmulator.js sets for every function it
+// spawns (verified directly against that file's source, not assumed).
+async function runIsolatedDebugModeChild(token: string): Promise<DebugModeChildResult> {
+  const scriptPath = path.join(__dirname, '__debugModeChildFixture.generated.js');
+  fs.writeFileSync(scriptPath, DEBUG_MODE_CHILD_SCRIPT, 'utf8');
+  try {
+    return await new Promise<DebugModeChildResult>((resolve, reject) => {
+      const child = spawn(process.execPath, [scriptPath, token], {
+        cwd: __dirname,
+        env: {
+          ...process.env,
+          FIREBASE_DEBUG_MODE: 'true',
+          FIREBASE_DEBUG_FEATURES: JSON.stringify({ enableCors: true }),
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => (stdout += chunk));
+      child.stderr.on('data', (chunk) => (stderr += chunk));
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(`isolated debug-mode child exited with code ${code}. stderr: ${stderr}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout));
+        } catch {
+          reject(new Error(`isolated debug-mode child produced non-JSON stdout: ${stdout}\nstderr: ${stderr}`));
+        }
+      });
+    });
+  } finally {
+    fs.rmSync(scriptPath, { force: true });
+  }
+}
+
+function noCorsHeaders(headers: Record<string, string>): boolean {
+  const varyTokens = (headers['vary'] ?? '').split(',').map((s) => s.trim().toLowerCase());
+  return (
+    headers['access-control-allow-origin'] === undefined &&
+    headers['access-control-allow-methods'] === undefined &&
+    !varyTokens.includes('origin')
+  );
 }
 
 async function main(): Promise<void> {
@@ -557,6 +726,161 @@ async function main(): Promise<void> {
       return recorded.headers['content-type'] !== 'text/html' && !(recorded.body ?? '').trim().startsWith('<');
     });
   })());
+
+  // =======================================================================================
+  // HTTP FRAMEWORK LAYER — the REAL exported `calendarFeed` onRequest closure, cors
+  // middleware included, over a real loopback-only HTTP server (see this file's own header
+  // for why this section exists and why every case below is deliberately
+  // Firestore-independent — none of these ever reach a Firestore/Auth read, so none of them
+  // carry any risk of touching a real backend regardless of environment credentials).
+  // =======================================================================================
+
+  await checkAsync(
+    '[real onRequest wrapper] OPTIONS reaches this endpoint\'s own applyOutcome contract, not a framework CORS auto-response',
+    () =>
+      withRealCalendarFeedServer(async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/calendar/${TOKEN_A}.ics`, { method: 'OPTIONS' });
+        return (
+          response.status === 204 &&
+          response.headers.get('allow') === __test__.ALLOWED_METHODS &&
+          response.headers.get('cache-control') === 'private, no-store' &&
+          response.headers.get('x-content-type-options') === 'nosniff' &&
+          response.headers.get('referrer-policy') === 'no-referrer' &&
+          noCorsHeaders(Object.fromEntries(response.headers.entries()))
+        );
+      })
+  );
+
+  await checkAsync(
+    '[real onRequest wrapper] GET with an arbitrary Origin header never acquires a framework-injected Access-Control-Allow-Origin',
+    () =>
+      withRealCalendarFeedServer(async (baseUrl) => {
+        // Deliberately malformed (too short) -- fails at extractToken, before any Firestore read.
+        const response = await fetch(`${baseUrl}/calendar/${TOKEN_A.slice(0, 10)}.ics`, {
+          method: 'GET',
+          headers: { Origin: 'https://evil.example.com' },
+        });
+        return response.status === 404 && noCorsHeaders(Object.fromEntries(response.headers.entries()));
+      })
+  );
+
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+    await checkAsync(`[real onRequest wrapper] ${method} still returns the intended 405 through the real framework wrapper`, () =>
+      withRealCalendarFeedServer(async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/calendar/${TOKEN_A}.ics`, { method });
+        return (
+          response.status === 405 &&
+          response.headers.get('allow') === __test__.ALLOWED_METHODS &&
+          response.headers.get('cache-control') === 'private, no-store' &&
+          response.headers.get('x-content-type-options') === 'nosniff' &&
+          response.headers.get('referrer-policy') === 'no-referrer' &&
+          noCorsHeaders(Object.fromEntries(response.headers.entries()))
+        );
+      })
+    );
+  }
+
+  await checkAsync('[real onRequest wrapper] a malformed GET path still returns the intended 404 through the real framework wrapper', () =>
+    withRealCalendarFeedServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/calendar/tooshort.ics`, { method: 'GET' });
+      const body = await response.text();
+      return (
+        response.status === 404 &&
+        body === 'Not found' &&
+        response.headers.get('cache-control') === 'private, no-store' &&
+        response.headers.get('x-content-type-options') === 'nosniff' &&
+        response.headers.get('referrer-policy') === 'no-referrer' &&
+        noCorsHeaders(Object.fromEntries(response.headers.entries()))
+      );
+    })
+  );
+
+  // =======================================================================================
+  // ISOLATED-PROCESS DEBUG-MODE REGRESSION -- the actual load-bearing proof. See this file's
+  // own header (exception 2) and runIsolatedDebugModeChild's own comment for why the section
+  // above, run in THIS process's own non-debug environment, cannot observe the specific
+  // condition that originally exposed the CORS defect (the real Functions emulator
+  // unconditionally sets FIREBASE_DEBUG_MODE=true and FIREBASE_DEBUG_FEATURES with
+  // enableCors:true for every function it spawns) -- and why only a genuinely separate child
+  // process, given that exact environment before it starts, can reliably recreate it.
+  // =======================================================================================
+
+  let debugModeResult: DebugModeChildResult | null = null;
+  let debugModeChildError: string | null = null;
+  try {
+    debugModeResult = await runIsolatedDebugModeChild(TOKEN_A);
+  } catch (err) {
+    debugModeChildError = err instanceof Error ? err.message : String(err);
+  }
+
+  check('[isolated debug-mode process] child process started and produced parseable results', debugModeResult !== null, debugModeChildError ?? undefined);
+
+  if (debugModeResult) {
+    const r = debugModeResult;
+
+    check('[isolated debug-mode process] FIREBASE_DEBUG_MODE was actually "true" inside the child process', r.debugModeEnv === 'true');
+    check(
+      '[isolated debug-mode process] FIREBASE_DEBUG_FEATURES carried enableCors:true inside the child process',
+      (() => {
+        try {
+          return JSON.parse(r.debugFeaturesEnv ?? '{}').enableCors === true;
+        } catch {
+          return false;
+        }
+      })()
+    );
+    check(
+      '[isolated debug-mode process] firebase-functions was not already cached before calendarFeedEndpoint required it (env was visible at first load, not raced)',
+      r.firebaseFunctionsAlreadyCachedBeforeRequire === false
+    );
+
+    check(
+      '[isolated debug-mode process] OPTIONS: 204, exact Allow, exact Cache-Control, hardening headers present',
+      r.options.status === 204 &&
+        r.options.headers['allow'] === __test__.ALLOWED_METHODS &&
+        r.options.headers['cache-control'] === 'private, no-store' &&
+        r.options.headers['x-content-type-options'] === 'nosniff' &&
+        r.options.headers['referrer-policy'] === 'no-referrer'
+    );
+    check('[isolated debug-mode process] OPTIONS: no framework-generated CORS headers (no ACAO, no ACAM, no Vary:Origin)', noCorsHeaders(r.options.headers));
+
+    check(
+      '[isolated debug-mode process] OPTIONS with an arbitrary Origin: still 204, still no reflected Access-Control-Allow-Origin',
+      r.optionsWithOrigin.status === 204 && noCorsHeaders(r.optionsWithOrigin.headers)
+    );
+
+    check(
+      '[isolated debug-mode process] GET with an arbitrary Origin on a malformed path: 404, no framework-generated CORS headers',
+      r.getWithOrigin.status === 404 && noCorsHeaders(r.getWithOrigin.headers)
+    );
+
+    check(
+      '[isolated debug-mode process] malformed GET (no Origin): 404, "Not found" body, hardening headers, no CORS headers',
+      r.getMalformed.status === 404 &&
+        r.getMalformed.body === 'Not found' &&
+        r.getMalformed.headers['cache-control'] === 'private, no-store' &&
+        r.getMalformed.headers['x-content-type-options'] === 'nosniff' &&
+        r.getMalformed.headers['referrer-policy'] === 'no-referrer' &&
+        noCorsHeaders(r.getMalformed.headers)
+    );
+
+    for (const [label, result] of [
+      ['POST', r.method_POST],
+      ['PUT', r.method_PUT],
+      ['PATCH', r.method_PATCH],
+      ['DELETE', r.method_DELETE],
+    ] as const) {
+      check(
+        `[isolated debug-mode process] ${label}: 405, exact Allow, Cache-Control, hardening headers, no CORS headers`,
+        result.status === 405 &&
+          result.headers['allow'] === __test__.ALLOWED_METHODS &&
+          result.headers['cache-control'] === 'private, no-store' &&
+          result.headers['x-content-type-options'] === 'nosniff' &&
+          result.headers['referrer-policy'] === 'no-referrer' &&
+          noCorsHeaders(result.headers)
+      );
+    }
+  }
 
   // =======================================================================================
   // ICS INTEGRATION — Stage 3 adapter/generator actually exercised
