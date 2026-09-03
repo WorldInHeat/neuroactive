@@ -117,12 +117,15 @@ const MAX_PATH_LENGTH = 128;
 const PREFERENCE_STORED_KEYS = ['weekdays', 'localTime', 'timezone', 'sessionDurationMinutes', 'revision', 'updatedAt'] as const;
 
 // A bearer-secret subscribed feed must never be cached by a SHARED cache (a CDN, a
-// corporate proxy) — `private` forbids that per RFC 9111, leaving caching entirely to the
-// calendar client's own HTTP cache. `max-age` plus Last-Modified/If-Modified-Since (see
-// isFreshFor below) together let a well-behaved, periodically-repolling calendar client
-// avoid a full refetch (and this file avoids re-running the generator) when nothing has
-// changed — see ABUSE / COST BOUNDARY in this file's own header.
-const CACHE_MAX_AGE_SECONDS = 3600;
+// corporate proxy) — `private` forbids that per RFC 9111. Beyond that, every response
+// (success included) uses `no-store`: a revoked/rotated credential must not leave a stale
+// successful response sitting in a local disk cache that a client could still read after
+// the credential stops working server-side (see the cache-hardening review this repair
+// closes). This does NOT disable conditional requests — Last-Modified/If-Modified-Since
+// (see isFreshFor below) still lets a well-behaved, periodically-repolling calendar client
+// send a lightweight revalidation request and get a 304 back (and this file still avoids
+// re-running the generator when nothing has changed); `no-store` only means the client may
+// not skip that revalidation round-trip by trusting a locally cached copy's age.
 const ALLOWED_METHODS = 'GET, HEAD, OPTIONS';
 
 function calendarSubscriptionRef(db: FirebaseFirestore.Firestore, uid: string, subscriptionId: string) {
@@ -425,7 +428,7 @@ function summarizeError(error: unknown): string {
 function applyOutcome(response: Response, outcome: FeedResponseOutcome): void {
   // Applied to every outcome, success or failure alike: this is a bearer-secret capability
   // URL, so no response from this endpoint may ever be cached by a shared/CDN cache (see
-  // CACHE_MAX_AGE_SECONDS above), and hardening headers cost nothing to always set.
+  // the no-store rationale above), and hardening headers cost nothing to always set.
   response.set('X-Content-Type-Options', 'nosniff');
   response.set('Referrer-Policy', 'no-referrer');
 
@@ -455,13 +458,13 @@ function applyOutcome(response: Response, outcome: FeedResponseOutcome): void {
       response.status(503).type('text/plain').send('Service unavailable');
       return;
     case 'not-modified':
-      response.set('Cache-Control', `private, max-age=${CACHE_MAX_AGE_SECONDS}`);
+      response.set('Cache-Control', 'private, no-store');
       response.set('Last-Modified', outcome.lastModified);
       response.status(304).end();
       return;
     case 'ok':
       response.set('Content-Type', 'text/calendar; charset=utf-8');
-      response.set('Cache-Control', `private, max-age=${CACHE_MAX_AGE_SECONDS}`);
+      response.set('Cache-Control', 'private, no-store');
       response.set('Last-Modified', outcome.lastModified);
       response.set('Content-Length', String(outcome.contentLength));
       // Deliberately no Content-Disposition: this is a SUBSCRIBED feed (periodic
@@ -556,7 +559,6 @@ export const __test__ = {
   FEED_PATH_PATTERN,
   MAX_PATH_LENGTH,
   MAX_UID_LENGTH,
-  CACHE_MAX_AGE_SECONDS,
   ALLOWED_METHODS,
   PREFERENCE_STORED_KEYS,
   calendarSubscriptionRef,

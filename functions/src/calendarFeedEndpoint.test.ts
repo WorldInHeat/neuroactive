@@ -643,7 +643,18 @@ async function main(): Promise<void> {
       ifModifiedSince: null,
     });
 
-    return JSON.stringify(outcomeUnknown) === JSON.stringify(outcomeRevoked) && outcomeUnknown.kind === 'not-found';
+    // Composed: the revoked-token outcome carried through this endpoint's own header
+    // materialization (not just the decision layer above) — a revoked credential must
+    // never leave a cacheable 404 sitting in a client's HTTP cache.
+    const { response: revokedResponse, recorded: revokedRecorded } = makeFakeResponse();
+    __test__.applyOutcome(revokedResponse, outcomeRevoked);
+
+    return (
+      JSON.stringify(outcomeUnknown) === JSON.stringify(outcomeRevoked) &&
+      outcomeUnknown.kind === 'not-found' &&
+      revokedRecorded.statusCode === 404 &&
+      revokedRecorded.headers['cache-control'] === 'private, no-store'
+    );
   });
 
   // ---- applyOutcome / header materialization (fake Express-shaped Response) ----
@@ -654,7 +665,7 @@ async function main(): Promise<void> {
     return (
       recorded.statusCode === 200 &&
       recorded.headers['content-type'] === 'text/calendar; charset=utf-8' &&
-      recorded.headers['cache-control'] === `private, max-age=${__test__.CACHE_MAX_AGE_SECONDS}` &&
+      recorded.headers['cache-control'] === 'private, no-store' &&
       recorded.headers['last-modified'] === 'Sun, 01 Feb 2026 09:00:00 GMT' &&
       recorded.headers['content-length'] === '33' &&
       recorded.headers['content-disposition'] === undefined &&
@@ -662,10 +673,15 @@ async function main(): Promise<void> {
     );
   })());
 
-  check('applyOutcome: "ok" with includeBody=false (HEAD) ends without a body', (() => {
+  check('applyOutcome: "ok" with includeBody=false (HEAD) ends without a body and no-store caching', (() => {
     const { response, recorded } = makeFakeResponse();
     __test__.applyOutcome(response, { kind: 'ok', body: 'BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n', contentLength: 33, lastModified: 'Sun, 01 Feb 2026 09:00:00 GMT', includeBody: false });
-    return recorded.statusCode === 200 && recorded.body === null && recorded.ended === true;
+    return (
+      recorded.statusCode === 200 &&
+      recorded.body === null &&
+      recorded.ended === true &&
+      recorded.headers['cache-control'] === 'private, no-store'
+    );
   })());
 
   check('applyOutcome: "not-found" is a fixed, low-information 404 with no-store caching', (() => {
@@ -680,10 +696,15 @@ async function main(): Promise<void> {
     return recorded.statusCode === 503 && recorded.body === 'Service unavailable';
   })());
 
-  check('applyOutcome: "not-modified" is a 304 with no body and a fresh Cache-Control', (() => {
+  check('applyOutcome: "not-modified" is a 304 with no body and no-store caching', (() => {
     const { response, recorded } = makeFakeResponse();
     __test__.applyOutcome(response, { kind: 'not-modified', lastModified: 'Sun, 01 Feb 2026 09:00:00 GMT' });
-    return recorded.statusCode === 304 && recorded.body === null && recorded.headers['last-modified'] === 'Sun, 01 Feb 2026 09:00:00 GMT';
+    return (
+      recorded.statusCode === 304 &&
+      recorded.body === null &&
+      recorded.headers['last-modified'] === 'Sun, 01 Feb 2026 09:00:00 GMT' &&
+      recorded.headers['cache-control'] === 'private, no-store'
+    );
   })());
 
   check('applyOutcome: "method-not-allowed" is a 405 with an Allow header', (() => {
