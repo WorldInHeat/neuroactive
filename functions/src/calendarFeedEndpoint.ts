@@ -505,9 +505,14 @@ async function realAccountExists(uid: string): Promise<boolean> {
 // specific publicly-callable-without-Firebase-login endpoint (Stage 4 authorization
 // boundary: "request concurrency/cost amplification") — not a general-purpose rate-limiting
 // platform. It bounds worst-case concurrent execution cost from an abuse campaign without
-// requiring any deployment-time IAM/Cloud Armor configuration. The exact number is a
-// conservative starting point only; see STAGE4_LOGGING_SECURITY_PLAN.md's sibling
-// pre-deployment note on tuning it against real expected subscriber volume before deploy.
+// requiring any deployment-time IAM/Cloud Armor configuration. Set to 5, deliberately below
+// the Firebase Functions v2 platform default of 20: this is a public, bearer-token-gated
+// endpoint serving low-volume individual calendar subscribers, and 5 instances at the
+// platform's default maxInstanceRequestConcurrency: 80 still yields up to 400 concurrent
+// requests — comfortably above any realistic legitimate load, while meaningfully reducing
+// worst-case cost/abuse exposure compared to the platform default of 20 instances (1,600
+// concurrent). Confirmed via real production inspection of a comparable existing function;
+// see STAGE4_LOGGING_SECURITY_PLAN.md §7.
 //
 // cors: false IS REQUIRED, NOT OPTIONAL. For onRequest, an omitted `cors` key does NOT
 // itself mean CORS is enabled — the framework's cors-wrapping middleware installs only when
@@ -528,7 +533,7 @@ async function realAccountExists(uid: string): Promise<boolean> {
 // browser-JS cross-origin use case exists for a bearer-secret calendar feed) — it is what
 // makes this file's own response contract actually govern every real response.
 // ---------------------------------------------------------------------------------------
-export const calendarFeed = onRequest({ maxInstances: 20, cors: false }, async (request: Request, response: Response) => {
+export const calendarFeed = onRequest({ maxInstances: 5, cors: false }, async (request: Request, response: Response) => {
   let outcome: FeedResponseOutcome;
   try {
     outcome = await handleCalendarFeedRequestCore(db, realAccountExists, {

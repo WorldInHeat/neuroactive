@@ -53,44 +53,89 @@ bearer-token-in-URL design, not something to argue away.
 
 ## 3. Current applicable log retention
 
-- Google Cloud Logging's `_Default` log bucket has a **30-day default retention** unless a
-  project has configured something else. **This project's actual currently-configured
-  retention for its `_Default` bucket has not been verified as part of this source-only
-  implementation** — no GCP/IAM inspection was performed or authorized for this task. That
-  verification is listed as a required pre-deployment step in §6.
-- Cloud Run's auto-generated request logs land under the standard `run.googleapis.com`
-  request log name and are subject to whatever bucket/sink they route to — by default, the
-  same `_Default` bucket and its retention, unless a dedicated sink/exclusion has been
-  configured (see §5).
+**CONFIRMED via real, read-only Phase A production discovery (`gcloud logging buckets list
+--project=neuroactive --location=global`), 2026-09-03 — no longer an assumption:**
+
+- `_Default` bucket: **30-day retention**, exactly the GCP standard default — this project
+  has not customized it.
+- `_Required` bucket (mandatory audit-log categories only — `cloudaudit.googleapis.com/
+  activity`, `system_event`, `access_transparency`, and their `externalaudit` equivalents):
+  **400-day retention, locked** (cannot be reduced). Not relevant to Cloud Run request
+  logs — see §6's confirmed sink topology for why request logs land in `_Default`, not
+  `_Required`.
+- Cloud Run's auto-generated request logs (`run.googleapis.com/requests`) are subject to
+  the `_Default` bucket's 30-day retention above, since (confirmed in §6) no dedicated
+  sink/exclusion currently exists for them in this project.
+
+*Re-verify if materially more time has passed before deployment, or if this project's sink/
+bucket configuration is known to have changed since this discovery.*
 
 ## 4. Which principals/IAM roles can read those logs
 
-Any principal (user or service account) holding `roles/logging.viewer`,
-`roles/logging.privateLogViewer`, `roles/owner`, `roles/editor`, or any custom role granting
-`logging.logEntries.list` on the GCP project can read these entries, including the raw
-request path. **This plan does not have visibility into which principals currently hold
-these roles on this project** — no IAM read or mutation was performed or authorized for this
-source-only task. Enumerating and reviewing that list (`gcloud projects get-iam-policy`, or
-the equivalent Console view) is a required pre-deployment step (§6) — it determines the
-actual blast radius of whatever residual log retention this plan cannot eliminate outright.
+**CONFIRMED via real, read-only Phase A production discovery (`gcloud projects
+get-iam-policy neuroactive`), 2026-09-03 — the complete roster, not an assumption:**
+
+No dedicated `roles/logging.viewer` or `roles/logging.privateLogViewer` grant exists
+anywhere in this project's IAM policy. All logging read access flows through exactly two
+broader roles, and the full list of principals holding either is:
+
+- **`roles/owner` → `user:AdamBruene@gmail.com`** — the *only* human principal in the
+  entire project IAM policy; full access, including all logs.
+- **`roles/editor` → `serviceAccount:1010503840940-compute@developer.gserviceaccount.com`**
+  — the default Compute Engine service account. This is the exact same service account
+  `calendarFeed` itself will run as once deployed (§1) — a standard, expected GCP pattern
+  (the default compute SA is broadly privileged by default), not something specific to this
+  project's configuration, but worth naming explicitly since it means the function's own
+  runtime identity already has read access to its own request logs regardless of anything
+  this plan configures.
+- **`roles/editor` → `serviceAccount:1010503840940@cloudservices.gserviceaccount.com`** —
+  the Cloud Services default service account (internal GCP infrastructure identity, not
+  directly user-controlled).
+
+No `allUsers`, `allAuthenticatedUsers`, or any other unexpected/custom role grant exists
+anywhere in the policy. **This represents a small, well-understood blast radius**: one human
+owner and two GCP-default service accounts — not a large or surprising set of readers.
+
+*Re-verify if materially more time has passed before deployment, or if this project's IAM
+policy is known to have changed since this discovery (`etag: BwZZ_IJkvEQ=` at time of
+discovery — a changed etag on re-query is itself a signal the policy has moved).*
 
 ## 5. What log exclusion/redaction/retention controls are actually possible
 
 - **Log Router exclusion filter, scoped to the REQUEST LOG SPECIFICALLY (recommended primary
   control).** An exclusion filter that names only `resource.type="cloud_run_revision" AND
-  resource.labels.service_name="<deployed service name>"` is **too broad** — per §2, that
+  resource.labels.service_name="calendarfeed"` is **too broad** — per §2, that
   resource type is shared by both the automatic request log and this function's own
   application/container output, so a resource-type-only filter would suppress both. The
-  filter must additionally scope to the request log's own log identity, e.g.:
+  filter must additionally scope to the request log's own log identity. **CONFIRMED via
+  real Phase A production discovery, 2026-09-03** — `calendarFeed` is not yet deployed, so
+  this exact service name is derived by direct analogy: every existing 2nd-gen `onRequest`
+  function in this project deploys as a Cloud Run service named after the function with the
+  name simply lowercased (verified directly, e.g. `handleDnsNoCostCheckout` → Cloud Run
+  service `handlednsnocostcheckout`) — so `calendarFeed` is expected to deploy as
+  **`calendarfeed`**, in region **`us-central1`** (matching every other function in this
+  project and the region already hardcoded in `firebase.json`'s Hosting rewrite). This must
+  still be confirmed against the *actual* deployed service name at Phase A time below, not
+  assumed to be exactly this — the analogy is strong (100% consistent across every function
+  checked) but is not yet a direct observation of `calendarFeed` itself:
 
   ```
   resource.type="cloud_run_revision"
-  resource.labels.service_name="<deployed service name>"
+  resource.labels.service_name="calendarfeed"
   log_id("run.googleapis.com/requests")
   ```
 
-  (or the exact equivalent `logName="projects/<project>/logs/run.googleapis.com%2Frequests"`
-  filter form). This is a genuine, supported GCP capability (`gcloud logging exclusions
+  The equivalent `logName` filter form is likewise now concrete rather than a template —
+  **CONFIRMED real and readable** via a direct read against an existing function's request
+  logs in this exact project (Phase A discovery, 2026-09-03; `httpRequest.requestUrl` was
+  observed populated with the full incoming request URL on real entries, confirming this is
+  not merely a generic GCP platform assumption but an active, in-project log stream):
+
+  ```
+  logName="projects/neuroactive/logs/run.googleapis.com%2Frequests"
+  ```
+
+  This is a genuine, supported GCP capability (`gcloud logging exclusions
   create`, or the Console's Logs Router UI) — not a source-code change — but it must be
   written and verified against the request-log id specifically, never bare resource-type
   matching, or it risks silently deleting this function's only existing application-level
@@ -129,6 +174,28 @@ actual blast radius of whatever residual log retention this plan cannot eliminat
     aggregated sink; and any other ancestor destination visible/authorized to the
     reviewer. Finding that a duplicate destination merely *exists* is not sufficient —
     each one's retention and readers must be individually confirmed.
+
+    **THIS AUDIT IS ALREADY COMPLETE, and — as it turns out — trivial. CONFIRMED via real,
+    read-only Phase A production discovery (`gcloud logging sinks list --project=neuroactive`
+    plus `gcloud projects describe neuroactive --format="value(parent)"`), 2026-09-03:** only
+    two sinks exist in this entire project, both GCP-managed defaults — `_Required` (audit-log
+    categories only; does not receive Cloud Run request logs) and `_Default` (receives
+    everything not claimed by `_Required`, including Cloud Run request logs, per §6's
+    confirmed topology). **No custom sink of any kind exists.** The project additionally has
+    **no organization or folder parent at all** (confirmed by an empty `parent` field on the
+    project resource), so there is no ancestor-sink layer capable of independently capturing a
+    copy — the "folder-level aggregated sink" / "organization-level aggregated sink" bullets
+    above resolve to *not applicable*, not merely *unaudited*. (A visible organization,
+    `adambruene-org` / `organizations/565660327705`, exists for this identity's other
+    purposes, but `neuroactive` is not attached to it; separately, and only as an additional
+    data point, this identity also lacks `logging.sinks.list` permission on that organization
+    — moot given the project has no parent, but recorded for completeness.) Retention and
+    readers for the one destination that matters (`_Default`) are confirmed in §3/§4 above.
+
+    *This checklist item is fully satisfied as of the discovery date above. Re-verify at
+    actual deployment time only if materially more time has passed, or if this project's
+    sink/organization configuration is otherwise known to have changed — do not assume this
+    topology is permanent, but do not re-audit from scratch by default either.*
   **D.** Verification, against the actual deployed service, that the exclusion is genuinely
   effective (a real request produces no entry under `run.googleapis.com/requests`
   containing the token) — not merely that the filter text was accepted.
@@ -172,21 +239,44 @@ as the required future procedure.
 
 ### PHASE A — deploy backend only; no public bearer route yet
 
+**STATUS: COMPLETE as of 2026-09-03 — service-identity discovery done via a read-only
+production inspection pass, WITHOUT ever deploying `calendarFeed` itself.** A read-only
+discovery pass against the real `neuroactive` project (no deployment, no IAM/Logging
+mutation, no bearer token traffic anywhere — see §5.C's confirmation above and §3/§4)
+inspected the *existing*, already-deployed, comparable `onRequest` function
+`handleDnsNoCostCheckout` and confirmed the Cloud Run naming convention, region, service
+account, and request-log identity/topology this phase exists to establish. This satisfies
+Phase A's actual goal (learn the real infrastructure identity before configuring anything in
+Phase B) — and does so at *lower* risk than the phase's originally-envisioned mechanism,
+since no deployment of `calendarFeed` occurred at all, meaning steps 2–3's guarantees (no
+bearer URL created, no bearer token sent) hold trivially, not just by discipline during a
+live deploy. **One residual, explicitly-not-hidden caveat:** the service-name/region value
+below is a 100%-consistent analogy across every existing function checked in this project,
+not yet a direct observation of `calendarFeed` itself (which remains undeployed) — a
+one-line re-confirmation against the real deployed name is still required at the actual
+Phase B configuration step, not assumed permanent from this discovery alone.
+
 1. Deploy the `calendarFeed` function/backend only as far as needed to establish its actual
    generated Cloud Run service identity. Do **not** deploy or enable the Firebase Hosting
    `/calendar/**` rewrite in this phase (§1) — without that rewrite, the function has no
-   product-facing public entry point yet.
+   product-facing public entry point yet. **NOT YET DONE — `calendarFeed` remains
+   undeployed; see the status note above for what was learned without doing this.**
 2. Do **not** create or distribute any real calendar-subscription bearer URL in this phase.
 3. Do **not** send any real bearer token to the function in this phase — any verification
    traffic in Phase A must be structurally incapable of carrying a real subscription's
    secret (there are no real subscriptions whose tokens could be exposed yet, since
    creation and distribution are withheld until Phase D).
 4. From the resulting deployment, determine:
-   - the exact deployed Cloud Run service name Firebase generated for this function
-     (not assumed or guessed from source);
-   - the exact request-log `logName`/`log_id` for that specific service;
+   - the exact deployed Cloud Run service name Firebase generated for this function —
+     **CONFIRMED by strong analogy, 2026-09-03: `calendarfeed`, region `us-central1`** (see
+     the status note above — still requires direct re-confirmation once step 1 actually
+     happens, not assumed permanent);
+   - the exact request-log `logName`/`log_id` for that specific service — **CONFIRMED
+     real and readable in this project, 2026-09-03:
+     `logName="projects/neuroactive/logs/run.googleapis.com%2Frequests"`** (§5);
    - the applicable project- and ancestor-level logging topology (§5.C) that could receive
-     copies of that log.
+     copies of that log — **CONFIRMED COMPLETE, 2026-09-03: only `_Default`/`_Required`
+     exist, no custom sink, no organization/folder parent** (§5.C, §3, §4).
 
 ### PHASE B — configure logging security, using the now-known real identity
 
@@ -197,9 +287,14 @@ as the required future procedure.
 7. Audit all project and ancestor sinks/destinations per the full §5.C checklist — destination
    identity, routing sink, inclusion status, actual configured retention, log-reader
    principals, and bearer-token persistence risk — for every destination capable of
-   receiving a copy, not merely confirming duplicates exist.
+   receiving a copy, not merely confirming duplicates exist. **ALREADY DONE, 2026-09-03 —
+   see §5.C's confirmation block**: only `_Default`/`_Required` exist, no custom sink, no
+   organization/folder ancestor layer. Re-verify only if materially more time has passed or
+   the project's sink/organization configuration is otherwise known to have changed.
 8. Verify retention (§3) and log-reader IAM (§4) for every matching destination identified in
-   step 7, individually.
+   step 7, individually. **ALREADY DONE, 2026-09-03 — see §3 (30 days / `_Default`, 400 days
+   locked / `_Required`) and §4 (one human owner, two default service accounts, no dedicated
+   logging-role grants, no unexpected principals).**
 9. Confirm this function's own application/container logs (the one `console.error` call path
    — §7) remain visible and are unaffected by whatever exclusion was configured in step 5.
 10. Verify the exclusion/companion-sink behavior described above using **non-secret,
@@ -218,11 +313,28 @@ as the required future procedure.
     hosting` dry run.
 13. Confirm, from the evidence gathered in Phases A–C, that no real bearer credential has yet
     traversed the public route — because that route does not yet exist until Phase D.
-14. Tune `maxInstances: 20` (a conservative starting placeholder set in source — see
-    `calendarFeedEndpoint.ts`; and see §7/§9 for why this is an instance-scaling bound, not a
-    concurrency or rate limit) against actual expected subscriber volume, and decide whether
-    an additional deployment-layer control (Cloud Armor, API Gateway quota) is warranted for
-    this route beyond it — a deployment-time decision, not required to implement now.
+14. Tune `maxInstances` (see `calendarFeedEndpoint.ts`; and see §7/§9 for why this is an
+    instance-scaling bound, not a concurrency or rate limit) against actual expected
+    subscriber volume, and decide whether an additional deployment-layer control (Cloud
+    Armor, API Gateway quota) is warranted for this route beyond it — a deployment-time
+    decision.
+
+    **RESOLVED, 2026-09-03 — source now tightened from the platform default:** Phase A
+    discovery observed `maxInstanceRequestConcurrency: 80` on the comparable existing
+    function `handleDnsNoCostCheckout` (the Firebase Functions v2 platform default —
+    `calendarFeed`'s source sets no explicit per-instance concurrency either, so it inherits
+    the same default once deployed). At the platform default of `maxInstances: 20`, this
+    produced a worst-case ceiling of `20 × 80 = 1,600` concurrent requests for a public,
+    bearer-token-gated, Firestore-reading endpoint — judged more headroom than early-stage
+    subscriber traffic needs. **`calendarFeedEndpoint.ts` has been updated to
+    `maxInstances: 5`**, deliberately below the platform default, yielding a worst-case
+    ceiling of `5 × 80 = 400` concurrent requests — comfortably above any realistic
+    legitimate load for a low-volume individual-subscriber feed, while meaningfully reducing
+    worst-case cost/abuse exposure. This was previously an open decision item for a human;
+    it is now resolved in source. Remaining options (not applied, available for future
+    reconsideration if real traffic patterns warrant): tune `maxInstances` further,
+    explicitly configure a lower per-instance concurrency, or add a deployment-layer control
+    (Cloud Armor, API Gateway quota — already named above).
 
 ### PHASE D — enable the public calendar subscription route
 
@@ -294,17 +406,24 @@ observability.**
   generation) and the response payload — it does **not** avoid any of those five
   authorization/read operations, which happen identically whether the request ultimately
   returns 200 or 304. See §9 for the corrected cost-amplification accounting.
-- `maxInstances: 20` bounds the number of running service *instances* this function can
+- `maxInstances: 5` bounds the number of running service *instances* this function can
   scale out to. Corrected claim (an earlier version of this plan called this "a concurrency
   cap," which is inaccurate for 2nd-generation Firebase Functions): **`maxInstances` is an
   instance-scaling bound, not a request-rate or total-concurrency limit.** Per-instance
   concurrency — how many requests a single running instance may serve simultaneously — is a
   separate, independently configured setting/behavior, not something `maxInstances` controls
-  directly. Depending on the effective per-instance concurrency, `maxInstances: 20` can
-  therefore permit substantially more than 20 requests in flight at once. It bounds
+  directly. **CONFIRMED via real, read-only Phase A production discovery, 2026-09-03:** the
+  effective default for this environment is `maxInstanceRequestConcurrency: 80` (2nd-gen
+  Cloud Functions default; not yet overridden for `calendarFeed`, which remains undeployed).
+  At the platform default of `maxInstances: 20`, this would have yielded a worst-case
+  ceiling of `20 × 80 = 1,600` concurrent in-flight requests — not an abstract "substantially
+  more than 20," but this specific number — for a public, bearer-token-gated endpoint. Source
+  has since been tightened to `maxInstances: 5` (see §6 Phase C step 14), yielding a
+  worst-case ceiling of `5 × 80 = 400` concurrent in-flight requests instead. It bounds
   worst-case *instance count* (and therefore a rough upper bound on total infrastructure
   footprint), not worst-case simultaneous request volume or total log volume over time — see
-  §9 for the corrected cost-amplification accounting this implies.
+  §9 for the corrected cost-amplification accounting this implies, and see §6 Phase C step 14
+  for the now-resolved decision on this figure.
 
 **Deployment/configuration protections required later (before the public route is enabled):**
 - Everything in §6's staged rollout (Phases A–D) above.
@@ -371,9 +490,12 @@ building new rate-limiting infrastructure in this repair or any other redesign:
   one-Auth-lookup resolution pipeline — §7). There is no per-token request-rate limit in
   source, and no total-concurrency limit either.
 - **`maxInstances` is neither request-rate limiting nor a total-concurrency limit** — it is an
-  instance-scaling bound; per-instance concurrency is a separate setting, so `maxInstances: 20`
-  can permit substantially more than 20 requests in flight at once depending on that setting
-  — see the corrected §7 bullet above.
+  instance-scaling bound; per-instance concurrency is a separate setting. **CONFIRMED via real,
+  read-only Phase A production discovery, 2026-09-03:** the effective default
+  `maxInstanceRequestConcurrency: 80` means source's current `maxInstances: 5` yields a
+  concrete worst-case ceiling of `5 × 80 = 400` requests in flight at once (the platform
+  default of `maxInstances: 20` would have yielded `1,600`) — see the corrected §7 bullet
+  above and §6 Phase C step 14 for the now-resolved decision on this figure.
 - **Conditional requests still perform the full authorization/read work** — a 200 and a 304
   cost identically: four Firestore document reads (hash index, owner subscription, deletion
   tombstone/account state, calendar preferences) plus one Firebase Auth account lookup. Only
@@ -391,13 +513,19 @@ building new rate-limiting infrastructure in this repair or any other redesign:
 
 The Firebase Hosting `/calendar/**` rewrite (and therefore any real, bearer-token-bearing
 calendar subscription URL) must remain unenabled until an operator with actual GCP Console/
-`gcloud` access has completed §6's full staged rollout, Phases A through D — including
-discovering the real deployed service identity before configuring anything (Phase A), the
-request-log-specific exclusion scoping and full per-destination retention audit (Phase B,
-incorporating §5's controls and the explicit per-destination checklist in §5.C), the
-remaining emulator/routing verification gates and an explicit decision on the current
-application-log observability gap (Phase C, incorporating §7's finding) — and only then
-Phase D, enabling the public route. The real-emulator TOCTOU test semantics in §8 must also
-be defined and exercised before that point. None of this was within the access or
-authorization of this source-only implementation task to perform; this plan documents the
-required future procedure only.
+`gcloud` access has completed §6's full staged rollout, Phases A through D. **Phase A is now
+marked COMPLETE (2026-09-03)** — real, read-only production discovery (analogy-based service
+identity/log-name confirmation, sink topology, retention, and IAM audit; see §6's Phase A
+status note for the one residual caveat: the service name is confirmed by strong analogy to
+`calendarFeed`'s sibling functions, not yet by direct observation of `calendarFeed` itself,
+since it remains undeployed) — achieved entirely without deploying `calendarFeed` or sending
+any bearer token through production. What remains is: the request-log-specific exclusion
+scoping and full per-destination retention audit (Phase B, incorporating §5's controls and
+the explicit per-destination checklist in §5.C — largely already confirmed per §5.C and §§3-4,
+but not yet *configured*), and the remaining emulator/routing verification gates (Phase C,
+incorporating §7's finding; the maxInstances concurrency-ceiling decision that was open in
+Phase C is now RESOLVED — source tightened to `maxInstances: 5` / 400-concurrent worst case,
+see §6 Phase C step 14) — and only then Phase D, enabling the public route. The
+real-emulator TOCTOU test semantics in §8 must also be defined and exercised before that
+point. Phases B, C, and D remain NOT complete and are not authorized by this update; this
+plan documents the required future procedure only.
