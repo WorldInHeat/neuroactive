@@ -56,6 +56,7 @@ import Paywall from './components/Paywall';
 import DNSCourseView from './components/DNSCourseView';
 import InstallSettingsCard from './components/InstallSettingsCard';
 import NotificationSettingsCard from './components/NotificationSettingsCard';
+import CalendarSettingsCard from './components/CalendarSettingsCard';
 import { useNotifications, type NotificationStatus } from './hooks/useNotifications';
 import { useNotificationPreferences, type NotificationPreferences } from './hooks/useNotificationPreferences';
 import { auth, db, appId } from './services/firebase';
@@ -645,6 +646,11 @@ const SettingsView = ({
             onSavePreferences={onSavePreferences}
           />
         )}
+
+        {/* Calendar — Calendar Integration Phase 1 frontend UI. Same gating as Notifications
+            above: only shown for an authenticated, non-anonymous user, since a calendar
+            subscription is owned by a real uid, never an anonymous session. */}
+        {userInfo && userInfo.isAnonymous === false && <CalendarSettingsCard />}
 
         {/* Support */}
         <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] space-y-1">
