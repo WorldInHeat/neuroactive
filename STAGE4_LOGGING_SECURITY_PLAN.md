@@ -1,6 +1,6 @@
 # Calendar Integration Phase 1, Stage 4 — Pre-Deployment Logging Security Plan
 
-Status: **REQUIRED READING BEFORE PUBLICLY EXPOSING `calendarFeed`. The backend function `calendarFeed` IS deployed (`createTime 2026-09-03T14:44:44Z`, revision `calendarfeed-00001-sox`), per the staged rollout's Phase A (§6). Its PUBLIC route remains BLOCKED: Firebase Hosting's `/calendar/**` rewrite is not live in production (the live Hosting release predates the rewrite's addition to `firebase.json` by roughly 9 days), so no real bearer-token calendar-subscription URL has ever been distributed, and a 30-day request-log query against the deployed service returned zero entries — confirming zero real traffic has occurred. Public exposure (enabling the Hosting rewrite, and only then creating/distributing real subscription URLs) remains BLOCKED until this plan's remaining Phases B, C, and D below are independently reviewed and actually carried out.**
+Status: **REQUIRED READING BEFORE PUBLICLY EXPOSING `calendarFeed`. Phases A, B, and C of the staged rollout (§6) are all COMPLETE, with the real-emulator gate (142/142) and the TOCTOU test-semantics item (§8) both SATISFIED — see each phase's own section below for its full evidence record. The backend function `calendarFeed` IS deployed (`createTime 2026-09-03T14:44:44Z`, revision `calendarfeed-00001-sox`); the request-log-specific logging exclusion IS applied and verified effective (§6 Phase B). Its PUBLIC route remains BLOCKED: Firebase Hosting's `/calendar/**` rewrite is not live in production (the live Hosting release predates the rewrite's addition to `firebase.json` by roughly 9 days). No real bearer-token calendar-subscription URL has ever been created or distributed — this, not any particular request-log reading, is the primary, durable safety fact (see §6 Phase B's evidence record for why a "zero request-log entries" reading alone is no longer sufficient proof of zero traffic once the logging exclusion is in effect, and see the standing DIRECT-URL EXPOSURE note in §6 for why the direct Cloud Run/Functions URLs remain platform-unauthenticated regardless of phase). Public exposure (enabling the Hosting rewrite, and only then creating/distributing real subscription URLs) — Phase D — is the sole remaining, deliberately-gated decision, pending separate authorization.**
 
 This document exists because the Stage 4 endpoint's entire authorization model is a bearer
 token embedded in the request path (`/calendar/<43-char-token>.ics`). Source-code redaction
@@ -63,12 +63,17 @@ bearer-token-in-URL design, not something to argue away.
   **400-day retention, locked** (cannot be reduced). Not relevant to Cloud Run request
   logs — see §6's confirmed sink topology for why request logs land in `_Default`, not
   `_Required`.
-- Cloud Run's auto-generated request logs (`run.googleapis.com/requests`) are subject to
-  the `_Default` bucket's 30-day retention above, since (confirmed in §6) no dedicated
-  sink/exclusion currently exists for them in this project.
+- Cloud Run's auto-generated request logs (`run.googleapis.com/requests`) were, at Phase A
+  discovery time, subject to the `_Default` bucket's full 30-day retention above, since no
+  exclusion existed for them yet. **As of Phase B (2026-09-03), this has changed** — a
+  request-log-specific exclusion (`calendarfeed-request-log-bearer-protection`, see §6 Phase
+  B) now applies: entries ingested BEFORE the exclusion took effect remain subject to this
+  30-day retention until they age out naturally; entries ingested after are excluded from
+  `_Default` entirely and are not retained there at any duration.
 
-*Re-verify if materially more time has passed before deployment, or if this project's sink/
-bucket configuration is known to have changed since this discovery.*
+*Re-verify if materially more time has passed before Phase D (enabling the public route) is
+authorized, or if this project's sink/bucket configuration is known to have changed since
+this discovery.*
 
 ## 4. Which principals/IAM roles can read those logs
 
@@ -82,9 +87,10 @@ broader roles, and the full list of principals holding either is:
 - **`roles/owner` → `user:AdamBruene@gmail.com`** — the *only* human principal in the
   entire project IAM policy; full access, including all logs.
 - **`roles/editor` → `serviceAccount:1010503840940-compute@developer.gserviceaccount.com`**
-  — the default Compute Engine service account. This is the exact same service account
-  `calendarFeed` itself will run as once deployed (§1) — a standard, expected GCP pattern
-  (the default compute SA is broadly privileged by default), not something specific to this
+  — the default Compute Engine service account. This IS the exact same service account
+  `calendarFeed` actually runs as, now that it is deployed (§6 Phase A; confirmed directly
+  via `gcloud functions describe calendarFeed`) — a standard, expected GCP pattern (the
+  default compute SA is broadly privileged by default), not something specific to this
   project's configuration, but worth naming explicitly since it means the function's own
   runtime identity already has read access to its own request logs regardless of anything
   this plan configures.
@@ -96,9 +102,10 @@ No `allUsers`, `allAuthenticatedUsers`, or any other unexpected/custom role gran
 anywhere in the policy. **This represents a small, well-understood blast radius**: one human
 owner and two GCP-default service accounts — not a large or surprising set of readers.
 
-*Re-verify if materially more time has passed before deployment, or if this project's IAM
-policy is known to have changed since this discovery (`etag: BwZZ_IJkvEQ=` at time of
-discovery — a changed etag on re-query is itself a signal the policy has moved).*
+*Re-verify if materially more time has passed before Phase D (enabling the public route) is
+authorized, or if this project's IAM policy is known to have changed since this discovery
+(`etag: BwZZ_IJkvEQ=` at time of discovery — a changed etag on re-query is itself a signal
+the policy has moved).*
 
 ## 5. What log exclusion/redaction/retention controls are actually possible
 
@@ -198,13 +205,22 @@ discovery — a changed etag on re-query is itself a signal the policy has moved
     — moot given the project has no parent, but recorded for completeness.) Retention and
     readers for the one destination that matters (`_Default`) are confirmed in §3/§4 above.
 
-    *This checklist item is fully satisfied as of the discovery date above. Re-verify at
-    actual deployment time only if materially more time has passed, or if this project's
-    sink/organization configuration is otherwise known to have changed — do not assume this
-    topology is permanent, but do not re-audit from scratch by default either.*
+    *This checklist item is fully satisfied as of the discovery date above. Re-verify before
+    Phase D (enabling the public route) is authorized only if materially more time has
+    passed, or if this project's sink/organization configuration is otherwise known to have
+    changed — do not assume this topology is permanent, but do not re-audit from scratch by
+    default either.*
   **D.** Verification, against the actual deployed service, that the exclusion is genuinely
-  effective (a real request produces no entry under `run.googleapis.com/requests`
-  containing the token) — not merely that the filter text was accepted.
+  effective — not merely that the filter text was accepted. This plan's own security
+  boundary (§6) prohibits any real bearer-token traffic before Phase D, so this verification
+  must NEVER use a real bearer token or anything credential-shaped. The correct, already-
+  demonstrated procedure (see §6 Phase B's transition timeline) is a synthetic request whose
+  path matches the exclusion filter's `logName`/`resource.type`/`service_name` scope closely
+  enough to exercise the real filter match, while its token-position path segment is
+  deliberately and unambiguously NOT bearer-shaped (not 43 characters, not
+  base64url-random) — e.g. `test-verify-nonexistent.ics`, as actually used. Confirm that
+  request's entry does not appear under `run.googleapis.com/requests` after allowing for
+  propagation delay (§6 Phase B).
 
 - **No partial-field redaction exists** for Cloud Run's auto-generated `httpRequest.requestUrl`
   — the realistic lever is exclude-or-don't for matching entries, not selectively stripping
@@ -239,9 +255,10 @@ event, and conflating them was the source of the contradiction.
 **The security boundary this staged rollout enforces: NO REAL BEARER TOKEN TRAFFIC BEFORE
 LOGGING CONTROLS ARE VERIFIED.** Deploying the backend service far enough to discover its
 own Cloud Run identity is explicitly **not equivalent to** exposing the calendar
-subscription feature publicly — the two are separated by design below, and none of this
-staged rollout is performed as part of this documentation-only repair; it is recorded here
-as the required future procedure.
+subscription feature publicly — the two are separated by design below. **Phases A, B, and C
+of this staged rollout have since been actually executed** (each with its own dated evidence
+record in its own section below), not merely recorded as a future procedure; only Phase D
+(enabling the public route) remains pending, requiring separate, explicit authorization.
 
 ### PHASE A — deploy backend only; no public bearer route yet
 
@@ -274,8 +291,13 @@ request-log query against the live service returns zero entries.
    traffic in Phase A must be structurally incapable of carrying a real subscription's
    secret (there are no real subscriptions whose tokens could be exposed yet, since
    creation and distribution are withheld until Phase D). **HOLDS** — a 30-day request-log
-   query against the deployed service returned zero entries; no traffic of any kind, bearer
-   or otherwise, has reached the function.
+   query against the deployed service, taken BEFORE Phase B's logging exclusion existed,
+   returned zero entries; no traffic of any kind, bearer or otherwise, had reached the
+   function as of this Phase A discovery. (This "zero request-log entries" reading was a
+   valid zero-traffic proof only because it predates the exclusion below — see §6 Phase B's
+   evidence record for why the same reading is no longer, by itself, sufficient proof once
+   the exclusion is in effect, and for the honest disclosure that no reliable Cloud
+   Logging-based method currently exists to replace it.)
 4. From the resulting deployment, determine:
    - the exact deployed Cloud Run service name Firebase generated for this function —
      **CONFIRMED by DIRECT OBSERVATION, 2026-09-03: `calendarfeed`, region `us-central1`**,
@@ -288,26 +310,92 @@ request-log query against the live service returns zero entries.
      copies of that log — **CONFIRMED COMPLETE, 2026-09-03: only `_Default`/`_Required`
      exist, no custom sink, no organization/folder parent** (§5.C, §3, §4).
 
-**Phases B, C, and D remain NOT complete** — see their own sections below for current
-status. Nothing in this Phase A update authorizes enabling the public route.
+**Phase B and Phase C are now ALSO complete** — see their own sections below for the full
+evidence record of each. **Phase D (enabling the public route) remains the sole pending,
+deliberately-gated decision** — nothing in this Phase A update, nor in Phase B's or Phase C's
+completion, authorizes enabling the public route on its own.
 
-**2026-09-03 addendum — live-exposure window:** between this Phase A backend deployment and
-Phase B's logging exclusion being applied, a live-exposure window exists: the direct Cloud
-Run (`*.run.app`) and Cloud Functions (`*.cloudfunctions.net`) URLs are platform-
-unauthenticated by design (`allUsers: roles/run.invoker`), independently of whether Hosting's
-`/calendar/**` rewrite is enabled. The bearer token embedded in the request path is the sole
-access control layer for this endpoint — this is expected and accepted per this plan's own
-staged-rollout design (§1), not a defect, but it means the window is not zero-risk merely
-because Hosting is disabled: anyone who discovers either direct URL could reach the function
-today (though, per Phase A step 3 above, no real bearer token exists yet for them to use).
-This motivates completing Phase B promptly rather than leaving it open-ended.
+**DIRECT-URL EXPOSURE — a standing design characteristic, NOT specific to this or any other
+phase window (see also §6 Phase B below):** the direct Cloud Run (`*.run.app`) and Cloud Functions
+(`*.cloudfunctions.net`) URLs are platform-unauthenticated by design (`allUsers:
+roles/run.invoker`, `ingressSettings: ALLOW_ALL`), independently of whether Hosting's
+`/calendar/**` rewrite is enabled. The bearer token embedded in the request path is, and
+remains, the SOLE access control layer for both direct URLs — this is expected and accepted
+per this plan's own staged-rollout design (§1), not a defect, and it does not change or
+resolve at the Phase A/B, B/C, or C/D boundary: it persists identically before Phase B's
+logging exclusion, after it, and after Phase D. Anyone who discovers either direct URL can
+reach the function at any phase (though, per Phase A step 3 above, no real bearer token
+existed during Phase A for them to use, and per Phase D below, none exists publicly until
+that phase is separately authorized).
 
 ### PHASE B — configure logging security, using the now-known real identity
 
+**STATUS: COMPLETE as of 2026-09-03.** The request-log-specific `_Default` exclusion was
+applied and independently verified effective. Full execution record:
+
+- **Command used:**
+  ```
+  gcloud logging sinks update _Default --project=neuroactive --add-exclusion='^|^name=calendarfeed-request-log-bearer-protection|filter=logName="projects/neuroactive/logs/run.googleapis.com%2Frequests" AND resource.type="cloud_run_revision" AND resource.labels.service_name="calendarfeed"|description=Excludes Cloud Run automatic request-log entries (bearer token embedded in URL path) for the calendarfeed service only. Does not affect application/container logs or any other services request logs.'
+  ```
+- **Before/after sink diff:** `_Default`'s `destination` and main `filter` (the audit-log
+  routing filter) were both unchanged; the only diff was the addition of the one
+  `calendarfeed-request-log-bearer-protection` exclusion entry (name/filter/description
+  exactly as in the command above) plus the sink's own `updateTime` advancing to
+  `2026-09-03T15:18:04Z`. No other sink, no retention setting, and no destination was
+  touched.
+- **Full transition timeline (the durable evidence record for this exclusion's real-world
+  behavior, including its propagation delay — record this precisely, do not round it away):**
+  - `15:18:04Z` — exclusion applied (command above).
+  - `15:19:33Z` — first synthetic, non-bearer-shaped verification request
+    (`test-verify-nonexistent.ics`) served directly to the Cloud Run URL. Its request-log
+    entry WAS still retained and visible on query — only ~89 seconds after the exclusion was
+    applied. Most likely explanation: Cloud Logging's documented propagation delay for
+    sink/exclusion changes, not a misconfiguration (the exclusion's filter fields matched
+    this entry's fields exactly on inspection).
+  - `15:54:21Z` — second synthetic, non-bearer-shaped verification request
+    (`test-verify-nonexistent-2.ics`) served, ~40 minutes after the exclusion was applied.
+  - A follow-up query confirmed the SECOND request's entry was suppressed (did not appear in
+    the request-log stream), while the FIRST request's entry remained visible on a fresh
+    query too. **This is expected, not a residual failure:** Cloud Logging exclusions are not
+    retroactive — they prevent future ingestion, they do not purge already-ingested entries.
+    The first entry will age out naturally at the `_Default` bucket's normal 30-day
+    retention (§3).
+  - Separately confirmed throughout: `run.googleapis.com%2Fvarlog%2Fsystem` — Cloud Run's
+    PLATFORM LIFECYCLE log stream (instance startup, TCP probe results, autoscaling
+    activity; this is **not** the application's own `stdout`/`stderr` output — see §2's own
+    distinction between the two) — remained fully visible and unaffected by the exclusion.
+    This demonstrates the exclusion is correctly narrow (it did not accidentally suppress a
+    *different* log stream sharing the same `resource.type`), but it says nothing about the
+    application's own `console.*` output specifically — see the corrected item 9 below for
+    exactly what was, and was not, verified about that.
+- **Post-Phase-B verification-method limitation — an honest gap, not something to paper
+  over:** because the exclusion is confirmed effective, a "zero entries" reading on the
+  request-log stream (`logName=...requests`) is, from this point forward, **ambiguous** — it
+  could mean no traffic occurred, or it could mean traffic occurred and was correctly
+  excluded. The request-log stream can no longer be used, by itself, to prove zero ongoing
+  traffic to `calendarfeed`. `run.googleapis.com%2Fvarlog%2Fsystem` (platform lifecycle
+  events, per above — not application output) is **not** a substitute proof of zero traffic
+  either: absence of new entries there only rules out traffic that required spinning up a
+  NEW Cloud Run instance — it cannot rule out traffic served entirely by an already-warm
+  existing instance, which produces no lifecycle log line at all. **There is currently no
+  reliable Cloud Logging-based method available to conclusively prove zero production
+  traffic to `calendarfeed` once the request-log exclusion is in effect.** The safety
+  property this plan actually relies on going forward is therefore structural, not
+  observational: no real bearer token has ever been created or distributed (§6 Phase A steps
+  2–3; real distribution is withheld until Phase D), so even if some request reached the
+  endpoint, it could not carry a legitimate subscriber's credential. Genuine ongoing traffic
+  visibility, if ever needed, would require a different telemetry source entirely (e.g. Cloud
+  Monitoring request-count metrics) — not evaluated or configured as part of this plan.
+
 5. Configure the request-log-specific `_Default` exclusion (§5.A) using the actual service
-   identity determined in Phase A step 4 — not a placeholder.
+   identity determined in Phase A step 4 — not a placeholder. **DONE, 2026-09-03** — see the
+   execution record above.
 6. If warranted per the §7 observability-gap tradeoff, configure an intentionally retained
-   short-retention companion destination (§5.B).
+   short-retention companion destination (§5.B). **NOT APPLIED** — evaluated and deliberately
+   not configured; the §7 observability gap this would address was judged acceptable given
+   the structural argument in item 9 below (the exclusion's `logName` scoping structurally
+   cannot match the application's own `stdout`/`stderr` output), and can be revisited later
+   without blocking Phase D.
 7. Audit all project and ancestor sinks/destinations per the full §5.C checklist — destination
    identity, routing sink, inclusion status, actual configured retention, log-reader
    principals, and bearer-token persistence risk — for every destination capable of
@@ -321,14 +409,29 @@ This motivates completing Phase B promptly rather than leaving it open-ended.
    logging-role grants, no unexpected principals).**
 9. Confirm this function's own application/container logs (the one `console.error` call path
    — §7) remain visible and are unaffected by whatever exclusion was configured in step 5.
+   **DONE, 2026-09-03, by structural argument, not by direct empirical query of
+   `stdout`/`stderr` in production:** the exclusion filter names only
+   `logName="...requests"`; `console.*` output lands under the distinct
+   `run.googleapis.com%2Fstdout`/`%2Fstderr` logNames (§2), which this filter cannot match on
+   its face. This scoping precision was empirically corroborated by observing that a
+   *different* sibling logName sharing the same `resource.type`
+   (`run.googleapis.com%2Fvarlog%2Fsystem`, Cloud Run's platform lifecycle stream — not the
+   application's own output) remained fully visible and unaffected throughout, exactly as the
+   filter's logName-scoping predicts. The application's own `stdout`/`stderr` logName was
+   **not** itself directly queried in production — and in practice there was nothing to
+   observe there yet regardless: the zero-traffic finding (Phase A) plus Phase B's own
+   synthetic requests only ever exercised the ordinary `not-found` response path, which per
+   §7 never reaches the one `console.error` call site at all.
 10. Verify the exclusion/companion-sink behavior described above using **non-secret,
     synthetic/test requests only** — Phase A step 3's constraint still holds: no real bearer
-    token exists yet to accidentally use for this verification.
+    token exists yet to accidentally use for this verification. **DONE, 2026-09-03** — see the
+    two synthetic verification requests in the transition timeline above; both used
+    deliberately non-bearer-shaped paths (not 43 characters, not base64url-random).
 
 ### PHASE C — verify remaining pre-traffic gates
 
 11. Complete the required Firebase emulator/security/routing test pass this plan's sibling
-    completion report already tracks as open (the "Real-emulator gate"). **SATISFIED,
+    completion report previously tracked as open (the "Real-emulator gate"). **SATISFIED,
     2026-09-03** — a full real-emulator matrix was run against `demo-neuroactive-test` (Auth,
     Functions, Firestore, and Hosting emulators simultaneously; Java 21.0.12.1, firebase-tools
     15.28.2) at current HEAD `a0aa7f6`, with disposable Admin-SDK/HTTP harnesses whose full raw
@@ -347,7 +450,12 @@ This motivates completing Phase B promptly rather than leaving it open-ended.
     (5/5 — see §8 below); Functions methods/CORS through the real emulator (15/15); Hosting
     rewrite through the real Hosting emulator (6/6); endpoint zero-mutation proof (1/1); and
     application/infrastructure logging observation (2/2). This gate does not need to be
-    re-run absent a source change to the calendar functions.
+    re-run absent a source change to the calendar functions. The disposable harness scripts
+    and their raw output/log files were deleted after use, per that task's own design (the
+    real production project was never touched, so nothing durable needed to be retained
+    outside this document) — the detailed per-area counts recorded above ARE the durable
+    evidence record of that run, not a pointer to a separate artifact that still exists
+    elsewhere.
 12. Validate the actual `firebase.json` Hosting-rewrite-to-2nd-gen-function schema
     (`functionId` + `region`, as currently written in this Stage's change) against the
     actual pinned `firebase-tools` CLI version. **SATISFIED** — `firebase-tools 15.28.2` is
@@ -416,11 +524,19 @@ into.
 
 **Consequence for §5/§6: if the Cloud Run request log is excluded for this route (per §5's
 recommended control) without a compensating change, a real Firestore or Firebase Auth outage
-affecting this endpoint would currently produce ZERO Cloud Logging signal from this project**
-— no application log (per the accounting above) and no request log (excluded). This is not a
-reason to abandon the exclusion (the bearer-token exposure it addresses is real and
-higher-severity), but it is a real, currently-true operational gap the pre-deployment
-reviewer must weigh explicitly (§6 Phase B, step 6) — e.g. by keeping a short-retention companion
+affecting this endpoint would currently produce ZERO APPLICATION/REQUEST-LOG FAILURE SIGNAL
+from this project** — no application log entry pointing at the outage (per the accounting
+above — the relevant code paths never reach the one `console.error` call site) and no
+request-log entry either (excluded per §5/§6). This is narrower than "zero Cloud Logging
+signal of any kind": `run.googleapis.com%2Fvarlog%2Fsystem` (platform lifecycle events —
+instance startup, autoscaling; see §6 Phase B's discussion of this same distinct stream)
+could still emit unrelated entries if outage-driven requests happened to trigger a new Cloud
+Run instance — but those entries would say nothing about the outage itself, only that an
+instance started; they are not a failure signal an operator could use to diagnose this
+condition. This is not a reason to abandon the exclusion (the bearer-token exposure it
+addresses is real and higher-severity), but it is a real, currently-true operational gap the
+pre-Phase-D
+(pre-public-exposure) reviewer must weigh explicitly (§6 Phase B, step 6) — e.g. by keeping a short-retention companion
 sink (§5.B) specifically because application-level failure visibility is currently this thin,
 not merely as a generic caution. **This repair does not add logging to close that gap — per
 this repair's own scope, we are repairing the plan's accuracy, not redesigning
@@ -471,8 +587,10 @@ observability.**
   §9 for the corrected cost-amplification accounting this implies, and see §6 Phase C step 14
   for the now-resolved decision on this figure.
 
-**Deployment/configuration protections required later (before the public route is enabled):**
-- Everything in §6's staged rollout (Phases A–D) above.
+**Deployment/configuration protections — status:**
+- Phases A, B, and C of §6's staged rollout above are COMPLETE, each with its own dated
+  evidence record in its own section. Only Phase D — enabling the public route — remains,
+  pending separate, explicit authorization.
 
 **Unavoidable residual exposure (present even after every control above is applied):**
 - Google's own internal edge/load-balancer infrastructure in front of Cloud Run/Hosting may
@@ -566,26 +684,49 @@ building new rate-limiting infrastructure in this repair or any other redesign:
 
 The Firebase Hosting `/calendar/**` rewrite (and therefore any real, bearer-token-bearing
 calendar subscription URL) must remain unenabled until an operator with actual GCP Console/
-`gcloud` access has completed §6's full staged rollout, Phases A through D. **Phase A is now
-marked COMPLETE (2026-09-03)**, in two parts: (1) real, read-only production discovery
-(analogy-based service identity/log-name confirmation, sink topology, retention, and IAM
-audit), and (2) the actual backend deployment of `calendarFeed` itself (revision
-`calendarfeed-00001-sox`), performed **without** enabling the Hosting `/calendar/**` rewrite
-and **without** sending any bearer token through production. The service identity is now
-confirmed by direct observation of the deployed function/service, not merely by analogy to
-`calendarFeed`'s sibling functions (a fresh, independent adversarial re-review on 2026-09-03
-re-confirmed this and found zero request-log entries in a 30-day window). The actual safety
-property this plan relies on is **not** "nothing was deployed" — it is: the public Hosting
-route is disabled, no real bearer token has ever been created or distributed, and zero real
-traffic has reached the function. What remains is: the request-log-specific exclusion
-scoping and full per-destination retention audit (Phase B, incorporating §5's controls and
-the explicit per-destination checklist in §5.C — largely already confirmed per §5.C and §§3-4,
-but not yet *configured*), and the remaining emulator/routing verification gates (Phase C,
-incorporating §7's finding; the maxInstances concurrency-ceiling decision that was open in
-Phase C is now RESOLVED — source tightened to `maxInstances: 5` / 400-concurrent worst case,
-see §6 Phase C step 14) — and only then Phase D, enabling the public route. The
-real-emulator TOCTOU test semantics in §8 must also be defined and exercised before that
-point. Phases B, C, and D remain NOT complete and are not authorized by this update; this
-plan documents the required future procedure only. See §6's 2026-09-03 addendum for the
-live-exposure window this backend-deployed/route-disabled state implies while Phase B is
-still pending.
+`gcloud` access has completed Phases A through C of §6's staged rollout AND has separately,
+explicitly authorized Phase D itself — enabling the rewrite is what Phase D IS, so it cannot
+be its own precondition; Phase D is the authorization decision that follows Phases A–C being
+complete, not another completed-evidence gate like them. **Phases A, B, and C are now ALL
+marked COMPLETE (2026-09-03)**, each with its own evidence record in its
+own section above:
+
+- **Phase A** — real, read-only production discovery (service identity/log-name
+  confirmation, sink topology, retention, and IAM audit) plus the actual backend deployment
+  of `calendarFeed` itself (revision `calendarfeed-00001-sox`), performed without enabling
+  the Hosting rewrite and without sending any bearer token through production. Service
+  identity is confirmed by direct observation, not analogy.
+- **Phase B** — the request-log-specific `_Default` exclusion (§5.A) was applied (exact
+  command, before/after sink diff, and full transition timeline recorded in §6 Phase B
+  above) and independently verified effective: a first synthetic request's log entry was
+  briefly retained (~89 seconds post-application — propagation delay, not
+  misconfiguration), and a second synthetic request ~40 minutes later was confirmed
+  suppressed. The application's own `stdout`/`stderr` output is preserved by the exclusion
+  filter's `logName` scoping structurally — that logName is distinct from the excluded
+  requests logName and the filter cannot match it — not by a direct empirical production
+  query, which was never performed (see §6 Phase B item 9 for the full account of what was,
+  and was not, checked). The full per-destination retention/IAM audit (§5.C, §§3–4) was also
+  completed.
+- **Phase C** — the real-emulator gate (142/142, full coverage recorded in §6 Phase C
+  above) and the TOCTOU test-semantics item (§8) are both SATISFIED; the Hosting rewrite
+  schema was validated against real `firebase-tools` via an actual `--dry-run`; the
+  `maxInstances` concurrency-ceiling decision is RESOLVED (`maxInstances: 5` / 400-concurrent
+  worst case, §6 Phase C step 14).
+
+The actual safety property this plan relies on going forward is **not** any Cloud Logging
+reading — per §6 Phase B's evidence record, neither "zero request-log entries" (ambiguous
+once the exclusion is in effect) nor "zero new `varlog/system` entries" (proves only "no new
+Cloud Run instance was spun up," never "zero traffic," since an already-warm instance leaves
+no lifecycle trace at all) is, by itself, a reliable proof of zero traffic, and **no reliable
+Cloud Logging-based method currently exists** to conclusively prove zero production traffic
+post-Phase-B. The property this plan actually relies on is structural instead: the public
+Hosting route remains disabled, and no real bearer token has ever been created or
+distributed, so no legitimate subscriber credential exists for any request to use, regardless
+of what can or cannot be observed in logs. Separately, and unaffected by Phase B's
+completion, the direct Cloud Run/Functions URLs remain platform-unauthenticated by standing
+design (§6's DIRECT-URL EXPOSURE note) — the bearer token is, and remains, the sole access
+control layer for those URLs at every phase, not something Phase B changes.
+
+**Phase D — enabling the public route — is the sole remaining, deliberately-gated decision**,
+not authorized by this update; this plan documents the required procedure for it (§6 Phase D)
+only, pending separate, explicit authorization.
