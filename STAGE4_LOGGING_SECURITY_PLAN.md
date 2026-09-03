@@ -328,13 +328,34 @@ This motivates completing Phase B promptly rather than leaving it open-ended.
 ### PHASE C — verify remaining pre-traffic gates
 
 11. Complete the required Firebase emulator/security/routing test pass this plan's sibling
-    completion report already tracks as open (the "Real-emulator gate").
+    completion report already tracks as open (the "Real-emulator gate"). **SATISFIED,
+    2026-09-03** — a full real-emulator matrix was run against `demo-neuroactive-test` (Auth,
+    Functions, Firestore, and Hosting emulators simultaneously; Java 21.0.12.1, firebase-tools
+    15.28.2) at current HEAD `a0aa7f6`, with disposable Admin-SDK/HTTP harnesses whose full raw
+    output was captured and reviewed before the harness scripts were deleted. Result:
+    **142/142 checks passed** (one assertion bug in the harness itself was found, diagnosed
+    against the real `calendarIcsGenerator.ts` source, fixed, and re-run — zero product
+    defects). Coverage: Stage 1 rules/security matrix (owner/other-user/anonymous ×
+    read/write across all four calendar collections, 24/24); subscription-cap concurrency
+    under true 8-way contention (5/5); create-vs-revoke race (15/15 across 5 iterations);
+    create-vs-account-deletion race, both orderings genuinely observed (24/24 across 8
+    iterations); repeated-deletion idempotency (4/4); orphan/corrupt cleanup (7/7); Stage 2
+    real Firestore CAS behavior (4/4); Auth semantics via `realAccountExists` against a real
+    Auth emulator (5/5); Stage 4 valid-token real Firestore-backed HTTP path (9/9);
+    conditional GET / Last-Modified / revoked-token-does-not-304 (5/5); invalid-state
+    fail-closed behavior, uniform 404 across 9 corruption/tampering shapes (9/9); TOCTOU races
+    (5/5 — see §8 below); Functions methods/CORS through the real emulator (15/15); Hosting
+    rewrite through the real Hosting emulator (6/6); endpoint zero-mutation proof (1/1); and
+    application/infrastructure logging observation (2/2). This gate does not need to be
+    re-run absent a source change to the calendar functions.
 12. Validate the actual `firebase.json` Hosting-rewrite-to-2nd-gen-function schema
     (`functionId` + `region`, as currently written in this Stage's change) against the
-    actual pinned `firebase-tools` CLI version — this environment does not have
-    `firebase-tools` installed, so the rewrite syntax was written from Firebase's documented
-    2nd-gen rewrite contract, not verified end-to-end against a live `firebase deploy --only
-    hosting` dry run.
+    actual pinned `firebase-tools` CLI version. **SATISFIED** — `firebase-tools 15.28.2` is
+    available via `npx` and was used for a real `firebase deploy --only hosting --dry-run`
+    against the actual production project, which completed cleanly ("Dry run complete!")
+    against the real tracked `firebase.json`; the rewrite's `functionId`/`region` were also
+    cross-checked directly against the real deployed function's own identity, with an exact
+    match.
 13. Confirm, from the evidence gathered in Phases A–C, that no real bearer credential has yet
     traversed the public route — because that route does not yet exist until Phase D.
 14. Tune `maxInstances` (see `calendarFeedEndpoint.ts`; and see §7/§9 for why this is an
@@ -483,20 +504,27 @@ cross-account leak), and therefore no source-preservation blocker. This plan doe
 propose adding a cross-service (Firestore + Firebase Auth) transaction to close this window —
 no such primitive exists, and Stage 4 is not being redesigned to invent one.
 
-This is recorded here as a **required real-emulator/pre-deployment test-semantics item**,
-not yet exercised by the current fake-Firestore-only test suite. Before deployment, the
-real-emulator verification pass (already tracked as open — see the Stage 4 completion
-report's own "Real-emulator gate status") must additionally define and exercise:
+**SATISFIED, 2026-09-03** — this was a required real-emulator/pre-deployment test-semantics
+item, not exercised by the fake-Firestore-only test suite; it is now exercised, against real
+Firestore/Auth emulators and the real Functions emulator (§6 Phase C item 11's full run), with
+all three race shapes below directly observed rather than assumed:
 
-- A revocation racing an already-in-flight feed request for the same token.
+- A revocation racing an already-in-flight feed request for the same token. **PASS** (harness
+  checks D1/D1b): the in-flight request resolved to 200 (won: read completed before the
+  mutation committed) or 404 (lost: fail-closed), never a 5xx; a request strictly after the
+  revoke committed always returned 404 — no stale authorization survived the race.
 - An account deletion (tombstone write) racing an already-in-flight feed request for the
-  same account.
+  same account. **PASS** (harness checks D2/D2b): identical shape and result to the
+  revocation race above — 200 or 404 only, never a 5xx, and no post-deletion success.
 - A calendar-preferences update racing an already-in-flight feed request for the same
-  account.
+  account. **PASS** (harness check D3): the response always reflected exactly one coherent
+  schedule — either the pre-race or post-race `localTime`, confirmed by checking for the
+  RFC 5545 `T090000`/`T153000` DATE-TIME literals in the returned ICS body — never a
+  mixed/malformed result.
 - An explicit, agreed definition of what response an already-in-flight request is allowed to
-  produce when it loses such a race (e.g., "may still return the pre-race representation for
-  that one in-flight request; the NEXT request must reflect the new state" is the kind of
-  boundary this test semantics needs to pin down precisely, not assume).
+  produce when it loses such a race: confirmed as "200 if the read won, fail-closed 404 if it
+  lost, never a 5xx and never stale authorization surviving past the mutation" — exactly the
+  boundary this section anticipated, now empirically confirmed rather than assumed.
 
 ## 9. Low findings — documented accurately, not treated as blockers
 
