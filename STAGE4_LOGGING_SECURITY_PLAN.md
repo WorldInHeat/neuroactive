@@ -1,6 +1,6 @@
 # Calendar Integration Phase 1, Stage 4 — Pre-Deployment Logging Security Plan
 
-Status: **REQUIRED READING BEFORE DEPLOYING `calendarFeed`. Deployment of this function remains BLOCKED until this plan is independently reviewed and its "Deployment/configuration protections required later" section is actually carried out.**
+Status: **REQUIRED READING BEFORE PUBLICLY EXPOSING `calendarFeed`. The backend function `calendarFeed` IS deployed (`createTime 2026-09-03T14:44:44Z`, revision `calendarfeed-00001-sox`), per the staged rollout's Phase A (§6). Its PUBLIC route remains BLOCKED: Firebase Hosting's `/calendar/**` rewrite is not live in production (the live Hosting release predates the rewrite's addition to `firebase.json` by roughly 9 days), so no real bearer-token calendar-subscription URL has ever been distributed, and a 30-day request-log query against the deployed service returned zero entries — confirming zero real traffic has occurred. Public exposure (enabling the Hosting rewrite, and only then creating/distributing real subscription URLs) remains BLOCKED until this plan's remaining Phases B, C, and D below are independently reviewed and actually carried out.**
 
 This document exists because the Stage 4 endpoint's entire authorization model is a bearer
 token embedded in the request path (`/calendar/<43-char-token>.ics`). Source-code redaction
@@ -107,23 +107,29 @@ discovery — a changed etag on re-query is itself a signal the policy has moved
   resource.labels.service_name="calendarfeed"` is **too broad** — per §2, that
   resource type is shared by both the automatic request log and this function's own
   application/container output, so a resource-type-only filter would suppress both. The
-  filter must additionally scope to the request log's own log identity. **CONFIRMED via
-  real Phase A production discovery, 2026-09-03** — `calendarFeed` is not yet deployed, so
-  this exact service name is derived by direct analogy: every existing 2nd-gen `onRequest`
-  function in this project deploys as a Cloud Run service named after the function with the
-  name simply lowercased (verified directly, e.g. `handleDnsNoCostCheckout` → Cloud Run
-  service `handlednsnocostcheckout`) — so `calendarFeed` is expected to deploy as
-  **`calendarfeed`**, in region **`us-central1`** (matching every other function in this
-  project and the region already hardcoded in `firebase.json`'s Hosting rewrite). This must
-  still be confirmed against the *actual* deployed service name at Phase A time below, not
-  assumed to be exactly this — the analogy is strong (100% consistent across every function
-  checked) but is not yet a direct observation of `calendarFeed` itself:
+  filter must additionally scope to the request log's own log identity. **Originally
+  predicted via real Phase A production discovery, 2026-09-03, before `calendarFeed` was
+  deployed:** this exact service name was derived by direct analogy: every existing 2nd-gen
+  `onRequest` function in this project deploys as a Cloud Run service named after the
+  function with the name simply lowercased (verified directly, e.g. `handleDnsNoCostCheckout`
+  → Cloud Run service `handlednsnocostcheckout`) — so `calendarFeed` was expected to deploy
+  as **`calendarfeed`**, in region **`us-central1`** (matching every other function in this
+  project and the region already hardcoded in `firebase.json`'s Hosting rewrite). **This
+  prediction has since been confirmed against the actual deployed service name** (see below)
+  — the analogy was strong (100% consistent across every function checked) and now matches a
+  direct observation of `calendarFeed` itself exactly:
 
   ```
   resource.type="cloud_run_revision"
   resource.labels.service_name="calendarfeed"
   log_id("run.googleapis.com/requests")
   ```
+
+  **`calendarfeed` is now the DIRECTLY OBSERVED live Cloud Run service name** (confirmed via
+  `gcloud functions describe calendarFeed --gen2 --region=us-central1`, 2026-09-03, after Phase
+  A's backend deployment — see §6), matching the prior analogy-based prediction exactly:
+  region `us-central1`, service `calendarfeed`, revision `calendarfeed-00001-sox`. This is no
+  longer an inference from a naming convention; it is a direct read of the deployed resource.
 
   The equivalent `logName` filter form is likewise now concrete rather than a template —
   **CONFIRMED real and readable** via a direct read against an existing function's request
@@ -239,44 +245,62 @@ as the required future procedure.
 
 ### PHASE A — deploy backend only; no public bearer route yet
 
-**STATUS: COMPLETE as of 2026-09-03 — service-identity discovery done via a read-only
-production inspection pass, WITHOUT ever deploying `calendarFeed` itself.** A read-only
-discovery pass against the real `neuroactive` project (no deployment, no IAM/Logging
-mutation, no bearer token traffic anywhere — see §5.C's confirmation above and §3/§4)
-inspected the *existing*, already-deployed, comparable `onRequest` function
-`handleDnsNoCostCheckout` and confirmed the Cloud Run naming convention, region, service
-account, and request-log identity/topology this phase exists to establish. This satisfies
-Phase A's actual goal (learn the real infrastructure identity before configuring anything in
-Phase B) — and does so at *lower* risk than the phase's originally-envisioned mechanism,
-since no deployment of `calendarFeed` occurred at all, meaning steps 2–3's guarantees (no
-bearer URL created, no bearer token sent) hold trivially, not just by discipline during a
-live deploy. **One residual, explicitly-not-hidden caveat:** the service-name/region value
-below is a 100%-consistent analogy across every existing function checked in this project,
-not yet a direct observation of `calendarFeed` itself (which remains undeployed) — a
-one-line re-confirmation against the real deployed name is still required at the actual
-Phase B configuration step, not assumed permanent from this discovery alone.
+**STATUS: COMPLETE as of 2026-09-03, in two sub-steps.** First, a read-only discovery pass
+(no deployment, no IAM/Logging mutation, no bearer token traffic anywhere — see §5.C's
+confirmation above and §3/§4) inspected the *existing*, already-deployed, comparable
+`onRequest` function `handleDnsNoCostCheckout` and predicted the Cloud Run naming
+convention, region, service account, and request-log identity/topology this phase exists to
+establish — by strong analogy, not yet direct observation. Second, the `calendarFeed`
+backend was actually deployed (`createTime 2026-09-03T14:44:44Z`, revision
+`calendarfeed-00001-sox`), **without** enabling the Firebase Hosting `/calendar/**` rewrite
+(§1) — so the function has no product-facing public entry point yet — and **without**
+creating or sending any real bearer token (steps 2–3 below hold by deployment-order
+discipline: the rewrite was never enabled, so no real subscription URL could reach the
+function even if one existed, and none was created). A fresh, independent adversarial
+re-review on 2026-09-03 directly re-observed the deployed function/service metadata and
+confirmed it matches the analogy-based prediction exactly, and confirmed a 30-day
+request-log query against the live service returns zero entries.
 
 1. Deploy the `calendarFeed` function/backend only as far as needed to establish its actual
    generated Cloud Run service identity. Do **not** deploy or enable the Firebase Hosting
    `/calendar/**` rewrite in this phase (§1) — without that rewrite, the function has no
-   product-facing public entry point yet. **NOT YET DONE — `calendarFeed` remains
-   undeployed; see the status note above for what was learned without doing this.**
+   product-facing public entry point yet. **DONE, 2026-09-03** — `calendarFeed` is deployed
+   (revision `calendarfeed-00001-sox`); the Hosting rewrite was not touched and remains
+   not-live in production (confirmed: the live Hosting release predates the rewrite's
+   addition to `firebase.json` by roughly 9 days).
 2. Do **not** create or distribute any real calendar-subscription bearer URL in this phase.
+   **HOLDS** — no subscription-creation code path was exercised; no URL was distributed.
 3. Do **not** send any real bearer token to the function in this phase — any verification
    traffic in Phase A must be structurally incapable of carrying a real subscription's
    secret (there are no real subscriptions whose tokens could be exposed yet, since
-   creation and distribution are withheld until Phase D).
+   creation and distribution are withheld until Phase D). **HOLDS** — a 30-day request-log
+   query against the deployed service returned zero entries; no traffic of any kind, bearer
+   or otherwise, has reached the function.
 4. From the resulting deployment, determine:
    - the exact deployed Cloud Run service name Firebase generated for this function —
-     **CONFIRMED by strong analogy, 2026-09-03: `calendarfeed`, region `us-central1`** (see
-     the status note above — still requires direct re-confirmation once step 1 actually
-     happens, not assumed permanent);
+     **CONFIRMED by DIRECT OBSERVATION, 2026-09-03: `calendarfeed`, region `us-central1`**,
+     matching the earlier analogy-based prediction exactly (`gcloud functions describe
+     calendarFeed --gen2 --region=us-central1`);
    - the exact request-log `logName`/`log_id` for that specific service — **CONFIRMED
      real and readable in this project, 2026-09-03:
      `logName="projects/neuroactive/logs/run.googleapis.com%2Frequests"`** (§5);
    - the applicable project- and ancestor-level logging topology (§5.C) that could receive
      copies of that log — **CONFIRMED COMPLETE, 2026-09-03: only `_Default`/`_Required`
      exist, no custom sink, no organization/folder parent** (§5.C, §3, §4).
+
+**Phases B, C, and D remain NOT complete** — see their own sections below for current
+status. Nothing in this Phase A update authorizes enabling the public route.
+
+**2026-09-03 addendum — live-exposure window:** between this Phase A backend deployment and
+Phase B's logging exclusion being applied, a live-exposure window exists: the direct Cloud
+Run (`*.run.app`) and Cloud Functions (`*.cloudfunctions.net`) URLs are platform-
+unauthenticated by design (`allUsers: roles/run.invoker`), independently of whether Hosting's
+`/calendar/**` rewrite is enabled. The bearer token embedded in the request path is the sole
+access control layer for this endpoint — this is expected and accepted per this plan's own
+staged-rollout design (§1), not a defect, but it means the window is not zero-risk merely
+because Hosting is disabled: anyone who discovers either direct URL could reach the function
+today (though, per Phase A step 3 above, no real bearer token exists yet for them to use).
+This motivates completing Phase B promptly rather than leaving it open-ended.
 
 ### PHASE B — configure logging security, using the now-known real identity
 
@@ -414,8 +438,9 @@ observability.**
   separate, independently configured setting/behavior, not something `maxInstances` controls
   directly. **CONFIRMED via real, read-only Phase A production discovery, 2026-09-03:** the
   effective default for this environment is `maxInstanceRequestConcurrency: 80` (2nd-gen
-  Cloud Functions default; not yet overridden for `calendarFeed`, which remains undeployed).
-  At the platform default of `maxInstances: 20`, this would have yielded a worst-case
+  Cloud Functions default; confirmed by direct observation of the now-deployed `calendarFeed`
+  service itself, which does not override it). At the platform default of `maxInstances: 20`,
+  this would have yielded a worst-case
   ceiling of `20 × 80 = 1,600` concurrent in-flight requests — not an abstract "substantially
   more than 20," but this specific number — for a public, bearer-token-gated endpoint. Source
   has since been tightened to `maxInstances: 5` (see §6 Phase C step 14), yielding a
@@ -514,12 +539,17 @@ building new rate-limiting infrastructure in this repair or any other redesign:
 The Firebase Hosting `/calendar/**` rewrite (and therefore any real, bearer-token-bearing
 calendar subscription URL) must remain unenabled until an operator with actual GCP Console/
 `gcloud` access has completed §6's full staged rollout, Phases A through D. **Phase A is now
-marked COMPLETE (2026-09-03)** — real, read-only production discovery (analogy-based service
-identity/log-name confirmation, sink topology, retention, and IAM audit; see §6's Phase A
-status note for the one residual caveat: the service name is confirmed by strong analogy to
-`calendarFeed`'s sibling functions, not yet by direct observation of `calendarFeed` itself,
-since it remains undeployed) — achieved entirely without deploying `calendarFeed` or sending
-any bearer token through production. What remains is: the request-log-specific exclusion
+marked COMPLETE (2026-09-03)**, in two parts: (1) real, read-only production discovery
+(analogy-based service identity/log-name confirmation, sink topology, retention, and IAM
+audit), and (2) the actual backend deployment of `calendarFeed` itself (revision
+`calendarfeed-00001-sox`), performed **without** enabling the Hosting `/calendar/**` rewrite
+and **without** sending any bearer token through production. The service identity is now
+confirmed by direct observation of the deployed function/service, not merely by analogy to
+`calendarFeed`'s sibling functions (a fresh, independent adversarial re-review on 2026-09-03
+re-confirmed this and found zero request-log entries in a 30-day window). The actual safety
+property this plan relies on is **not** "nothing was deployed" — it is: the public Hosting
+route is disabled, no real bearer token has ever been created or distributed, and zero real
+traffic has reached the function. What remains is: the request-log-specific exclusion
 scoping and full per-destination retention audit (Phase B, incorporating §5's controls and
 the explicit per-destination checklist in §5.C — largely already confirmed per §5.C and §§3-4,
 but not yet *configured*), and the remaining emulator/routing verification gates (Phase C,
@@ -528,4 +558,6 @@ Phase C is now RESOLVED — source tightened to `maxInstances: 5` / 400-concurre
 see §6 Phase C step 14) — and only then Phase D, enabling the public route. The
 real-emulator TOCTOU test semantics in §8 must also be defined and exercised before that
 point. Phases B, C, and D remain NOT complete and are not authorized by this update; this
-plan documents the required future procedure only.
+plan documents the required future procedure only. See §6's 2026-09-03 addendum for the
+live-exposure window this backend-deployed/route-disabled state implies while Phase B is
+still pending.
