@@ -701,7 +701,15 @@ async function main() {
   const path = await import('node:path');
   const srcPath = path.join(__dirname, '..', 'src', 'calendarPreferences.ts');
   const src = fs.readFileSync(srcPath, 'utf8');
+  // Normalize CRLF/CR to LF FIRST, before any of the structural checks below that search
+  // for exact line-boundary sequences like '\n}\n' — see the identical fix in
+  // calendarSubscriptions.test.ts for the full rationale. Without this, a CRLF checkout
+  // leaves a trailing '\r' attached to every retained line, so '\n}\n' never matches,
+  // the function-body-boundary search below returns -1, and the slice overruns into the
+  // onCall wrapper below (whose legitimate `request.data` read is not part of
+  // updateCalendarPreferencesCore's own body).
   const stripped = src
+    .replace(/\r\n?/g, '\n')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .split('\n')
     .filter((line) => !line.trim().startsWith('//'))
