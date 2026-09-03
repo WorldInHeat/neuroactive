@@ -603,7 +603,17 @@ async function main() {
   const path = await import('node:path');
   const srcPath = path.join(__dirname, '..', 'src', 'calendarSubscriptions.ts');
   const src = fs.readFileSync(srcPath, 'utf8');
+  // Normalize CRLF/CR to LF FIRST, before any of the structural checks below that search
+  // for exact line-boundary sequences like '\n}\n'. Without this, a CRLF checkout (e.g. a
+  // fresh Windows worktree without this repo's line-ending normalization applied) leaves a
+  // trailing '\r' attached to every retained line — split('\n') keeps it, and the later
+  // .filter(...).join('\n') never strips it, so the literal 3-byte sequence '\n}\n' no
+  // longer occurs anywhere in `stripped`. That silently makes the function-body-boundary
+  // search below return -1 and fall through to end-of-file, scanning unrelated later
+  // functions too. Normalizing here makes every source-text check below independent of the
+  // file's on-disk line-ending style.
   const stripped = src
+    .replace(/\r\n?/g, '\n')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .split('\n')
     .filter((line) => !line.trim().startsWith('//'))
