@@ -153,6 +153,30 @@ function isConflictError(err: unknown): err is FunctionsError {
   return !!err && typeof err === 'object' && (err as FunctionsError).code === 'functions/aborted';
 }
 
+// Same friendly-mapping convention as useCalendarSubscriptions.ts's mapCalendarCallableError
+// (duplicated per this project's established per-file convention, not imported) — without
+// this, a callable failure whose target doesn't exist or whose transport fails surfaces as
+// the raw, unhelpful FunctionsError message (e.g. the literal string "internal"). Validation
+// failures (functions/invalid-argument) keep the server's own message, since
+// calendarPreferences.ts's validators already produce specific, actionable, non-sensitive
+// text (e.g. "localTime must be in strict 24-hour HH:MM format.").
+function mapSaveCalendarPreferencesError(err: unknown): string {
+  const code = err && typeof err === 'object' ? (err as FunctionsError).code : undefined;
+  switch (code) {
+    case 'functions/unauthenticated':
+      return 'You need to be signed in to save calendar settings.';
+    case 'functions/permission-denied':
+      return 'Unable to save calendar settings for this account right now.';
+    case 'functions/invalid-argument':
+      return (err instanceof Error && err.message) || 'Please check your schedule settings and try again.';
+    case 'functions/internal':
+    case 'functions/unavailable':
+      return 'A temporary server issue occurred. Please try again.';
+    default:
+      return 'Failed to save calendar settings. Please try again.';
+  }
+}
+
 // Same watermark-aware reconciliation contract as useNotificationPreferences.ts's own
 // reconcileIncoming — see that file's header for the full rationale (it applies unchanged
 // here: a callable response can never overwrite already-observed listener content at the
@@ -325,7 +349,7 @@ export function useCalendarPreferences() {
         return false;
       }
       if (uidRef.current === currentUid) {
-        setError(err instanceof Error ? err.message : 'Failed to save calendar preferences.');
+        setError(mapSaveCalendarPreferencesError(err));
       }
       return false;
     } finally {

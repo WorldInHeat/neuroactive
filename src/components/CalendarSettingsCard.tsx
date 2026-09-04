@@ -148,7 +148,7 @@ function SchedulePreferencesForm({
       </label>
 
       <label className="block text-xs text-[#6b849e]">
-        Session duration (minutes)
+        Session duration (minutes, {MIN_SESSION_DURATION_MINUTES}–{MAX_SESSION_DURATION_MINUTES})
         <input
           type="number"
           min={MIN_SESSION_DURATION_MINUTES}
@@ -253,6 +253,22 @@ function NewSubscriptionPanel({
           Couldn't copy automatically — select the link above and copy it manually.
         </p>
       )}
+      <p className="text-xs text-[#3a4a5e] leading-relaxed">
+        Calendar apps check subscribed links for updates on their own schedule, not instantly — it may take a
+        while for new sessions to appear after you add this link.
+      </p>
+      <details className="text-xs text-[#6b849e]">
+        <summary className="cursor-pointer text-[#00d4c8] select-none">How do I add this to Google Calendar?</summary>
+        <ol className="mt-2 space-y-1.5 list-decimal list-inside leading-relaxed">
+          <li>Copy the private link above, then open Google Calendar on a computer — adding a calendar by URL isn't supported from the phone app.</li>
+          <li>
+            In the sidebar, next to <span className="text-[#f0f4f8]">Other calendars</span>, click{' '}
+            <span className="text-[#f0f4f8]">+ → From URL</span>.
+          </li>
+          <li>Paste the link and click Add calendar.</li>
+          <li>You may need to toggle the new calendar visible before its sessions show up.</li>
+        </ol>
+      </details>
     </div>
   );
 }
@@ -286,33 +302,86 @@ function SubscriptionList({
 
   return (
     <div className="space-y-2">
+      <p className="text-xs text-[#3a4a5e]">
+        Lost a link? It can't be shown again — revoke it below and create a new one.
+      </p>
       {subscriptions.map((sub) => (
-        <div
+        <SubscriptionRow
           key={sub.subscriptionId}
-          className="flex items-center justify-between gap-3 bg-[#080d1a] border border-[#1a2a42] rounded-lg px-3 py-2"
-        >
-          <div className="min-w-0">
-            <div className="text-sm text-[#f0f4f8] truncate">{sub.label || 'Calendar subscription'}</div>
-            {sub.createdAtMs !== null && (
-              <div className="text-xs text-[#6b849e]">Created {formatCreatedAt(sub.createdAtMs)}</div>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={() => onRevoke(sub.subscriptionId)}
-            disabled={revokingId === sub.subscriptionId}
-            aria-label={`Revoke ${sub.label || 'calendar subscription'}`}
-            className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors disabled:opacity-50 flex-shrink-0"
-          >
-            <Trash2 size={14} />
-            {revokingId === sub.subscriptionId ? 'Revoking…' : 'Revoke'}
-          </button>
-        </div>
+          subscription={sub}
+          revoking={revokingId === sub.subscriptionId}
+          onRevoke={() => onRevoke(sub.subscriptionId)}
+        />
       ))}
       {revokeError && (
         <p className="text-xs text-red-400" role="alert">
           {revokeError}
         </p>
+      )}
+    </div>
+  );
+}
+
+function SubscriptionRow({
+  subscription,
+  revoking,
+  onRevoke,
+}: {
+  subscription: CalendarSubscriptionSummary;
+  revoking: boolean;
+  onRevoke: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const label = subscription.label || 'Calendar subscription';
+
+  return (
+    <div className="bg-[#080d1a] border border-[#1a2a42] rounded-lg px-3 py-2 space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm text-[#f0f4f8] truncate">{label}</div>
+          {subscription.createdAtMs !== null && (
+            <div className="text-xs text-[#6b849e]">Created {formatCreatedAt(subscription.createdAtMs)}</div>
+          )}
+        </div>
+        {!confirming && (
+          <button
+            type="button"
+            onClick={() => setConfirming(true)}
+            disabled={revoking}
+            aria-label={`Revoke ${label}`}
+            className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors disabled:opacity-50 flex-shrink-0"
+          >
+            <Trash2 size={14} />
+            {revoking ? 'Revoking…' : 'Revoke'}
+          </button>
+        )}
+      </div>
+      {confirming && (
+        <div className="space-y-2 pt-1 border-t border-[#1a2a42]">
+          <p className="text-xs text-[#6b849e] leading-relaxed">
+            Revoke this link? New requests will be denied right away. Your calendar app may still show sessions
+            it already downloaded, even after refreshing — remove the subscribed calendar there if you want
+            those events gone immediately.
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              className="text-xs text-[#6b849e] hover:text-[#f0f4f8] transition-colors px-3 py-2 min-h-[36px]"
+            >
+              Keep it
+            </button>
+            <button
+              type="button"
+              onClick={onRevoke}
+              disabled={revoking}
+              className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors disabled:opacity-50 px-3 py-2 min-h-[36px]"
+            >
+              <Trash2 size={14} />
+              {revoking ? 'Revoking…' : 'Yes, revoke'}
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -413,6 +482,9 @@ export default function CalendarSettingsCard() {
                 {creating ? 'Creating…' : 'Create link'}
               </button>
             </div>
+            {creating && (
+              <p className="text-xs text-[#6b849e]">Stay on this page — your link will appear here in a moment.</p>
+            )}
             {atCap && (
               <p className="text-xs text-[#6b849e]">
                 You've reached the maximum of 5 active calendar links. Revoke one to create another.
