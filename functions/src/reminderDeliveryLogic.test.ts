@@ -36,6 +36,7 @@ import {
   isValidAttemptHistoryEntry,
   validateAttemptHistory,
   appendAttemptHistoryEntry,
+  MAX_CONTROLLED_BETA_UIDS,
   parseRolloutConfig,
   decideShouldFanOut,
   decideRealSendAuthorization,
@@ -575,6 +576,25 @@ check("'allowlisted-real-send' with a valid allowlist parses cleanly", (() => {
   const c = parseRolloutConfig({ mode: 'allowlisted-real-send', allowlistUids: ['uid-a', 'uid-b'] });
   return c.mode === 'allowlisted-real-send' && (c as { allowlistUids: string[] }).allowlistUids.length === 2;
 })());
+check("'controlled-beta' exact schema parses cleanly", (() => {
+  const c = parseRolloutConfig({ mode: 'controlled-beta', allowlistUids: ['uid-a', 'uid-b'] });
+  return c.mode === 'controlled-beta' && c.allowlistUids.length === 2;
+})());
+check("'controlled-beta' allowlist is copied, never aliased", (() => {
+  const allowlistUids = ['uid-a'];
+  const c = parseRolloutConfig({ mode: 'controlled-beta', allowlistUids });
+  if (c.mode !== 'controlled-beta') return false;
+  allowlistUids.push('uid-b');
+  return JSON.stringify(c.allowlistUids) === '["uid-a"]';
+})());
+check("'controlled-beta' missing allowlist fails closed", parseRolloutConfig({ mode: 'controlled-beta' }).mode === 'paused');
+check("'controlled-beta' non-array allowlist fails closed", parseRolloutConfig({ mode: 'controlled-beta', allowlistUids: 'uid-a' }).mode === 'paused');
+check("'controlled-beta' empty allowlist fails closed", parseRolloutConfig({ mode: 'controlled-beta', allowlistUids: [] }).mode === 'paused');
+check("'controlled-beta' duplicate UID fails closed", parseRolloutConfig({ mode: 'controlled-beta', allowlistUids: ['uid-a', 'uid-a'] }).mode === 'paused');
+check("'controlled-beta' non-string UID fails closed", parseRolloutConfig({ mode: 'controlled-beta', allowlistUids: ['uid-a', 42] }).mode === 'paused');
+check("'controlled-beta' overlength UID fails closed", parseRolloutConfig({ mode: 'controlled-beta', allowlistUids: ['u'.repeat(129)] }).mode === 'paused');
+check("'controlled-beta' oversized allowlist fails closed", parseRolloutConfig({ mode: 'controlled-beta', allowlistUids: Array.from({ length: MAX_CONTROLLED_BETA_UIDS + 1 }, (_, i) => `uid-${i}`) }).mode === 'paused');
+check("'controlled-beta' extra top-level field fails closed", parseRolloutConfig({ mode: 'controlled-beta', allowlistUids: ['uid-a'], extra: true }).mode === 'paused');
 check('missing config (undefined) -> paused', parseRolloutConfig(undefined).mode === 'paused');
 check('null config -> paused', parseRolloutConfig(null).mode === 'paused');
 check('non-object config (string) -> paused', parseRolloutConfig('general-real-send').mode === 'paused');
@@ -596,9 +616,11 @@ check('[14] parseRolloutConfig never aliases the caller-supplied allowlistUids a
 console.log('\n=== [4] decideShouldFanOut — hardened against fabricated runtime input ===');
 check('paused -> never fans out', decideShouldFanOut({ mode: 'paused' }, 'uid-1').shouldFanOut === false);
 check('dry-run -> always fans out', decideShouldFanOut({ mode: 'dry-run' }, 'uid-1').shouldFanOut === true);
-check('general-real-send -> always fans out', decideShouldFanOut({ mode: 'general-real-send' }, 'uid-1').shouldFanOut === true);
+check("[launch-blocking fanout containment] general-real-send -> NEVER fans out at the current allowlisted-only stage, even for a well-formed uid (fail closed BEFORE any delivery child is created — must not rely on final authorization to cancel it later)", decideShouldFanOut({ mode: 'general-real-send' }, 'uid-1').shouldFanOut === false);
 check('allowlisted-real-send, allowlisted uid -> fans out', decideShouldFanOut({ mode: 'allowlisted-real-send', allowlistUids: ['uid-1'] }, 'uid-1').shouldFanOut === true);
 check('allowlisted-real-send, non-allowlisted uid -> does NOT fan out', decideShouldFanOut({ mode: 'allowlisted-real-send', allowlistUids: ['uid-other'] }, 'uid-1').shouldFanOut === false);
+check('controlled-beta, allowlisted uid -> fans out', decideShouldFanOut({ mode: 'controlled-beta', allowlistUids: ['uid-1'] }, 'uid-1').shouldFanOut === true);
+check('controlled-beta, non-allowlisted uid -> does NOT fan out', decideShouldFanOut({ mode: 'controlled-beta', allowlistUids: ['uid-other'] }, 'uid-1').shouldFanOut === false);
 
 check('[4] bogus mode object passed DIRECTLY (bypassing parseRolloutConfig, e.g. via `as`) -> treated as paused, never fans out', decideShouldFanOut({ mode: 'super-send' }, 'uid-1').shouldFanOut === false);
 check('[4] fabricated object claiming allowlisted-real-send with a malformed allowlist -> paused, never fans out', decideShouldFanOut({ mode: 'allowlisted-real-send', allowlistUids: 'not-an-array' }, 'uid-1').shouldFanOut === false);
@@ -615,6 +637,8 @@ check('dry-run -> never authorized (fans out, but never a real send)', decideRea
 check('general-real-send -> authorized', decideRealSendAuthorization({ mode: 'general-real-send' }, 'uid-1').authorized === true);
 check('allowlisted-real-send, allowlisted uid -> authorized', decideRealSendAuthorization({ mode: 'allowlisted-real-send', allowlistUids: ['uid-1'] }, 'uid-1').authorized === true);
 check('allowlisted-real-send, non-allowlisted uid -> NOT authorized', decideRealSendAuthorization({ mode: 'allowlisted-real-send', allowlistUids: ['uid-other'] }, 'uid-1').authorized === false);
+check('controlled-beta, allowlisted uid -> authorized', decideRealSendAuthorization({ mode: 'controlled-beta', allowlistUids: ['uid-1'] }, 'uid-1').authorized === true);
+check('controlled-beta, non-allowlisted uid -> NOT authorized', decideRealSendAuthorization({ mode: 'controlled-beta', allowlistUids: ['uid-other'] }, 'uid-1').authorized === false);
 check('paused reason is "paused"', (() => {
   const d = decideRealSendAuthorization({ mode: 'paused' }, 'uid-1');
   return !d.authorized && d.reason === 'paused';
@@ -1295,6 +1319,10 @@ check("[3C-4] stage='disabled': allowlisted-real-send, uid ON allowlist -> still
   const d = decideStagedRealSendAuthorization('disabled', { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, 'user-1');
   return d.authorized === false && d.reason === 'stage-disabled';
 })());
+check("[3C-4] stage='disabled': controlled-beta, uid ON allowlist -> still never authorized (reason 'stage-disabled' — stage check runs first, exactly like allowlisted-real-send)", (() => {
+  const d = decideStagedRealSendAuthorization('disabled', { mode: 'controlled-beta', allowlistUids: ['user-1'] }, 'user-1');
+  return d.authorized === false && d.reason === 'stage-disabled';
+})());
 check("[3C-4] stage='disabled': general-real-send -> never authorized (reason 'stage-disabled')", (() => {
   const d = decideStagedRealSendAuthorization('disabled', { mode: 'general-real-send' }, 'user-1');
   return d.authorized === false && d.reason === 'stage-disabled';
@@ -1321,6 +1349,15 @@ check("[3C-4] stage='allowlisted-only': malformed uid against an otherwise-valid
   return d.authorized === false && d.reason === 'invalid-uid';
 })());
 
+check("[3C-4] stage='allowlisted-only': controlled-beta, uid ON allowlist -> authorized (recurring controlled-beta permitted at the same stage as the legacy allowlisted-real-send experiment)", (() => {
+  const d = decideStagedRealSendAuthorization('allowlisted-only', { mode: 'controlled-beta', allowlistUids: ['user-1'] }, 'user-1');
+  return d.authorized === true;
+})());
+check("[3C-4] stage='allowlisted-only': controlled-beta, uid NOT on allowlist -> not authorized (reason 'not-allowlisted')", (() => {
+  const d = decideStagedRealSendAuthorization('allowlisted-only', { mode: 'controlled-beta', allowlistUids: ['someone-else'] }, 'user-1');
+  return d.authorized === false && d.reason === 'not-allowlisted';
+})());
+
 check("[3C-4] stage='general': general-real-send -> authorized", (() => {
   const d = decideStagedRealSendAuthorization('general', { mode: 'general-real-send' }, 'user-1');
   return d.authorized === true;
@@ -1331,6 +1368,14 @@ check("[3C-4] stage='general': allowlisted-real-send, uid ON allowlist -> STILL 
 })());
 check("[3C-4] stage='general': allowlisted-real-send, uid NOT on allowlist -> not authorized (allowlist membership still enforced even at the most permissive stage)", (() => {
   const d = decideStagedRealSendAuthorization('general', { mode: 'allowlisted-real-send', allowlistUids: ['someone-else'] }, 'user-1');
+  return d.authorized === false && d.reason === 'not-allowlisted';
+})());
+check("[3C-4] stage='general': controlled-beta, uid ON allowlist -> STILL authorized (the most permissive stage does not narrow recurring controlled-beta either)", (() => {
+  const d = decideStagedRealSendAuthorization('general', { mode: 'controlled-beta', allowlistUids: ['user-1'] }, 'user-1');
+  return d.authorized === true;
+})());
+check("[3C-4] stage='general': controlled-beta, uid NOT on allowlist -> not authorized (allowlist membership still enforced even at the most permissive stage)", (() => {
+  const d = decideStagedRealSendAuthorization('general', { mode: 'controlled-beta', allowlistUids: ['someone-else'] }, 'user-1');
   return d.authorized === false && d.reason === 'not-allowlisted';
 })());
 

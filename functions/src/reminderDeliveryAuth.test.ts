@@ -127,8 +127,9 @@ type PendingWrite = { path: string; data: Record<string, unknown> };
 
 class FakeTransaction {
   readonly pendingWrites: PendingWrite[] = [];
-  constructor(private readonly store: Store) {}
+  constructor(private readonly store: Store, private readonly readPaths: string[]) {}
   async get(ref: FakeDocumentRef): Promise<FakeDocumentSnapshot> {
+    this.readPaths.push(ref.path);
     return new FakeDocumentSnapshot(this.store, ref.path);
   }
   update(ref: FakeDocumentRef, data: Record<string, unknown>): void {
@@ -152,15 +153,16 @@ interface CommitControl {
   failPaths: Set<string>;
 }
 
-function makeFakeDb(): { db: FirebaseFirestore.Firestore; store: Store; commitControl: CommitControl } {
+function makeFakeDb(): { db: FirebaseFirestore.Firestore; store: Store; commitControl: CommitControl; readPaths: string[] } {
   const store: Store = new Map();
   const commitControl: CommitControl = { failWholeCommit: false, failPaths: new Set() };
+  const readPaths: string[] = [];
   const db = {
     doc(p: string) {
       return new FakeDocumentRef(store, p);
     },
     async runTransaction<T>(cb: (t: FakeTransaction) => Promise<T>): Promise<T> {
-      const transaction = new FakeTransaction(store);
+      const transaction = new FakeTransaction(store, readPaths);
       const result = await cb(transaction);
       if (commitControl.failWholeCommit) {
         throw new Error('SIMULATED_COMMIT_FAILURE: whole transaction commit rejected');
@@ -180,7 +182,7 @@ function makeFakeDb(): { db: FirebaseFirestore.Firestore; store: Store; commitCo
       return result;
     },
   };
-  return { db: db as unknown as FirebaseFirestore.Firestore, store, commitControl };
+  return { db: db as unknown as FirebaseFirestore.Firestore, store, commitControl, readPaths };
 }
 
 function seedDoc(store: Store, docPath: string, data: Record<string, unknown>): void {
@@ -524,6 +526,44 @@ async function main(): Promise<void> {
       return result.outcome === 'sending-authorized';
     }
   );
+
+  await checkAsync('[controlled-beta] exact allowlisted config authorizes recurring send with NO gate document read or write', async () => {
+    const { db, store, readPaths } = makeFakeDb();
+    const fixture = seedHappyPath(db, store, { rollout: { mode: 'controlled-beta', allowlistUids: ['user-1'] } });
+    const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+    return (
+      result.outcome === 'sending-authorized' &&
+      !readPaths.includes(experimentGatePath()) &&
+      readDoc(store, experimentGatePath()) === undefined &&
+      readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!.state === 'sending'
+    );
+  });
+
+  await checkAsync('[controlled-beta] even a present consumed experiment gate is neither read nor mutated', async () => {
+    const { db, store, readPaths } = makeFakeDb();
+    const fixture = seedHappyPath(db, store, {
+      rollout: { mode: 'controlled-beta', allowlistUids: ['user-1'] },
+      experimentGate: { state: 'consumed', consumedAt: Timestamp.now(), consumedByExecutionId: 'Z'.repeat(OPAQUE_ID_LENGTH) },
+    });
+    const before = readDoc(store, experimentGatePath());
+    const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+    return result.outcome === 'sending-authorized' && !readPaths.includes(experimentGatePath()) && JSON.stringify(readDoc(store, experimentGatePath())) === JSON.stringify(before);
+  });
+
+  await checkAsync('[controlled-beta] UID removed before final authorization -> cancelled, zero send intent', async () => {
+    const result = await runHappyPath({ rollout: { mode: 'controlled-beta', allowlistUids: ['someone-else'] } });
+    return result.outcome === 'cancelled' && result.reason === 'rollout-real-send-not-allowlisted';
+  });
+
+  await checkAsync('[controlled-beta] rollout paused before final authorization -> cancelled, zero send intent', async () => {
+    const result = await runHappyPath({ rollout: { mode: 'paused' } });
+    return result.outcome === 'cancelled' && result.reason === 'rollout-paused';
+  });
+
+  await checkAsync('[controlled-beta] extra rollout field fails closed to paused', async () => {
+    const result = await runHappyPath({ rollout: { mode: 'controlled-beta', allowlistUids: ['user-1'], unexpected: true } });
+    return result.outcome === 'cancelled' && result.reason === 'rollout-paused';
+  });
 
   await checkAsync(
     "[3C-5] rollout general-real-send -> cancelled 'rollout-real-send-mode-not-permitted-at-stage' (general remains source-disabled at the allowlisted-only stage, regardless of allowlist content)",
@@ -1334,9 +1374,25 @@ async function main(): Promise<void> {
   });
 
   await checkAsync('[A5] already-consumed gate -> cancelled experiment-gate-consumed', async () => {
+    // Codex-reproduced intermittent fixture defect: seedHappyPath's own base `createdAt:
+    // Timestamp.now()` (inside the function) and a caller-supplied `consumedAt:
+    // Timestamp.now()` (evaluated earlier, when THIS object literal is constructed, before
+    // seedHappyPath ever runs) are two independent wall-clock reads. Crossing a millisecond
+    // boundary between them could make consumedAt < createdAt — an ordering production code
+    // correctly refuses to treat as a valid already-consumed gate, causing this fixture to
+    // occasionally seed a MALFORMED gate instead of the CONSUMED one this test intends.
+    // Fixed here exactly like the established, already-proven-safe pattern elsewhere in this
+    // file: capture createdAt once, derive consumedAt from it with a fixed positive offset —
+    // deterministic regardless of real-world timing, no sleep/retry needed.
+    const createdAt = Timestamp.now();
     const result = await runHappyPath({
       rollout: { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] },
-      experimentGate: { state: 'consumed', consumedAt: Timestamp.now(), consumedByExecutionId: 'Z'.repeat(OPAQUE_ID_LENGTH) },
+      experimentGate: {
+        state: 'consumed',
+        createdAt,
+        consumedAt: Timestamp.fromMillis(createdAt.toMillis() + 1000),
+        consumedByExecutionId: 'Z'.repeat(OPAQUE_ID_LENGTH),
+      },
     });
     return result.outcome === 'cancelled' && result.reason === 'experiment-gate-consumed';
   });

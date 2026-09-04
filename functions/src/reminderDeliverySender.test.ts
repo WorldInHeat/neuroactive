@@ -267,6 +267,7 @@ interface OrchestrationFixtureOverrides {
   rollout?: Record<string, unknown>;
   installation?: Record<string, unknown> | null;
   tokenClaim?: Record<string, unknown> | null;
+  experimentGate?: Record<string, unknown> | null;
 }
 
 function seedOrchestrationPreparingFixture(store: Store, overrides: OrchestrationFixtureOverrides): void {
@@ -323,16 +324,19 @@ function seedOrchestrationPreparingFixture(store: Store, overrides: Orchestratio
   // that reaches 'sending-authorized' needs a matching armed gate; none of them are testing
   // gate behavior itself (that is reminderDeliveryAuth.test.ts's job), so it is seeded here,
   // unconditionally, matching this fixture's own fixed ORCH identity.
-  seedDoc(store, 'artifacts/neuroactive-prod/systemConfig/firstRealSendExperimentGate', {
-    state: 'armed',
-    expectedUid: ORCH_UID,
-    expectedReminderId: ORCH_REMINDER_ID,
-    expectedScheduledForMs: 2000,
-    expectedInstallationId: ORCH_INSTALLATION_ID,
-    createdAt: Timestamp.now(),
-    consumedAt: null,
-    consumedByExecutionId: null,
-  });
+  if (overrides.experimentGate !== null) {
+    seedDoc(store, 'artifacts/neuroactive-prod/systemConfig/firstRealSendExperimentGate', {
+      state: 'armed',
+      expectedUid: ORCH_UID,
+      expectedReminderId: ORCH_REMINDER_ID,
+      expectedScheduledForMs: 2000,
+      expectedInstallationId: ORCH_INSTALLATION_ID,
+      createdAt: Timestamp.now(),
+      consumedAt: null,
+      consumedByExecutionId: null,
+      ...overrides.experimentGate,
+    });
+  }
   if (overrides.installation !== null) {
     seedDoc(store, `artifacts/neuroactive-prod/pushInstallations/${ORCH_INSTALLATION_ID}`, {
       uid: ORCH_UID,
@@ -796,6 +800,14 @@ async function main(): Promise<void> {
     const after = readDoc(store, ORCH_DELIVERY_PATH)!;
     const history = after.attemptHistory as unknown[];
     return after.state === 'accepted-by-fcm' && history.length === 1;
+  });
+
+  await checkAsync('controlled-beta authorized path reaches the sole transport exactly once without any experiment gate', async () => {
+    const { db, store } = makeFakeDb();
+    seedOrchestrationPreparingFixture(store, { rollout: { mode: 'controlled-beta', allowlistUids: [ORCH_UID] }, experimentGate: null });
+    const { transport, callCount } = fakeTransport(() => Promise.resolve(ACCEPTED_OUTCOME));
+    const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+    return callCount() === 1 && result.outcome === 'terminalized' && result.state === 'accepted-by-fcm' && !store.has('artifacts/neuroactive-prod/systemConfig/firstRealSendExperimentGate');
   });
 
   await checkAsync('authorized + retryable-later transport outcome -> requeued-for-retry, transport called exactly once, delivery back to queued, bounded backoff', async () => {

@@ -736,16 +736,19 @@ export function appendAttemptHistoryEntry(existingHistory: unknown, entryInput: 
 // ---------------------------------------------------------------------------------------
 // ROLLOUT MODE — pure parsing/decision only. This file performs NO reads; it only ever
 // receives an already-read, plain value and decides what it means. Any parse/validation
-// failure fails closed to 'paused' semantics — the single strictest of the four modes —
+// failure fails closed to 'paused' semantics — the single strictest of the five modes —
 // via this one function's own logic, never a fallback scattered across call sites.
 // ---------------------------------------------------------------------------------------
 
-export type RolloutMode = 'paused' | 'dry-run' | 'allowlisted-real-send' | 'general-real-send';
+export const MAX_CONTROLLED_BETA_UIDS = 25;
+
+export type RolloutMode = 'paused' | 'dry-run' | 'allowlisted-real-send' | 'controlled-beta' | 'general-real-send';
 
 export type ParsedRolloutConfig =
   | { mode: 'paused' }
   | { mode: 'dry-run' }
   | { mode: 'allowlisted-real-send'; allowlistUids: string[] }
+  | { mode: 'controlled-beta'; allowlistUids: string[] }
   | { mode: 'general-real-send' };
 
 export function parseRolloutConfig(raw: unknown): ParsedRolloutConfig {
@@ -781,6 +784,27 @@ export function parseRolloutConfig(raw: unknown): ParsedRolloutConfig {
     return { mode: 'allowlisted-real-send', allowlistUids: uids };
   }
 
+  // Recurring controlled beta is deliberately stricter than the legacy one-shot
+  // experiment mode above. Its document must be exactly two fields, contain a nonempty,
+  // bounded, duplicate-free UID array, and every UID must pass the same path validator
+  // used at fanout/final authorization. Any ambiguity fails closed to paused semantics.
+  if (mode === 'controlled-beta') {
+    const keys = Object.keys(raw).sort();
+    if (keys.length !== 2 || keys[0] !== 'allowlistUids' || keys[1] !== 'mode') return { mode: 'paused' };
+    const allowlistUids = raw.allowlistUids;
+    if (!Array.isArray(allowlistUids) || allowlistUids.length === 0 || allowlistUids.length > MAX_CONTROLLED_BETA_UIDS) {
+      return { mode: 'paused' };
+    }
+    const uids: string[] = [];
+    const seen = new Set<string>();
+    for (const entry of allowlistUids) {
+      if (!isValidIdForPath(entry) || seen.has(entry)) return { mode: 'paused' };
+      seen.add(entry);
+      uids.push(entry);
+    }
+    return { mode: 'controlled-beta', allowlistUids: uids };
+  }
+
   return { mode: 'paused' }; // unrecognized mode string entirely.
 }
 
@@ -793,15 +817,25 @@ export type FanoutDecision = { shouldFanOut: boolean };
 // authorize fanout, regardless of rollout mode. Whether Step 3C's fanout machinery
 // should run at all for this uid, given a freshly parsed rollout config. 'paused' never
 // fans out. 'dry-run' ALWAYS fans out (the entire pipeline is meant to be exercised
-// safely in this mode). 'general-real-send' always fans out. 'allowlisted-real-send'
-// fans out only for allowlisted uids — a non-allowlisted uid under this mode behaves
-// exactly like 'paused' (Step 2's legacy dry-run-complete path, Step 3C never engages).
+// safely in this mode). 'allowlisted-real-send' and 'controlled-beta' fan out only for
+// allowlisted uids — a non-allowlisted uid under either mode behaves exactly like
+// 'paused' (Step 2's legacy dry-run-complete path, Step 3C never engages).
+//
+// CODEX REPAIR (launch-blocking fanout containment): 'general-real-send' NEVER fans out
+// here, full stop — general rollout is intentionally unavailable at the current
+// 'allowlisted-only' product stage (see REAL_DELIVERY_STAGE in reminderDeliveryAuth.ts /
+// reminderDeliverySender.ts), and fanout must fail closed BEFORE creating any delivery
+// child, not rely on final authorization to cancel work that should never have been
+// created. This is a deliberate, hard-coded floor for the current stage, not a
+// stage-parameterized decision — a future, separately-reviewed expansion of general
+// rollout would need to revisit this exact line, not merely flip a stage constant
+// elsewhere.
 export function decideShouldFanOut(rawConfig: unknown, uid: unknown): FanoutDecision {
   if (!isValidIdForPath(uid)) return { shouldFanOut: false };
   const config = parseRolloutConfig(rawConfig);
   if (config.mode === 'paused') return { shouldFanOut: false };
   if (config.mode === 'dry-run') return { shouldFanOut: true };
-  if (config.mode === 'general-real-send') return { shouldFanOut: true };
+  if (config.mode === 'general-real-send') return { shouldFanOut: false };
   return { shouldFanOut: config.allowlistUids.includes(uid) };
 }
 
@@ -1222,8 +1256,8 @@ export function validatePersistedDeliveryForProcessing(refId: unknown, data: Rec
 //
 // REAL_DELIVERY_ENABLED (a single boolean) is replaced by a three-value staged lock, per
 // the Codex-approved Step 3C-4 design: 'disabled' (this phase's only permitted value —
-// zero rollout content can ever authorize a real send), 'allowlisted-only' (a future,
-// separately-reviewed phase — only allowlisted-real-send, for an allowlisted uid, may
+// zero rollout content can ever authorize a real send), 'allowlisted-only' (the current
+// stage — only 'allowlisted-real-send' or 'controlled-beta', for an allowlisted uid, may
 // authorize), and 'general' (a future, separately-reviewed phase beyond that). This type
 // and decideStagedRealSendAuthorization are pure/shared so BOTH of the two independent
 // enforcement layers (reminderDeliveryAuth.ts's authorization boundary, and
@@ -1266,9 +1300,10 @@ export function decideStagedRealSendAuthorization(
   const base = decideRealSendAuthorization(rawConfig, uid);
   if (!base.authorized) return base;
 
-  // base.authorized === true here means rollout mode is either 'general-real-send' or
-  // ('allowlisted-real-send' AND uid is a member) — re-parse to find out which, since
-  // decideRealSendAuthorization's own success shape carries no mode information.
+  // base.authorized === true here means rollout mode is 'general-real-send', or
+  // ('allowlisted-real-send' or 'controlled-beta' AND uid is a member) — re-parse to find
+  // out which, since decideRealSendAuthorization's own success shape carries no mode
+  // information.
   const parsed = parseRolloutConfig(rawConfig);
   if (parsed.mode === 'general-real-send' && stage !== 'general') {
     return { authorized: false, reason: 'mode-not-permitted-at-current-stage' };

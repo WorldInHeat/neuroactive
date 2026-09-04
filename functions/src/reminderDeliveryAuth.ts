@@ -24,11 +24,13 @@
 // decideStagedRealSendAuthorization). It is a compile-time-visible constant, independent of
 // and never overridden by the Firestore-stored rollout config. PHASE 3A-3 STEP 3C-5 —
 // advanced from 'disabled' to 'allowlisted-only': under this stage,
-// decideStagedRealSendAuthorization authorizes ONLY rollout mode 'allowlisted-real-send'
-// for a uid actually present in that document's own allowlistUids array — 'paused',
-// 'dry-run', a non-allowlisted uid under 'allowlisted-real-send', and 'general-real-send'
-// (unconditionally, regardless of allowlist content) all still fail closed, exactly as
-// before. This is layer A of the three-layer enforcement the design review required; layer
+// decideStagedRealSendAuthorization authorizes ONLY rollout mode 'allowlisted-real-send' or
+// 'controlled-beta' for a uid actually present in that document's own allowlistUids array —
+// 'paused', 'dry-run', a non-allowlisted uid under either allowlist mode, and
+// 'general-real-send' (unconditionally, regardless of allowlist content) all still fail
+// closed, exactly as before. 'controlled-beta' is additionally, deliberately independent of
+// the experiment-wide one-shot gate below (see EXPERIMENT-WIDE ONE-SHOT GATE further down)
+// — it is a recurring allowlist, not a single-shot experiment. This is layer A of the three-layer enforcement the design review required; layer
 // B is the fresh rollout+uid re-decision inside THIS transaction (immediately below);
 // layer C is reminderDeliverySender.ts's own, independently-declared REAL_DELIVERY_STAGE
 // constant, asserted immediately adjacent to its sole sendFcmOnce call site — a bug or
@@ -84,9 +86,9 @@ const APP_ID = 'neuroactive-prod';
 // See file header — this is a structural phase lock, not a rollout-config-driven decision.
 // PHASE 3A-3 STEP 3C-5 — advanced from 'disabled' to 'allowlisted-only'. This is the FIRST
 // stage under which decideStagedRealSendAuthorization can ever return `authorized: true` —
-// but ONLY for rollout mode 'allowlisted-real-send' with the requesting uid present in
-// that rollout document's own allowlistUids array (never 'general-real-send', which stays
-// unconditionally source-disabled at this stage — see
+// but ONLY for rollout mode 'allowlisted-real-send' or 'controlled-beta', with the
+// requesting uid present in that rollout document's own allowlistUids array (never
+// 'general-real-send', which stays unconditionally source-disabled at this stage — see
 // reminderDeliveryLogic.ts's decideStagedRealSendAuthorization for the exact mode-vs-stage
 // precedence rule). Production remains completely inert after this change alone: the
 // production rollout document is `{mode:"paused"}` and stays that way independent of this
@@ -354,8 +356,8 @@ export type FinalAuthorizationReason =
   // Step 3C-4 additions — every one of these maps 1:1 from
   // reminderDeliveryLogic.ts's StagedRealSendAuthorizationDecision failure reasons (see
   // mapStagedReasonToFinalAuthReason below), reached only when the rollout mode is
-  // 'allowlisted-real-send' or 'general-real-send' (a 'paused'/'dry-run' rollout never
-  // reaches the staged-authorization check at all).
+  // 'allowlisted-real-send', 'controlled-beta', or 'general-real-send' (a 'paused'/'dry-run'
+  // rollout never reaches the staged-authorization check at all).
   | 'rollout-real-send-stage-disabled'
   | 'rollout-real-send-not-allowlisted'
   | 'rollout-real-send-mode-not-permitted-at-stage'
@@ -377,7 +379,7 @@ export type RolloutDisposition =
   // for this decision — see finalizeDeliveryAuthorization's write phase below for the one
   // place their handling actually diverges (writing 'sending' + the send capability
   // instead of 'dry-run-validated').
-  | { decision: 'proceed-real-send' }
+  | { decision: 'proceed-real-send'; experimentGateRequired: boolean }
   | { decision: 'cancel'; reason: FinalAuthorizationReason };
 
 function mapStagedReasonToFinalAuthReason(
@@ -407,22 +409,23 @@ function mapStagedReasonToFinalAuthReason(
 // validatePersistedDeliveryForProcessing earlier in the same transaction — never a raw,
 // unvalidated field read. 'paused' cancels (never requeues — see the approved design's
 // non-spinning-paused-disposition requirement). 'dry-run' always proceeds to the existing
-// dry-run path, unconditionally. 'allowlisted-real-send'/'general-real-send' consult
-// decideStagedRealSendAuthorization against THIS file's own REAL_DELIVERY_STAGE constant
-// (layer B of the three-layer enforcement — see the file header). With
-// REAL_DELIVERY_STAGE === 'allowlisted-only', 'proceed-real-send' is reachable ONLY for
-// rollout mode 'allowlisted-real-send' with deliveryUid present in that document's own
-// allowlistUids — 'general-real-send' still unconditionally returns
+// dry-run path, unconditionally. 'allowlisted-real-send'/'controlled-beta'/'general-real-send'
+// consult decideStagedRealSendAuthorization against THIS file's own REAL_DELIVERY_STAGE
+// constant (layer B of the three-layer enforcement — see the file header). With
+// REAL_DELIVERY_STAGE === 'allowlisted-only', 'proceed-real-send' is reachable for rollout
+// mode 'allowlisted-real-send' OR 'controlled-beta' with deliveryUid present in that
+// document's own allowlistUids — 'general-real-send' still unconditionally returns
 // 'mode-not-permitted-at-current-stage' regardless of allowlist content, and the production
 // rollout document remains `{mode:"paused"}` independent of this source change, so this
-// branch is not reachable in production today without a separate, later rollout mutation.
+// branch is not reachable in production today without a separate, later, explicitly
+// authorized rollout mutation.
 export function decideFinalAuthorizationRolloutDisposition(rawRolloutConfig: unknown, deliveryUid: unknown): RolloutDisposition {
   const parsed = parseRolloutConfig(rawRolloutConfig);
   if (parsed.mode === 'paused') return { decision: 'cancel', reason: 'rollout-paused' };
   if (parsed.mode === 'dry-run') return { decision: 'proceed-dry-run' };
   const staged = decideStagedRealSendAuthorization(REAL_DELIVERY_STAGE, rawRolloutConfig, deliveryUid);
   if (!staged.authorized) return { decision: 'cancel', reason: mapStagedReasonToFinalAuthReason(staged.reason) };
-  return { decision: 'proceed-real-send' };
+  return { decision: 'proceed-real-send', experimentGateRequired: parsed.mode === 'allowlisted-real-send' };
 }
 
 function mapPreferenceCancellationReason(
@@ -460,11 +463,11 @@ export type FinalAuthorizationResult =
   // Step 3C-4 addition — every check that would otherwise reach 'dry-run-validated' passed
   // AND the rollout+stage combination authorized a real send. Carries the one-shot
   // capability the immediate caller must hand straight to reminderDeliverySender.ts. With
-  // REAL_DELIVERY_STAGE === 'allowlisted-only' (Step 3C-5), this branch is reachable ONLY
-  // for rollout mode 'allowlisted-real-send' with an allowlisted uid — the production
-  // rollout document remains `{mode:"paused"}` independent of this source change, so this
-  // branch is not reachable in production today without a separate rollout mutation — see
-  // decideFinalAuthorizationRolloutDisposition.
+  // REAL_DELIVERY_STAGE === 'allowlisted-only' (Step 3C-5), this branch is reachable for
+  // rollout mode 'allowlisted-real-send' OR 'controlled-beta' with an allowlisted uid — the
+  // production rollout document remains `{mode:"paused"}` independent of this source
+  // change, so this branch is not reachable in production today without a separate,
+  // explicitly authorized rollout mutation — see decideFinalAuthorizationRolloutDisposition.
   | { outcome: 'sending-authorized'; capability: DeliverySendCapability };
 
 // `expectedProcessingAttemptCount` is the fence the caller obtained from its own
@@ -656,6 +659,7 @@ function finalizeDeliveryAuthorizationInner(
     const rolloutDisposition = decideFinalAuthorizationRolloutDisposition(rolloutSnap.exists ? rolloutSnap.data() : undefined, deliveryUid);
     if (rolloutDisposition.decision === 'cancel') return cancel(rolloutDisposition.reason);
     const willAuthorizeRealSend = rolloutDisposition.decision === 'proceed-real-send';
+    const experimentGateRequired = willAuthorizeRealSend && rolloutDisposition.experimentGateRequired;
 
     // --- NOTIFICATION PREFERENCE (reuses reminderSchedulerLogic.ts's own revalidateConsent
     // — the exact same consent-revalidation Step 2 already performs immediately before its
@@ -718,20 +722,20 @@ function finalizeDeliveryAuthorizationInner(
       return { outcome: 'dry-run-validated' };
     }
 
-    // --- EXPERIMENT-WIDE ONE-SHOT GATE (Step 3C-7) — real-send continuation ONLY; the
-    // dry-run branch above already returned, so this read never executes for dry-run/paused/
-    // non-allowlisted deliveries. Read fresh, inside this same transaction, immediately
-    // after every other existing check (including the token claim above) and strictly
-    // before the first write of this branch — see the Step 3C-7 design report for the full
-    // ordering proof. ---
-    const gateSnap = await transaction.get(experimentGateRef(db));
-    if (!gateSnap.exists) return cancel('experiment-gate-missing');
-    const gateValidation = validateExperimentGateSchema(gateSnap.data());
-    if (!gateValidation.valid) return cancel('experiment-gate-malformed');
-    const gate = gateValidation.gate;
-    if (gate.state === 'consumed') return cancel('experiment-gate-consumed');
-    if (gate.expectedUid !== deliveryUid || gate.expectedReminderId !== reminderId || gate.expectedInstallationId !== installationId) {
-      return cancel('experiment-gate-identity-mismatch');
+    // --- EXPERIMENT-WIDE ONE-SHOT GATE (Step 3C-7). The legacy
+    // allowlisted-real-send experiment still requires this fresh transactional read and
+    // consumes the gate atomically with its send intent. Recurring controlled-beta is
+    // explicitly gate-independent and therefore neither reads nor writes the singleton. ---
+    if (experimentGateRequired) {
+      const gateSnap = await transaction.get(experimentGateRef(db));
+      if (!gateSnap.exists) return cancel('experiment-gate-missing');
+      const gateValidation = validateExperimentGateSchema(gateSnap.data());
+      if (!gateValidation.valid) return cancel('experiment-gate-malformed');
+      const gate = gateValidation.gate;
+      if (gate.state === 'consumed') return cancel('experiment-gate-consumed');
+      if (gate.expectedUid !== deliveryUid || gate.expectedReminderId !== reminderId || gate.expectedInstallationId !== installationId) {
+        return cancel('experiment-gate-identity-mismatch');
+      }
     }
 
     // Step 3C-4 real-send authorization branch — unreachable in production today (see
@@ -762,11 +766,13 @@ function finalizeDeliveryAuthorizationInner(
     // BOTH writes land together or NEITHER does. Touches ONLY these three fields — the four
     // expected* identity fields and createdAt are never rewritten (see the update-
     // construction invariant documented on validateExperimentGateSchema above).
-    transaction.update(experimentGateRef(db), {
-      state: 'consumed',
-      consumedAt: FieldValue.serverTimestamp(),
-      consumedByExecutionId: sendExecutionId,
-    });
+    if (experimentGateRequired) {
+      transaction.update(experimentGateRef(db), {
+        state: 'consumed',
+        consumedAt: FieldValue.serverTimestamp(),
+        consumedByExecutionId: sendExecutionId,
+      });
+    }
     return {
       outcome: 'sending-authorized',
       capability: {
