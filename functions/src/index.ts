@@ -46,11 +46,11 @@ export { calendarFeed } from './calendarFeedEndpoint';
 export { notificationReminderSchedulerDryRun } from './reminderScheduler';
 // Phase 3A-3 Step 3C-3, renamed Step 3C-5 (M1) — the delivery-pipeline export. This function
 // transitively reaches real FCM transport via reminderDeliverySender.ts, but whether a real
-// send is ever authorized depends on the production rollout document (currently
-// `{mode:"paused"}`) and both files' own REAL_DELIVERY_STAGE constants (currently
-// 'allowlisted-only') — see reminderDeliveryWorker.ts's and reminderDeliveryAuth.ts's own
-// headers for the full reachability analysis. The deepest state reachable TODAY, given the
-// current rollout document, is still 'dry-run-validated'.
+// send is ever authorized depends entirely on the production rollout document's own content
+// (paused / dry-run / allowlisted-real-send / controlled-beta / general-real-send) and both
+// files' own REAL_DELIVERY_STAGE constants (currently 'general', following the
+// separately-reviewed general-real-send expansion round) — see reminderDeliveryWorker.ts's
+// and reminderDeliveryAuth.ts's own headers for the full reachability analysis.
 export { notificationReminderDeliveryWorker } from './reminderDeliveryWorker';
 
 if (getApps().length === 0) initializeApp();

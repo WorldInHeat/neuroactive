@@ -571,7 +571,12 @@ console.log('\n=== rollout config parsing ===');
 
 check("'paused' parses cleanly", parseRolloutConfig({ mode: 'paused' }).mode === 'paused');
 check("'dry-run' parses cleanly", parseRolloutConfig({ mode: 'dry-run' }).mode === 'dry-run');
-check("'general-real-send' parses cleanly", parseRolloutConfig({ mode: 'general-real-send' }).mode === 'general-real-send');
+check("'general-real-send' exact one-field schema parses cleanly", parseRolloutConfig({ mode: 'general-real-send' }).mode === 'general-real-send');
+check("[Codex repair] 'general-real-send' with an extra field fails closed to paused (extra metadata must not be silently ignored)", parseRolloutConfig({ mode: 'general-real-send', extra: true }).mode === 'paused');
+check("[Codex repair] 'general-real-send' with an allowlistUids field fails closed to paused (an allowlist attached to a mode that ignores allowlists entirely must not be misread as narrowing it)", parseRolloutConfig({ mode: 'general-real-send', allowlistUids: ['some-other-uid'] }).mode === 'paused');
+check("[Codex repair] 'general-real-send' with an EMPTY allowlistUids fails closed to paused (same exact-shape rule regardless of the extra field's own value)", parseRolloutConfig({ mode: 'general-real-send', allowlistUids: [] }).mode === 'paused');
+check("[Codex repair] 'general-real-send' with a timestamp-like extra field fails closed to paused (metadata-shaped extras are not a special case)", parseRolloutConfig({ mode: 'general-real-send', updatedAt: Date.now() }).mode === 'paused');
+check("[Codex repair] 'general-real-send' with a revision-like extra field fails closed to paused", parseRolloutConfig({ mode: 'general-real-send', revision: 1 }).mode === 'paused');
 check("'allowlisted-real-send' with a valid allowlist parses cleanly", (() => {
   const c = parseRolloutConfig({ mode: 'allowlisted-real-send', allowlistUids: ['uid-a', 'uid-b'] });
   return c.mode === 'allowlisted-real-send' && (c as { allowlistUids: string[] }).allowlistUids.length === 2;
@@ -616,12 +621,14 @@ check('[14] parseRolloutConfig never aliases the caller-supplied allowlistUids a
 console.log('\n=== [4] decideShouldFanOut — hardened against fabricated runtime input ===');
 check('paused -> never fans out', decideShouldFanOut({ mode: 'paused' }, 'uid-1').shouldFanOut === false);
 check('dry-run -> always fans out', decideShouldFanOut({ mode: 'dry-run' }, 'uid-1').shouldFanOut === true);
-check("[launch-blocking fanout containment] general-real-send -> NEVER fans out at the current allowlisted-only stage, even for a well-formed uid (fail closed BEFORE any delivery child is created — must not rely on final authorization to cancel it later)", decideShouldFanOut({ mode: 'general-real-send' }, 'uid-1').shouldFanOut === false);
+check("[general-real-send expansion] general-real-send -> fans out for any well-formed uid, no allowlist required (mirrors dry-run's unconditional fan-out; real-send AUTHORIZATION is independently re-decided, transactionally, at finalization)", decideShouldFanOut({ mode: 'general-real-send' }, 'uid-1').shouldFanOut === true);
 check('allowlisted-real-send, allowlisted uid -> fans out', decideShouldFanOut({ mode: 'allowlisted-real-send', allowlistUids: ['uid-1'] }, 'uid-1').shouldFanOut === true);
 check('allowlisted-real-send, non-allowlisted uid -> does NOT fan out', decideShouldFanOut({ mode: 'allowlisted-real-send', allowlistUids: ['uid-other'] }, 'uid-1').shouldFanOut === false);
 check('controlled-beta, allowlisted uid -> fans out', decideShouldFanOut({ mode: 'controlled-beta', allowlistUids: ['uid-1'] }, 'uid-1').shouldFanOut === true);
 check('controlled-beta, non-allowlisted uid -> does NOT fan out', decideShouldFanOut({ mode: 'controlled-beta', allowlistUids: ['uid-other'] }, 'uid-1').shouldFanOut === false);
 
+check("[Codex repair] malformed general-real-send (extra field) -> does NOT fan out", decideShouldFanOut({ mode: 'general-real-send', extra: true }, 'uid-1').shouldFanOut === false);
+check("[Codex repair] malformed general-real-send (allowlistUids attached) -> does NOT fan out", decideShouldFanOut({ mode: 'general-real-send', allowlistUids: ['some-other-uid'] }, 'uid-1').shouldFanOut === false);
 check('[4] bogus mode object passed DIRECTLY (bypassing parseRolloutConfig, e.g. via `as`) -> treated as paused, never fans out', decideShouldFanOut({ mode: 'super-send' }, 'uid-1').shouldFanOut === false);
 check('[4] fabricated object claiming allowlisted-real-send with a malformed allowlist -> paused, never fans out', decideShouldFanOut({ mode: 'allowlisted-real-send', allowlistUids: 'not-an-array' }, 'uid-1').shouldFanOut === false);
 check('[4] completely unknown/fabricated raw config object -> paused', decideShouldFanOut({ arbitrary: 'garbage' }, 'uid-1').shouldFanOut === false);
@@ -652,6 +659,14 @@ check('non-allowlisted reason is "not-allowlisted"', (() => {
   return !d.authorized && d.reason === 'not-allowlisted';
 })());
 
+check("[Codex repair] malformed general-real-send (extra field) -> NEVER authorized, reason 'paused' (parseRolloutConfig already fails it closed before mode dispatch)", (() => {
+  const d = decideRealSendAuthorization({ mode: 'general-real-send', extra: true }, 'uid-1');
+  return !d.authorized && d.reason === 'paused';
+})());
+check("[Codex repair] malformed general-real-send (allowlistUids attached) -> NEVER authorized, reason 'paused'", (() => {
+  const d = decideRealSendAuthorization({ mode: 'general-real-send', allowlistUids: ['uid-1'] }, 'uid-1');
+  return !d.authorized && d.reason === 'paused';
+})());
 check('[4] bogus mode object passed DIRECTLY -> NEVER authorized', decideRealSendAuthorization({ mode: 'super-send' }, 'uid-1').authorized === false);
 check('[4] fabricated allowlisted-real-send with a malformed allowlist -> NEVER authorized', decideRealSendAuthorization({ mode: 'allowlisted-real-send', allowlistUids: null }, 'uid-1').authorized === false);
 check('[4] unknown mode may NOT fall through into allowlisted behavior even if it superficially carries an allowlistUids array', decideRealSendAuthorization({ mode: 'super-allowlisted', allowlistUids: ['uid-1'] }, 'uid-1').authorized === false);
@@ -1361,6 +1376,14 @@ check("[3C-4] stage='allowlisted-only': controlled-beta, uid NOT on allowlist ->
 check("[3C-4] stage='general': general-real-send -> authorized", (() => {
   const d = decideStagedRealSendAuthorization('general', { mode: 'general-real-send' }, 'user-1');
   return d.authorized === true;
+})());
+check("[Codex repair] stage='general': malformed general-real-send (extra field) -> NOT authorized, reason 'paused' — the most permissive stage does not rescue a malformed document", (() => {
+  const d = decideStagedRealSendAuthorization('general', { mode: 'general-real-send', extra: true }, 'user-1');
+  return d.authorized === false && d.reason === 'paused';
+})());
+check("[Codex repair] stage='general': malformed general-real-send (allowlistUids attached) -> NOT authorized, reason 'paused'", (() => {
+  const d = decideStagedRealSendAuthorization('general', { mode: 'general-real-send', allowlistUids: ['valid-looking-uid'] }, 'user-1');
+  return d.authorized === false && d.reason === 'paused';
 })());
 check("[3C-4] stage='general': allowlisted-real-send, uid ON allowlist -> STILL authorized (general stage permits allowlisted mode too)", (() => {
   const d = decideStagedRealSendAuthorization('general', { mode: 'allowlisted-real-send', allowlistUids: ['user-1'] }, 'user-1');

@@ -552,8 +552,7 @@ async function main(): Promise<void> {
       (n) => !Object.prototype.hasOwnProperty.call(compiledWrapperExports, n)
     )
   );
-  check("REAL_DELIVERY_STAGE is 'allowlisted-only'", REAL_DELIVERY_STAGE === 'allowlisted-only');
-  check("REAL_DELIVERY_STAGE !== 'general' — this round's review covers only 'allowlisted-only'", (REAL_DELIVERY_STAGE as string) !== 'general');
+  check("REAL_DELIVERY_STAGE is 'general' (general-real-send expansion, this round's separately-reviewed round)", REAL_DELIVERY_STAGE === 'general');
 
   // =======================================================================================
   // DIRECT-REQUIRE ATTACK TEST — the FIFTH round's core files no longer exist anywhere in
@@ -805,6 +804,14 @@ async function main(): Promise<void> {
   await checkAsync('controlled-beta authorized path reaches the sole transport exactly once without any experiment gate', async () => {
     const { db, store } = makeFakeDb();
     seedOrchestrationPreparingFixture(store, { rollout: { mode: 'controlled-beta', allowlistUids: [ORCH_UID] }, experimentGate: null });
+    const { transport, callCount } = fakeTransport(() => Promise.resolve(ACCEPTED_OUTCOME));
+    const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
+    return callCount() === 1 && result.outcome === 'terminalized' && result.state === 'accepted-by-fcm' && !store.has('artifacts/neuroactive-prod/systemConfig/firstRealSendExperimentGate');
+  });
+
+  await checkAsync('[general-real-send expansion] authorized path (no allowlist, any eligible uid) reaches the sole transport exactly once without any experiment gate, at the current "general" stage', async () => {
+    const { db, store } = makeFakeDb();
+    seedOrchestrationPreparingFixture(store, { rollout: { mode: 'general-real-send' }, experimentGate: null });
     const { transport, callCount } = fakeTransport(() => Promise.resolve(ACCEPTED_OUTCOME));
     const result = await freshSenderFor(db, transport).processControlledSendCandidate(ORCH_REMINDER_ID, ORCH_INSTALLATION_ID, 1);
     return callCount() === 1 && result.outcome === 'terminalized' && result.state === 'accepted-by-fcm' && !store.has('artifacts/neuroactive-prod/systemConfig/firstRealSendExperimentGate');
@@ -1074,6 +1081,16 @@ async function main(): Promise<void> {
     outcome: 'dry-run-validated',
   });
   await assertZeroTransportOutcome(
+    "[Codex repair] malformed general-real-send (extra field) -> cancelled/rollout-paused, transport never reached",
+    { rollout: { mode: 'general-real-send', extra: true } },
+    { outcome: 'cancelled', reason: 'rollout-paused' }
+  );
+  await assertZeroTransportOutcome(
+    "[Codex repair] malformed general-real-send (allowlistUids attached, exploit shape reported by Codex) -> cancelled/rollout-paused, transport never reached",
+    { rollout: { mode: 'general-real-send', allowlistUids: ['some-other-uid'] } },
+    { outcome: 'cancelled', reason: 'rollout-paused' }
+  );
+  await assertZeroTransportOutcome(
     'allowlisted-real-send but uid NOT in the allowlist -> cancelled/rollout-real-send-not-allowlisted',
     { rollout: { mode: 'allowlisted-real-send', allowlistUids: ['some-other-uid'] } },
     { outcome: 'cancelled', reason: 'rollout-real-send-not-allowlisted' }
@@ -1087,11 +1104,6 @@ async function main(): Promise<void> {
     'allowlisted-real-send with a MALFORMED (non-array) allowlistUids -> parseRolloutConfig fails closed to paused -> cancelled/rollout-paused',
     { rollout: { mode: 'allowlisted-real-send', allowlistUids: 'not-an-array' } },
     { outcome: 'cancelled', reason: 'rollout-paused' }
-  );
-  await assertZeroTransportOutcome(
-    "general-real-send -> cancelled/rollout-real-send-mode-not-permitted-at-stage (this file's stage is 'allowlisted-only', never 'general')",
-    { rollout: { mode: 'general-real-send' } },
-    { outcome: 'cancelled', reason: 'rollout-real-send-mode-not-permitted-at-stage' }
   );
   await assertZeroTransportOutcome(
     'malformed rollout document (no recognizable mode field at all) -> parseRolloutConfig fails closed to paused -> cancelled/rollout-paused',
@@ -1288,7 +1300,7 @@ async function main(): Promise<void> {
   check('reminderDeliverySender.ts contains no console.log/console.error/console.warn/console.info/console.debug calls', !/console\.(log|error|warn|info|debug)\(/.test(senderSource));
   check(
     "reminderDeliverySender.ts's REAL_DELIVERY_STAGE constant is declared as its own const in this file (not re-exported from reminderDeliveryAuth.ts)",
-    /export const REAL_DELIVERY_STAGE: RealDeliveryStage = 'allowlisted-only';/.test(senderCodeOnly)
+    /export const REAL_DELIVERY_STAGE: RealDeliveryStage = 'general';/.test(senderCodeOnly)
   );
   check(
     "'invalid-delivery' is not a reachable SendOutcomeCommitResult outcome anywhere in that type declaration or commitSendOutcome's own body (module-private, post-authorization outcome commit never reaches invalid-delivery — only pre-send authorization does, via SanitizedSendOrchestrationResult)",

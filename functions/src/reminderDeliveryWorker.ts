@@ -52,17 +52,18 @@
 // structurally, not merely by convention.
 //
 // Real send authorization is reachable only when ALL of: reminderDeliveryAuth.ts's own
-// REAL_DELIVERY_STAGE is not 'disabled' (currently 'allowlisted-only'),
-// reminderDeliverySender.ts's OWN, independently-declared REAL_DELIVERY_STAGE also permits it
-// (currently 'allowlisted-only' too, but changed independently — see that file's header for
-// why two separate constants are required), the production rollout document is actually set
-// to 'allowlisted-real-send', and the requesting uid is present in that document's own
-// allowlist — every one of those is verified fresh, inside finalizeDeliveryAuthorization's
-// own transaction, not trusted from any earlier read. General (unrestricted) real sending
-// remains source-disabled regardless of rollout content. Today, the production rollout
-// document remains `{mode:"paused"}` — a source change alone (this commit, undeployed or
-// deployed) does not touch that document, so no send can occur until a separate, later,
-// explicitly authorized rollout mutation.
+// REAL_DELIVERY_STAGE is not 'disabled' (currently 'general', following the
+// separately-reviewed general-real-send expansion round), reminderDeliverySender.ts's OWN,
+// independently-declared REAL_DELIVERY_STAGE also permits it (currently 'general' too, but
+// changed independently — see that file's header for why two separate constants are
+// required), AND the production rollout document is actually set to a real-send-authorizing
+// mode for the requesting uid — 'allowlisted-real-send'/'controlled-beta' with the uid
+// present in that document's own allowlist, or 'general-real-send' with no allowlist
+// requirement at all. Every one of those is verified fresh, inside
+// finalizeDeliveryAuthorization's own transaction, not trusted from any earlier read. A
+// source change alone never touches the rollout document — what actually authorizes a real
+// send in production is entirely a function of that document's own content, changed only by
+// a separate, explicitly authorized rollout mutation.
 //
 // TARGET SNAPSHOT FIELD SHAPE — the original Step 3C design sketch used flat field names
 // (generationAtFanout/tokenVersionAtFanout/installationAudienceIdAtFanout/
@@ -826,9 +827,8 @@ export async function runDeliveryWorkerBatch(): Promise<DeliveryWorkerBatchSumma
 // Whether a real send is EVER actually authorized for a given candidate depends entirely on
 // processControlledSendCandidate's own fresh authorization (both independent
 // REAL_DELIVERY_STAGE constants, and the production rollout document's actual
-// mode/allowlist) — not on anything this scheduled entry point decides. Today the deployed
-// production rollout document remains `{mode:"paused"}`, so 'dry-run-validated' is still the
-// only outcome any real invocation reaches — but that is a rollout-configuration fact, not a
+// mode/allowlist) — not on anything this scheduled entry point decides. Which outcome any
+// real invocation reaches is therefore purely a rollout-configuration fact, never a
 // structural one enforced by this file.
 //
 // CODEX FUNCTION-IDENTITY REPAIR (M1) — this export was previously named

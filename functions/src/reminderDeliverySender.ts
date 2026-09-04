@@ -98,9 +98,12 @@ const capturedCreateGoogleAuthAccessTokenProvider = createGoogleAuthAccessTokenP
 const capturedSendFcmOnce = sendFcmOnce;
 
 // See file header — this is a structural phase lock, not a rollout-config-driven decision.
-// PHASE 3A-3 STEP 3C-5 — 'allowlisted-only'. Must not advance to 'general' without a
-// separately reviewed round.
-export const REAL_DELIVERY_STAGE: RealDeliveryStage = 'allowlisted-only';
+// GENERAL-REAL-SEND EXPANSION (separately reviewed round) — advanced from
+// 'allowlisted-only' to 'general', matching reminderDeliveryAuth.ts's own independently-
+// declared constant (layer A). This file's own guard below still only ever checks
+// `=== 'disabled'` — it was never mode- or allowlist-aware, so no other change is needed
+// here for this expansion.
+export const REAL_DELIVERY_STAGE: RealDeliveryStage = 'general';
 
 // The Firestore artifacts path prefix for this single-project deployment.
 const DELIVERY_APP_ID = 'neuroactive-prod';

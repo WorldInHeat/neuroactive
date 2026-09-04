@@ -370,7 +370,7 @@ async function main(): Promise<void> {
   // SECTION 33 — FINAL AUTHORIZATION
   // =======================================================================================
 
-  check('source-level lock: REAL_DELIVERY_STAGE is "allowlisted-only" (Step 3C-5)', REAL_DELIVERY_STAGE === 'allowlisted-only');
+  check('source-level lock: REAL_DELIVERY_STAGE is "general" (general-real-send expansion)', REAL_DELIVERY_STAGE === 'general');
 
   await checkAsync('happy dry-run -> dry-run-validated', async () => {
     const result = await runHappyPath();
@@ -566,12 +566,49 @@ async function main(): Promise<void> {
   });
 
   await checkAsync(
-    "[3C-5] rollout general-real-send -> cancelled 'rollout-real-send-mode-not-permitted-at-stage' (general remains source-disabled at the allowlisted-only stage, regardless of allowlist content)",
+    '[general-real-send expansion] rollout general-real-send -> sending-authorized for a fully eligible installation, at the current "general" stage, with no allowlist requirement',
     async () => {
       const result = await runHappyPath({ rollout: { mode: 'general-real-send' } });
-      return result.outcome === 'cancelled' && result.reason === 'rollout-real-send-mode-not-permitted-at-stage';
+      return result.outcome === 'sending-authorized';
     }
   );
+
+  await checkAsync(
+    "[Codex repair] malformed general-real-send (extra field) -> cancelled rollout-paused, never sending-authorized, zero send intent",
+    async () => {
+      const { db, store } = makeFakeDb();
+      const fixture = seedHappyPath(db, store, { rollout: { mode: 'general-real-send', extra: true } });
+      const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+      const after = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!;
+      return (
+        result.outcome === 'cancelled' &&
+        result.reason === 'rollout-paused' &&
+        after.state === 'cancelled' &&
+        !Object.prototype.hasOwnProperty.call(after, 'sendExecutionId')
+      );
+    }
+  );
+
+  await checkAsync(
+    "[Codex repair] malformed general-real-send (allowlistUids attached, exploit shape reported by Codex) -> cancelled rollout-paused, never sending-authorized, zero send intent",
+    async () => {
+      const { db, store } = makeFakeDb();
+      const fixture = seedHappyPath(db, store, { rollout: { mode: 'general-real-send', allowlistUids: ['some-other-uid'] } });
+      const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+      const after = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!;
+      return (
+        result.outcome === 'cancelled' &&
+        result.reason === 'rollout-paused' &&
+        after.state === 'cancelled' &&
+        !Object.prototype.hasOwnProperty.call(after, 'sendExecutionId')
+      );
+    }
+  );
+
+  await checkAsync('[general-real-send expansion] rollout paused before final authorization -> cancelled, zero send intent (proves the transactional re-read: fanout-time state is never trusted at finalization)', async () => {
+    const result = await runHappyPath({ rollout: { mode: 'paused' } });
+    return result.outcome === 'cancelled' && result.reason === 'rollout-paused';
+  });
 
   await checkAsync("[3C-5] rollout paused under allowlisted-only stage -> still cancelled rollout-paused (stage change does not affect the paused/dry-run branches at all)", async () => {
     const result = await runHappyPath({ rollout: { mode: 'paused' } });
@@ -583,16 +620,20 @@ async function main(): Promise<void> {
     return result.outcome === 'dry-run-validated';
   });
 
-  await checkAsync('[3C-5] general-real-send cancellation writes zero send-intent fields (state stays cancelled, not sending)', async () => {
-    const { db, store } = makeFakeDb();
+  await checkAsync('[general-real-send expansion] general-real-send authorized write: exact atomic shape, no experiment gate document seeded or touched', async () => {
+    const { db, store, readPaths } = makeFakeDb();
     const fixture = seedHappyPath(db, store, { rollout: { mode: 'general-real-send' } });
-    await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
+    const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
     const after = readDoc(store, deliveryPath(fixture.reminderId, fixture.installationId))!;
     return (
-      after.state === 'cancelled' &&
-      !Object.prototype.hasOwnProperty.call(after, 'sendExecutionId') &&
-      !Object.prototype.hasOwnProperty.call(after, 'sendIntentAtMs') &&
-      after.sendAttemptCount === 0
+      result.outcome === 'sending-authorized' &&
+      after.state === 'sending' &&
+      after.workState === 'terminal' &&
+      after.sendAttemptCount === 1 &&
+      typeof after.sendExecutionId === 'string' &&
+      typeof after.sendIntentAtMs === 'number' &&
+      !readPaths.includes(experimentGatePath()) &&
+      readDoc(store, experimentGatePath()) === undefined
     );
   });
 
@@ -820,10 +861,10 @@ async function main(): Promise<void> {
     })()
   );
   check(
-    'decideFinalAuthorizationRolloutDisposition: general-real-send -> cancel rollout-real-send-mode-not-permitted-at-stage',
+    'decideFinalAuthorizationRolloutDisposition: general-real-send -> proceed-real-send, with the experiment gate NOT required (general-real-send is independent of the legacy one-shot gate, exactly like controlled-beta)',
     (() => {
       const d = decideFinalAuthorizationRolloutDisposition({ mode: 'general-real-send' }, 'user-1');
-      return d.decision === 'cancel' && d.reason === 'rollout-real-send-mode-not-permitted-at-stage';
+      return d.decision === 'proceed-real-send' && d.experimentGateRequired === false;
     })()
   );
   check(
@@ -1087,8 +1128,12 @@ async function main(): Promise<void> {
   // =======================================================================================
 
   check(
-    'reminderDeliveryAuth.ts asserts REAL_DELIVERY_STAGE === "general" throws, BEFORE any Firestore access (layer A structural lock — updated in Step 3C-5 to permit the reviewed "allowlisted-only" stage while still failing loudly on an unreviewed advance to "general")',
-    codeOnly.includes("if (REAL_DELIVERY_STAGE === 'general')") && codeOnly.includes('must not advance to "general"')
+    'reminderDeliveryAuth.ts no longer contains the "must not advance to general" tripwire (removed deliberately this round — general-real-send is now the reviewed, armed stage; a stale leftover tripwire here would throw on every real-send-authorizing call)',
+    !codeOnly.includes("if (REAL_DELIVERY_STAGE === 'general')") && !codeOnly.includes('must not advance to "general"')
+  );
+  check(
+    'reminderDeliveryAuth.ts exports REAL_DELIVERY_STAGE with the literal value "general" (source-text check, independent of the runtime check above)',
+    /export const REAL_DELIVERY_STAGE: RealDeliveryStage = 'general';/.test(codeOnly)
   );
   check(
     "reminderDeliveryAuth.ts no longer contains the old, now-incorrect 'disabled'-only guard condition",
@@ -1566,11 +1611,11 @@ async function main(): Promise<void> {
     return result.outcome === 'cancelled' && result.reason === 'rollout-paused' && readDoc(store, experimentGatePath()) === undefined;
   });
 
-  await checkAsync('[A19] general-real-send under allowlisted-only stage -> gate never read (none seeded; outcome is the existing stage-rejection reason, not experiment-gate-missing)', async () => {
-    const { db, store } = makeFakeDb();
+  await checkAsync('[general-real-send expansion] general-real-send at the current "general" stage -> authorized, gate never read (none seeded; sending-authorized does not require experiment-gate-missing)', async () => {
+    const { db, store, readPaths } = makeFakeDb();
     const fixture = seedHappyPath(db, store, { rollout: { mode: 'general-real-send' } });
     const result = await finalizeDeliveryAuthorization(db, fixture.deliveryRef as FirebaseFirestore.DocumentReference, 1, TEST_ACCESS_TOKEN);
-    return result.outcome === 'cancelled' && result.reason === 'rollout-real-send-mode-not-permitted-at-stage' && readDoc(store, experimentGatePath()) === undefined;
+    return result.outcome === 'sending-authorized' && !readPaths.includes(experimentGatePath()) && readDoc(store, experimentGatePath()) === undefined;
   });
 
   await checkAsync('[A20] non-allowlisted uid under allowlisted-real-send -> gate never read (none seeded; outcome is rollout-real-send-not-allowlisted, not experiment-gate-missing)', async () => {

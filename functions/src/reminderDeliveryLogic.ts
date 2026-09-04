@@ -757,7 +757,21 @@ export function parseRolloutConfig(raw: unknown): ParsedRolloutConfig {
   const mode = raw.mode;
   if (mode === 'paused') return { mode: 'paused' };
   if (mode === 'dry-run') return { mode: 'dry-run' };
-  if (mode === 'general-real-send') return { mode: 'general-real-send' };
+
+  // CODEX REPAIR (general-real-send exact-schema enforcement): unlike 'paused'/'dry-run'
+  // (which carry no other meaningful fields), 'general-real-send' authorizes ANY
+  // otherwise-eligible uid with no allowlist check — a document carrying a stray
+  // `allowlistUids` or any other extra field could otherwise be misread as narrower than
+  // it actually is (an operator seeing an allowlist array might assume it's honored, when
+  // in fact general-real-send ignores it entirely and authorizes everyone). Matching
+  // 'controlled-beta''s exact-shape discipline below: the document must be exactly one own
+  // enumerable key, named exactly `mode`. Any extra/alternate field fails closed to
+  // 'paused' semantics — no coercion, no key filtering, no partial acceptance.
+  if (mode === 'general-real-send') {
+    const keys = Object.keys(raw);
+    if (keys.length !== 1 || keys[0] !== 'mode') return { mode: 'paused' };
+    return { mode: 'general-real-send' };
+  }
 
   if (mode === 'allowlisted-real-send') {
     const allowlistUids = raw.allowlistUids;
@@ -821,21 +835,27 @@ export type FanoutDecision = { shouldFanOut: boolean };
 // allowlisted uids — a non-allowlisted uid under either mode behaves exactly like
 // 'paused' (Step 2's legacy dry-run-complete path, Step 3C never engages).
 //
-// CODEX REPAIR (launch-blocking fanout containment): 'general-real-send' NEVER fans out
-// here, full stop — general rollout is intentionally unavailable at the current
-// 'allowlisted-only' product stage (see REAL_DELIVERY_STAGE in reminderDeliveryAuth.ts /
-// reminderDeliverySender.ts), and fanout must fail closed BEFORE creating any delivery
-// child, not rely on final authorization to cancel work that should never have been
-// created. This is a deliberate, hard-coded floor for the current stage, not a
-// stage-parameterized decision — a future, separately-reviewed expansion of general
-// rollout would need to revisit this exact line, not merely flip a stage constant
-// elsewhere.
+// GENERAL-REAL-SEND EXPANSION (the separately-reviewed round the prior launch-blocking
+// fanout containment repair explicitly deferred to): 'general-real-send' fans out
+// unconditionally, for ANY validly-shaped uid — there is no allowlist to check
+// membership against, by design, matching 'dry-run''s "always fans out" shape. This is
+// deliberately NOT stage-aware (this function has no REAL_DELIVERY_STAGE parameter and
+// never has) — fanout eligibility and real-send AUTHORIZATION remain two independently
+// enforced concerns, exactly as they already are for every other mode: fanout merely
+// starts the pipeline (creating a delivery child in 'preparing'), while the actual
+// real-send decision is re-made, transactionally, by decideStagedRealSendAuthorization
+// inside finalizeDeliveryAuthorization — the same authority boundary that already gates
+// allowlisted-real-send and controlled-beta. A rollout mode of 'general-real-send' while
+// REAL_DELIVERY_STAGE is still 'disabled' or 'allowlisted-only' therefore still fails
+// closed at final authorization (reason 'stage-disabled'/'mode-not-permitted-at-current-stage'),
+// exactly like every other mode/stage mismatch — this function does not need to know
+// the stage to be correct.
 export function decideShouldFanOut(rawConfig: unknown, uid: unknown): FanoutDecision {
   if (!isValidIdForPath(uid)) return { shouldFanOut: false };
   const config = parseRolloutConfig(rawConfig);
   if (config.mode === 'paused') return { shouldFanOut: false };
   if (config.mode === 'dry-run') return { shouldFanOut: true };
-  if (config.mode === 'general-real-send') return { shouldFanOut: false };
+  if (config.mode === 'general-real-send') return { shouldFanOut: true };
   return { shouldFanOut: config.allowlistUids.includes(uid) };
 }
 
@@ -1255,10 +1275,12 @@ export function validatePersistedDeliveryForProcessing(refId: unknown, data: Rec
 // PHASE 3A-3 STEP 3C-4 — STAGED REAL-SEND SOURCE LOCK (pure decision only).
 //
 // REAL_DELIVERY_ENABLED (a single boolean) is replaced by a three-value staged lock, per
-// the Codex-approved Step 3C-4 design: 'disabled' (this phase's only permitted value —
-// zero rollout content can ever authorize a real send), 'allowlisted-only' (the current
-// stage — only 'allowlisted-real-send' or 'controlled-beta', for an allowlisted uid, may
-// authorize), and 'general' (a future, separately-reviewed phase beyond that). This type
+// the Codex-approved Step 3C-4 design: 'disabled' (zero rollout content can ever
+// authorize a real send), 'allowlisted-only' (only 'allowlisted-real-send' or
+// 'controlled-beta', for an allowlisted uid, may authorize), and 'general' (the current
+// stage, following its own separately-reviewed round — any otherwise-eligible uid under
+// 'general-real-send' may authorize, in addition to everything 'allowlisted-only' already
+// permitted). This type
 // and decideStagedRealSendAuthorization are pure/shared so BOTH of the two independent
 // enforcement layers (reminderDeliveryAuth.ts's authorization boundary, and
 // reminderDeliverySender.ts's immediate pre-transport assertion) consult the exact same
