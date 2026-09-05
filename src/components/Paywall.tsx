@@ -1,5 +1,5 @@
 // src/components/Paywall.tsx
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Auth } from 'firebase/auth';
 import { ArrowLeft, User, CheckCircle, CreditCard, AlertCircle } from 'lucide-react';
 import { createCheckoutSession, type PriceKey } from '../services/stripe';
@@ -83,6 +83,19 @@ export default function Paywall({
   // Treat the brief/no-user edge the same as an anonymous session: purchasing stays
   // disabled and account-access controls remain available until a real user exists.
   const isAnonymous = !auth?.currentUser || auth.currentUser.isAnonymous;
+
+  // App.tsx has no router — every view (this one included) is a conditional render at a
+  // fixed document root, never a real navigation, so the browser never resets scroll on
+  // its own when Paywall mounts. Deliberately scoped to this component only (not a
+  // shared/global scroll-reset hook) and deliberately not persisted to sessionStorage —
+  // every fresh entry into Paywall should start at the top, not wherever it was left.
+  // window.scrollTo runs first so the final position is deterministic before focus
+  // moves, and focus uses preventScroll so it can't trigger a second, separate jump.
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    headingRef.current?.focus({ preventScroll: true });
+  }, []);
 
   return (
     <div className="min-h-screen bg-[#080d1a] overflow-y-auto">
@@ -326,7 +339,13 @@ export default function Paywall({
           >
             <User size={36} className="text-[#00d4c8]" />
           </div>
-          <h1 className="text-2xl font-extrabold text-[#f0f4f8] mb-2">Dr. Adam Bruene, D.C., Cert. MDT, DNSP</h1>
+          <h1
+            ref={headingRef}
+            tabIndex={-1}
+            className="text-2xl font-extrabold text-[#f0f4f8] mb-2 focus:outline-none"
+          >
+            Dr. Adam Bruene, D.C., Cert. MDT, DNSP
+          </h1>
           <p className="text-[#6b849e] text-sm leading-relaxed max-w-sm mx-auto">
             The only app built on dual certification in McKenzie MDT and Dynamic Neuromuscular Stabilization
           </p>

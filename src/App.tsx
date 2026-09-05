@@ -97,6 +97,88 @@ const EMAIL_LINK_STORAGE_KEY = 'na_email_for_signin';
 // regardless of which host the user happened to be on when they requested it.
 const EMAIL_LINK_CONTINUE_URL = 'https://neuroactivehealth.com/';
 
+// Session-only "which screen was I on" restoration, so a refresh from inside the app
+// doesn't always drop back to Home. Deliberately NOT a routing/history mechanism — it
+// never touches the URL or window.history, so browser Back/Forward is completely
+// unaffected (unchanged from today's no-op behavior). It only ever supplies the initial
+// value for currentView; auth/entitlement are re-checked by every downstream view
+// exactly as they already are when reached by normal in-app navigation, so a restored
+// view can never show more than a fresh manual visit to that view would.
+const CURRENT_VIEW_STORAGE_KEY = 'na_current_view';
+// Only these are ever persisted/restored — paywall, assessment, and any other
+// transient/one-shot flow (including the checkout-return query-param handling above)
+// are deliberately excluded, see the persistence effect below.
+const RESTORABLE_VIEWS = ['dashboard', 'library', 'settings', 'dns-course'] as const;
+type RestorableView = (typeof RESTORABLE_VIEWS)[number];
+function isRestorableView(value: unknown): value is RestorableView {
+  return typeof value === 'string' && (RESTORABLE_VIEWS as readonly string[]).includes(value);
+}
+
+// DNSCourseView persists its own activeTab/viewingDay under this same-named key
+// (duplicated there rather than imported, since this patch is scoped to not add new
+// shared modules) — kept here only so sign-out/uid-change resets in this file can clear
+// it directly. If that key name is ever changed, update both files together.
+const DNS_COURSE_SUBVIEW_STORAGE_KEY = 'na_dns_course_subview';
+
+// Records which Firebase UID the two keys above currently belong to — never a token,
+// email, or anything else that identifies who the user IS, purely a same-tab ownership
+// binding so a later page load can tell "this is the same persisted session refreshing"
+// apart from "a different account now occupies this tab." Written/checked only inside
+// the onAuthStateChanged handler below, where the authoritative uid is actually known —
+// see the state machine documented there.
+const NAV_OWNER_STORAGE_KEY = 'na_nav_owner_uid';
+
+// Every sessionStorage/localStorage access in this file goes through one of these six —
+// a throwing or unavailable Storage implementation (private-browsing edge cases,
+// disabled storage, quota errors, etc.) must never break app startup, navigation, or the
+// email-link/Google-redirect sign-in flows; on any failure these simply behave as if
+// nothing were stored, and every existing call site below (including the ones that
+// predate this patch — REDIRECT_PENDING_KEY and EMAIL_LINK_STORAGE_KEY) now goes through
+// them. This does NOT make storage durable or retried — it only guarantees a throw here
+// can never propagate up and abort rendering.
+function safeSessionStorageGet(key: string): string | null {
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function safeSessionStorageSet(key: string, value: string): void {
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {
+    // best-effort only
+  }
+}
+function safeSessionStorageRemove(key: string): void {
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    // best-effort only
+  }
+}
+function safeLocalStorageGet(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function safeLocalStorageSet(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // best-effort only
+  }
+}
+function safeLocalStorageRemove(key: string): void {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // best-effort only
+  }
+}
+
 // signInWithRedirect/linkWithRedirect navigate the page away on success, so normally
 // this promise's resolution is moot — execution just stops. But if the browser fails to
 // actually perform that navigation (observed as an indefinite hang with no throw and no
@@ -1081,7 +1163,10 @@ const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUn
 
 // --- Main App Component ---
 export default function App() {
-  const [currentView, setCurrentView] = useState<'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings' | 'dns-course'>('landing');
+  const [currentView, setCurrentView] = useState<'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings' | 'dns-course'>(() => {
+    const stored = safeSessionStorageGet(CURRENT_VIEW_STORAGE_KEY);
+    return isRestorableView(stored) ? stored : 'landing';
+  });
   const [currentNodeId, setCurrentNodeId] = useState<string>('start');
   const [history, setHistory] = useState<string[]>([]);
   const [isPremium, setIsPremium] = useState(false);
@@ -1141,9 +1226,34 @@ export default function App() {
   // new uid. Renamed accordingly.
   const userDataUidRef = useRef<string | null>(null);
 
+  // DNS sub-view hydration signal (see DNSCourseView's dnsHydrationReady prop below).
+  // "Hydrated" means: the first userData/main snapshot AND the first entitlement
+  // snapshot have each resolved — successfully, as a deterministic absence
+  // (userData doc doesn't exist), or as an error (fail-closed) — for the SAME uid this
+  // ref currently names. Reset alongside userDataUidRef's own reset (same moments: first
+  // resolution this page load, and any genuine uid change) since that's exactly when
+  // fresh listeners are (re)subscribed and any previous uid's resolution state stops
+  // applying. hydrationUidRef is the single source of truth for "which uid do the two
+  // flags below describe" — both onSnapshot callbacks compare against it (not against
+  // their own closure's user.uid in isolation) before flipping either flag, so a
+  // callback that was already in flight when a NEWER uid supersedes it can never mark
+  // that newer uid hydrated (the ref will already point at the newer uid by the time the
+  // stale callback fires, since the ref update happens synchronously before the new
+  // listeners are even registered).
+  const hydrationUidRef = useRef<string | null>(null);
+  const [userDataHydrated, setUserDataHydrated] = useState(false);
+  const [entitlementHydrated, setEntitlementHydrated] = useState(false);
+
+  // Distinguishes the FIRST onAuthStateChanged resolution this page load from every
+  // later one — see the navigation-ownership state machine documented at its one call
+  // site below. Deliberately separate from userDataUidRef (which starts null too, but
+  // guards an unrelated concern: resetting dnsCourse/history/etc. before hydration —
+  // that reset is correct to run on first resolution AND intentionally left unchanged).
+  const navOwnershipInitializedRef = useRef(false);
+
   // Captured once at mount, before anything has a chance to clear the flag — tells us
   // whether this page load is potentially the return leg of a redirect sign-in.
-  const wasRedirectPendingRef = useRef(sessionStorage.getItem(REDIRECT_PENDING_KEY) === '1');
+  const wasRedirectPendingRef = useRef(safeSessionStorageGet(REDIRECT_PENDING_KEY) === '1');
   // Set once onAuthStateChanged has fired for the first time this session.
   const [authStateResolved, setAuthStateResolved] = useState(false);
   // Set once getRedirectResult has settled (resolved or rejected). Only relevant when
@@ -1279,7 +1389,7 @@ export default function App() {
     completeEmailLinkSignIn();
 
     getRedirectResult(auth).then(async (result) => {
-      sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+      safeSessionStorageRemove(REDIRECT_PENDING_KEY);
       if (!result) {
         // A redirect was in flight (per the flag set before we navigated away) but
         // Firebase couldn't resolve it on return — e.g. the pending-redirect state didn't
@@ -1297,7 +1407,7 @@ export default function App() {
       await saveUserData({ authProvider: 'google' });
       setRedirectResultResolved(true);
     }).catch(async (error: any) => {
-      sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+      safeSessionStorageRemove(REDIRECT_PENDING_KEY);
       setRedirectResultResolved(true);
       if (
         error.code === 'auth/credential-already-in-use' ||
@@ -1309,11 +1419,11 @@ export default function App() {
           'This Google identity already belongs to an existing NeuroActive account. Continuing will switch you from this temporary session to that existing account, and progress from this temporary session will not automatically transfer. Continue?'
         );
         if (proceed) {
-          sessionStorage.setItem(REDIRECT_PENDING_KEY, '1');
+          safeSessionStorageSet(REDIRECT_PENDING_KEY, '1');
           try {
             await withRedirectTimeout(signInWithRedirect(auth, googleProvider));
           } catch (err) {
-            sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+            safeSessionStorageRemove(REDIRECT_PENDING_KEY);
             const message = err instanceof Error ? err.message : undefined;
             if (message !== 'redirect-timeout') console.error('Redirect sign-in error:', err);
             setSignInError('Sign-in failed. Please try again.');
@@ -1349,6 +1459,19 @@ export default function App() {
       setTimeout(() => setPaymentMessage(null), 5000);
     }
   }, []);
+
+  // Keep the session-only view-restoration key (see CURRENT_VIEW_STORAGE_KEY above) in
+  // sync with currentView. Only ever a same-tab refresh convenience — never a routing
+  // mechanism — so this intentionally does not touch the URL or window.history.
+  useEffect(() => {
+    if (isRestorableView(currentView)) {
+      safeSessionStorageSet(CURRENT_VIEW_STORAGE_KEY, currentView);
+    } else {
+      // Landing/assessment/paywall/etc. — never restorable, and a refresh from one of
+      // these should fall back to landing, not to whatever restorable view preceded it.
+      safeSessionStorageRemove(CURRENT_VIEW_STORAGE_KEY);
+    }
+  }, [currentView]);
 
   // Firebase Auth & Data Sync
   useEffect(() => {
@@ -1386,6 +1509,53 @@ export default function App() {
           }).catch((err) => console.warn('[Stripe] customer doc check failed:', err));
         }
 
+        // --- Navigation-ownership state machine ---
+        // Decides, independently of userDataUidRef below, whether the session-only
+        // CURRENT_VIEW_STORAGE_KEY/DNS_COURSE_SUBVIEW_STORAGE_KEY may be trusted. Five
+        // states, distinguished by (a) navOwnershipInitializedRef — has
+        // onAuthStateChanged fired at all yet THIS page load — and (b) whether the
+        // stored NAV_OWNER_STORAGE_KEY uid matches the uid we were just handed:
+        //   1. Unresolved initial auth — the state before this callback has ever run.
+        //      Nothing to decide yet; currentView/DNSCourseView's own lazy
+        //      sessionStorage reads already happened at mount (synchronously, before any
+        //      effect), so whatever was stored is already the in-memory value — see (G).
+        //   2. Initial same-user restoration — first firing this page load AND the
+        //      stored owner uid exactly equals this uid: a normal refresh of the same
+        //      persisted session. Nothing is cleared; the already-restored currentView
+        //      (and, once DNSCourseView mounts, its own sub-view) are left exactly as
+        //      they were lazy-initialized. This is the case the previous candidate got
+        //      wrong — it treated navOwnershipInitializedRef's null-on-mount start as
+        //      "owner changed" and wiped both keys before DNSCourseView ever got a
+        //      chance to mount and read them (DNSCourseView only mounts once authLoading
+        //      drops, which structurally cannot happen before this callback's first run
+        //      completes — so the old code's clear always won the race).
+        //   3. Initial signed-out state — handled in the `else` branch below, not here.
+        //   4. Real UID change — NOT the first firing this page load, and userDataUidRef
+        //      (below) shows the uid actually changed from what this tab already had.
+        //   5. Explicit logout — handled directly in handleLogout, not here.
+        // Case 2 is the only one that does nothing; every other reachable case here
+        // (first-resolution-but-different-or-missing-owner, or a genuine later change)
+        // fails closed: clear both keys, the owner key itself, and reset the in-memory
+        // currentView to 'landing' so a since-mounted DNSCourseView can't keep showing a
+        // previous owner's sub-view either.
+        const isFirstAuthResolutionThisPageLoad = !navOwnershipInitializedRef.current;
+        navOwnershipInitializedRef.current = true;
+        const storedNavOwnerUid = safeSessionStorageGet(NAV_OWNER_STORAGE_KEY);
+        const isSameOwnerRefresh = isFirstAuthResolutionThisPageLoad && storedNavOwnerUid === user.uid;
+        const isRealUidChange = !isFirstAuthResolutionThisPageLoad && userDataUidRef.current !== user.uid;
+        if (!isSameOwnerRefresh && (isFirstAuthResolutionThisPageLoad || isRealUidChange)) {
+          // Fail-closed cases: first resolution with a missing/malformed/different owner
+          // (case 2's negation), or a genuine same-tab uid change (case 4).
+          safeSessionStorageRemove(CURRENT_VIEW_STORAGE_KEY);
+          safeSessionStorageRemove(DNS_COURSE_SUBVIEW_STORAGE_KEY);
+          safeSessionStorageRemove(NAV_OWNER_STORAGE_KEY);
+          setCurrentView('landing');
+        }
+        // Whichever case this was, this uid now owns whatever gets stored from here on —
+        // stamped unconditionally so a same-owner refresh's already-correct tag is left
+        // alone, and every other case gets a fresh, correct tag for its next refresh.
+        safeSessionStorageSet(NAV_OWNER_STORAGE_KEY, user.uid);
+
         if (userDataUidRef.current !== user.uid) {
           // uid actually changed — synchronously reset every UID-scoped field to its safe
           // default BEFORE this uid's userData listener has any chance to hydrate it, so a
@@ -1399,6 +1569,9 @@ export default function App() {
           // whenever the new doc lacked that field — this closes that gap. Linking a new
           // Google/email identity onto an existing (anonymous) session keeps the same uid,
           // so this branch doesn't fire and progress is left untouched, same as before.
+          // Intentionally unrelated to the navigation-ownership decision above (that one
+          // has its own first-resolution-aware logic) — this fires on every genuine uid
+          // change AND on the very first resolution, exactly as it always has.
           userDataUidRef.current = user.uid;
           setDnsCourse(DEFAULT_DNS_COURSE);
           setActiveJourney(null);
@@ -1411,29 +1584,57 @@ export default function App() {
           setTroubleshootingAttempts(0);
           setHasWatchedWelcome(false);
           setHasWatchedAssessmentIntro(false);
+          // Fresh listeners are about to be (re)subscribed below for this uid — neither
+          // has resolved yet, so hydration starts false again regardless of whether this
+          // is a genuine account switch or just this page load's first resolution of an
+          // already-persisted session (DNSCourseView's sub-view restoration can't safely
+          // proceed against the DEFAULT_DNS_COURSE/'loading' values just set above — see
+          // dnsHydrationReady below).
+          hydrationUidRef.current = user.uid;
+          setUserDataHydrated(false);
+          setEntitlementHydrated(false);
         }
 
         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'userData', 'main');
+        const userDataListenerUid = user.uid; // closed over below — see hydrationUidRef comment above
 
-        unsubscribeSnapshot = onSnapshot(docRef, (docSnap) => {
-          if (!docSnap.exists()) return;
+        unsubscribeSnapshot = onSnapshot(
+          docRef,
+          (docSnap) => {
+            if (!docSnap.exists()) {
+              // Deterministic absence, not "still loading" — a brand-new account with no
+              // document yet is a real, resolved state, so hydration still proceeds; the
+              // already-reset defaults above are correct and simply stay.
+              if (hydrationUidRef.current === userDataListenerUid) setUserDataHydrated(true);
+              return;
+            }
 
-          const data = docSnap.data() as Partial<UserData>;
+            const data = docSnap.data() as Partial<UserData>;
 
-          if (typeof data.activeJourney !== 'undefined') setActiveJourney(data.activeJourney ?? null);
-          if (Array.isArray(data.activePrescriptions)) setActivePrescriptions(data.activePrescriptions);
-          if (Array.isArray(data.history)) setHistory(data.history);
-          if (typeof data.currentNodeId === 'string') setCurrentNodeId(data.currentNodeId);
-          if (typeof data.isPremium === 'boolean') setIsPremium(data.isPremium);
-          if (Array.isArray(data.painLog)) setPainLog(data.painLog);
-          // if (data.phaseLocks && typeof data.phaseLocks === 'object') setPhaseLocks(data.phaseLocks as Record<string, number>);
-          // if (typeof data.lastCheckInAt === 'string') setLastCheckInAt(data.lastCheckInAt);
-          if (typeof data.hasAgreedToTerms === 'boolean') setHasAgreedToTerms(data.hasAgreedToTerms);
-          setTroubleshootingAttempts(data.troubleshootingAttempts ?? 0);
-          setHasWatchedWelcome(data.hasWatchedWelcome ?? false);
-          setHasWatchedAssessmentIntro(data.hasWatchedAssessmentIntro ?? false);
-          if (data.dnsCourse) setDnsCourse(normalizeDnsCourse(data.dnsCourse));
-        });
+            if (typeof data.activeJourney !== 'undefined') setActiveJourney(data.activeJourney ?? null);
+            if (Array.isArray(data.activePrescriptions)) setActivePrescriptions(data.activePrescriptions);
+            if (Array.isArray(data.history)) setHistory(data.history);
+            if (typeof data.currentNodeId === 'string') setCurrentNodeId(data.currentNodeId);
+            if (typeof data.isPremium === 'boolean') setIsPremium(data.isPremium);
+            if (Array.isArray(data.painLog)) setPainLog(data.painLog);
+            // if (data.phaseLocks && typeof data.phaseLocks === 'object') setPhaseLocks(data.phaseLocks as Record<string, number>);
+            // if (typeof data.lastCheckInAt === 'string') setLastCheckInAt(data.lastCheckInAt);
+            if (typeof data.hasAgreedToTerms === 'boolean') setHasAgreedToTerms(data.hasAgreedToTerms);
+            setTroubleshootingAttempts(data.troubleshootingAttempts ?? 0);
+            setHasWatchedWelcome(data.hasWatchedWelcome ?? false);
+            setHasWatchedAssessmentIntro(data.hasWatchedAssessmentIntro ?? false);
+            if (data.dnsCourse) setDnsCourse(normalizeDnsCourse(data.dnsCourse));
+            if (hydrationUidRef.current === userDataListenerUid) setUserDataHydrated(true);
+          },
+          (err) => {
+            console.warn('[UserData] snapshot failed:', err);
+            // Fail closed: an errored listener is still a RESOLVED state for hydration
+            // purposes (never an indefinite wait) — dnsCourse/etc. simply stay at the
+            // safe defaults already set above, exactly as a genuinely-missing document
+            // would leave them.
+            if (hydrationUidRef.current === userDataListenerUid) setUserDataHydrated(true);
+          }
+        );
 
         // DNS Foundations entitlement — server-written only (functions/src/index.ts
         // recomputeDnsEntitlement), never client-writable (see firestore.rules). This is
@@ -1452,19 +1653,25 @@ export default function App() {
           setDnsEntitlementSource(null);
         }
         const entitlementRef = doc(db, 'artifacts', appId, 'users', user.uid, 'entitlement', 'main');
+        const entitlementListenerUid = user.uid; // closed over below — see hydrationUidRef comment above
         unsubscribeEntitlement = onSnapshot(
           entitlementRef,
           (snap) => {
             const entitled = snap.exists() && snap.data()?.dnsFoundationsEntitled === true;
             setDnsEntitlementState(entitled ? 'entitled' : 'not-entitled');
             setDnsEntitlementSource(entitled ? (snap.data()?.source ?? null) : null);
+            if (hydrationUidRef.current === entitlementListenerUid) setEntitlementHydrated(true);
           },
           (err) => {
             console.warn('[Entitlement] snapshot failed:', err);
             // Fail closed: an errored listener must never leave a stale 'entitled' (or
-            // indefinite 'loading') on screen.
+            // indefinite 'loading') on screen — and, same as userData's error path above,
+            // still counts as RESOLVED for hydration purposes (never an indefinite wait,
+            // and never granting QA/inaccessible-day restoration from errored data, since
+            // 'not-entitled' is exactly what isQaOwner already treats as non-owner).
             setDnsEntitlementState('not-entitled');
             setDnsEntitlementSource(null);
+            if (hydrationUidRef.current === entitlementListenerUid) setEntitlementHydrated(true);
           }
         );
 
@@ -1520,6 +1727,13 @@ export default function App() {
         setDnsEntitlementSource(null);
         userDataUidRef.current = null;
         setDnsCourse(DEFAULT_DNS_COURSE);
+        // No uid at all — nothing can be "hydrated" for it. Cleared here mainly for
+        // internal consistency (DNSCourseView is unreachable while signed out anyway,
+        // since entitlement can never read 'entitled' with no uid); the real re-arm for
+        // the next signed-in uid happens in the `if (user)` branch above regardless.
+        hydrationUidRef.current = null;
+        setUserDataHydrated(false);
+        setEntitlementHydrated(false);
         // Symmetric with the userDataUidRef reset in the `if (user)` branch above — closes
         // the same staleness gap for the brief window between sign-out and the fresh
         // anonymous sign-in below resolving, rather than relying solely on the uid-changed
@@ -1534,9 +1748,22 @@ export default function App() {
         setTroubleshootingAttempts(0);
         setHasWatchedWelcome(false);
         setHasWatchedAssessmentIntro(false);
+        // Navigation-ownership state machine, "signed-out" state (see the `if (user)`
+        // branch above for the full state list) — this branch fires both for the
+        // FIRST resolution of a genuinely fresh/unauthenticated tab and for the brief
+        // window between an explicit sign-out and the fresh anonymous sign-in below
+        // resolving. Neither case has a uid to own anything, so this always fails
+        // closed: clear both nav keys AND the owner tag itself, and force the
+        // in-memory view back to the safe signed-out default — never left to "whatever
+        // it already was," since a stray restored view here would have no verified
+        // owner behind it at all.
+        navOwnershipInitializedRef.current = true;
+        safeSessionStorageRemove(CURRENT_VIEW_STORAGE_KEY);
+        safeSessionStorageRemove(DNS_COURSE_SUBVIEW_STORAGE_KEY);
+        safeSessionStorageRemove(NAV_OWNER_STORAGE_KEY);
+        setCurrentView('landing');
         // No session at all — sign in anonymously in the background so guest access is
-        // frictionless. The user stays on whatever view they're on (default: landing);
-        // no separate sign-in screen or explicit "continue as guest" click required.
+        // frictionless.
         if (auth) {
           signInAnonymously(auth).catch((err) => console.error('Anonymous sign-in failed:', err));
         }
@@ -1626,6 +1853,14 @@ export default function App() {
     setHasWatchedAssessmentIntro(false);
     setAuthUser(null);
     setCurrentView('landing');
+    // Navigation-ownership state machine, "explicit logout" state — explicit, immediate
+    // clear of all three (the persistence effect would also drop CURRENT_VIEW_STORAGE_KEY
+    // once currentView re-renders as 'landing', and the auth listener's own signed-out
+    // branch clears all three again moments later once signOut resolves, but sign-out is
+    // exactly the case called out to never depend on either of those timings).
+    safeSessionStorageRemove(CURRENT_VIEW_STORAGE_KEY);
+    safeSessionStorageRemove(DNS_COURSE_SUBVIEW_STORAGE_KEY);
+    safeSessionStorageRemove(NAV_OWNER_STORAGE_KEY);
     setAutoplayToken(null);
   };
 
@@ -1633,7 +1868,7 @@ export default function App() {
     if (!auth) return;
     setSignInLoading(true);
     setSignInError(null);
-    sessionStorage.setItem(REDIRECT_PENDING_KEY, '1');
+    safeSessionStorageSet(REDIRECT_PENDING_KEY, '1');
     try {
       const currentUser = auth.currentUser;
       // Full-page redirect, on both mobile and desktop — result handled by the shared
@@ -1651,7 +1886,7 @@ export default function App() {
         // currentUser is either null or already a different permanent uid — signInWithRedirect
         // can replace it with a different account entirely.
         if (notifications.isAccountSwitchBusy()) {
-          sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+          safeSessionStorageRemove(REDIRECT_PENDING_KEY);
           setSignInError('An account change is already in progress on this device. Please wait a moment and try again.');
           return;
         }
@@ -1663,7 +1898,7 @@ export default function App() {
         // proceeds immediately with no notification-related blocking at all.
         const prepareResult = await notifications.prepareForAccountSwitch();
         if (prepareResult === 'blocked') {
-          sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+          safeSessionStorageRemove(REDIRECT_PENDING_KEY);
           setSignInError('Could not prepare this device for an account change. Please check your connection and try again.');
           return;
         }
@@ -1673,7 +1908,7 @@ export default function App() {
         await withRedirectTimeout(signInWithRedirect(auth, googleProvider));
       }
     } catch (error: any) {
-      sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+      safeSessionStorageRemove(REDIRECT_PENDING_KEY);
       // Covers the (rare) case where signInWithRedirect throws before actually navigating
       // away — no page reload happens, so the reconciliation effect won't naturally re-fire
       // on its own; this is what picks up and cancels the just-prepared transfer instead.
@@ -1703,7 +1938,7 @@ export default function App() {
         url: EMAIL_LINK_CONTINUE_URL,
         handleCodeInApp: true,
       });
-      window.localStorage.setItem(EMAIL_LINK_STORAGE_KEY, email);
+      safeLocalStorageSet(EMAIL_LINK_STORAGE_KEY, email);
     } catch (error) {
       setSignInError(mapEmailAuthError(error));
       throw error;
@@ -1721,7 +1956,7 @@ export default function App() {
   const completeEmailLinkSignIn = async () => {
     if (!auth || !isSignInWithEmailLink(auth, window.location.href)) return;
 
-    let email = window.localStorage.getItem(EMAIL_LINK_STORAGE_KEY);
+    let email = safeLocalStorageGet(EMAIL_LINK_STORAGE_KEY);
     if (!email) {
       // Opened on a different device/browser than the one that requested the link —
       // fall back to asking, rather than failing silently.
@@ -1785,7 +2020,7 @@ export default function App() {
         await signInWithEmailLink(auth, email, window.location.href);
       }
 
-      window.localStorage.removeItem(EMAIL_LINK_STORAGE_KEY);
+      safeLocalStorageRemove(EMAIL_LINK_STORAGE_KEY);
       const clean = new URL(window.location.href);
       ['apiKey', 'oobCode', 'mode', 'lang', 'continueUrl'].forEach((key) => clean.searchParams.delete(key));
       window.history.replaceState({}, '', clean.toString());
@@ -2924,6 +3159,21 @@ export default function App() {
           onUpdateDnsCourse={updateDnsCourse}
           today={todayLocalISO()}
           dnsEntitlementState={dnsEntitlementState}
+          // True only once BOTH the first userData/main snapshot and the first
+          // entitlement snapshot have resolved (success, deterministic absence, or
+          // error — see the onSnapshot callbacks above) for the exact uid this ref
+          // currently names. DNSCourseView must not validate its restored sub-view
+          // against dnsCourse/dnsEntitlementState until this is true — those props are
+          // still DEFAULT_DNS_COURSE/'loading' placeholders until then, not real data.
+          // Re-derived on every render (no memoization) — hydrationUidRef only ever
+          // changes synchronously inside the auth effect above, in lockstep with the two
+          // flags, so this can't observe an inconsistent combination.
+          dnsHydrationReady={
+            hydrationUidRef.current !== null &&
+            hydrationUidRef.current === (auth?.currentUser?.uid ?? null) &&
+            userDataHydrated &&
+            entitlementHydrated
+          }
           onBack={() => setCurrentView('dashboard')}
           onOpenSettings={() => setCurrentView('settings')}
           auth={auth}

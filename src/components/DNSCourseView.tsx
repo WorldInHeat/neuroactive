@@ -23,6 +23,112 @@ const HISTORY_TRACKING_STARTED_LABEL = new Date(`${HISTORY_TRACKING_STARTED}T00:
   year: 'numeric',
 });
 
+// Session-only "which tab/day was I on" restoration — mirrors App.tsx's
+// CURRENT_VIEW_STORAGE_KEY pattern; never a security boundary (every candidate is
+// re-validated against live dnsCourse.currentDay/isQaOwner below before ever being
+// applied), and never touches the URL or window.history. Key name duplicated in App.tsx
+// (not imported — this patch is scoped to not add new shared modules) purely so
+// sign-out/uid-change resets there can clear it too; keep both in sync if this name ever
+// changes.
+const DNS_COURSE_SUBVIEW_STORAGE_KEY = 'na_dns_course_subview';
+
+// A throwing or unavailable Storage implementation must never break mounting this view.
+function safeSessionStorageGet(key: string): string | null {
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function safeSessionStorageSet(key: string, value: string): void {
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {
+    // best-effort only
+  }
+}
+
+type StoredSubView = { activeTab: 'today' | 'past' | 'history' | 'qa'; viewingDay: number | null };
+
+// --- Two-phase restoration ---
+// Phase 1 (structural, below): can run the instant the component mounts, with no
+// dependency on dnsCourse/isQaOwner having hydrated from Firestore yet. Only checks
+// shape — is this parseable JSON, is activeTab one of the four known literals, is
+// viewingDay either absent/null or an integer within the course's ABSOLUTE bounds
+// (1..DNS_COURSE.length, not "unlocked as of right now"). Anything else (wrong type,
+// out-of-absolute-bounds, an unknown tab literal) is treated as corrupted/untrustworthy
+// and the WHOLE candidate is rejected — unlike phase 2 below, this phase never
+// degrades a single field and keeps the rest; a structurally wrong shape gets no benefit
+// of the doubt at all.
+//
+// Phase 2 (context-dependent, validateSubViewCandidate below): must NOT run until
+// dnsHydrationReady is true (both the first userData and first entitlement snapshot have
+// resolved for the current uid — see App.tsx) — before that, dnsCourse.currentDay is
+// still the DEFAULT_DNS_COURSE placeholder (1) and isQaOwner is still necessarily false
+// (dnsEntitlementState hasn't left 'loading' yet), so validating against them would
+// reject perfectly legitimate restorable state (e.g. a real Past Day 5 rejected because
+// the placeholder currentDay is 1) — this was the exact hydration race this repair
+// fixes. Once hydration is ready, this runs the same "is this day/tab actually
+// authorized right now" checks the previous single-phase version did.
+function parseRawSubViewCandidate(raw: string | null): StoredSubView | null {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+  const obj = parsed as Record<string, unknown>;
+  const tab = obj.activeTab;
+  if (tab !== 'today' && tab !== 'past' && tab !== 'history' && tab !== 'qa') return null;
+
+  const rawDay = obj.viewingDay;
+  if (rawDay === null || typeof rawDay === 'undefined') {
+    return { activeTab: tab, viewingDay: null };
+  }
+  // Any other type/shape, or an integer outside the course's absolute bounds, is
+  // "dangerous"/corrupted — reject the WHOLE candidate rather than silently coercing it.
+  if (typeof rawDay !== 'number' || !Number.isInteger(rawDay) || rawDay < 1 || rawDay > DNS_COURSE.length) {
+    return null;
+  }
+  return { activeTab: tab, viewingDay: rawDay };
+}
+
+// Phase 2 — see the block comment above. Validates an already structurally-valid
+// candidate against LIVE dnsCourse/isQaOwner. A day that isn't legitimately unlocked (or
+// a QA tab for a non-owner) is silently dropped, falling back to the safe default
+// instead of being applied. This can never unlock a future day, bypass pacing, or bypass
+// entitlement: getDnsCourseDayMedia still independently re-checks entitlement
+// server-side for whatever day ends up rendered, exactly as for a normal manual visit.
+function validateSubViewCandidate(
+  candidate: StoredSubView,
+  dnsCourse: DnsCourseProgress,
+  isQaOwner: boolean
+): StoredSubView | null {
+  const { activeTab: tab, viewingDay: rawDay } = candidate;
+  if (tab === 'qa' && !isQaOwner) return null;
+
+  // Today/History always restore to their own default content (Today has no separate
+  // "day" concept here; History restores to the calendar grid, not a specific opened
+  // day) — keeps Today/Past Days restoration unambiguous rather than risking a leftover
+  // viewingDay from a different tab being shown under the wrong one.
+  if (tab === 'today' || tab === 'history') return { activeTab: tab, viewingDay: null };
+  if (rawDay === null) return { activeTab: tab, viewingDay: null };
+
+  if (tab === 'qa') {
+    // The QA browser intentionally exposes every real day regardless of currentDay —
+    // isQaOwner is already re-verified live above, never trusted from the stored value.
+    return { activeTab: tab, viewingDay: rawDay };
+  }
+
+  // tab === 'past': only ever a day that's actually already in pastDays (1..currentDay-1).
+  if (rawDay < dnsCourse.currentDay) {
+    return { activeTab: tab, viewingDay: rawDay };
+  }
+  return { activeTab: tab, viewingDay: null };
+}
+
 type Props = {
   dnsCourse: DnsCourseProgress;
   onUpdateDnsCourse: (updates: Partial<DnsCourseProgress>) => void;
@@ -32,6 +138,15 @@ type Props = {
   // 'not-entitled' render as locked, so a legitimate purchaser sees a brief loading state
   // rather than a paywall flash, without ever trusting an unresolved/stale value.
   dnsEntitlementState: 'loading' | 'entitled' | 'not-entitled';
+  // True only once BOTH the first userData/main snapshot and the first entitlement
+  // snapshot have resolved (success, deterministic absence, or error) for the exact uid
+  // currently mounted here (this component is itself keyed on uid in App.tsx, so a real
+  // uid change always remounts a fresh instance rather than this prop ever flipping
+  // false-to-true-to-false again mid-mount for a different owner). Stored sub-view
+  // restoration must not be validated against dnsCourse/isQaOwner until this is true —
+  // see the render-time restoration adjustment below (restorationFinalized), which reads
+  // this value directly rather than watching for a transition into true.
+  dnsHydrationReady: boolean;
   onBack: () => void;
   onOpenSettings: () => void;
   auth: Auth | null;
@@ -267,19 +382,21 @@ function GuidanceModal({ view, onNavigate, onClose }: { view: string; onNavigate
   );
 }
 
-// Shown on the Today tab once today's lesson has already been marked complete. This is
-// deliberately NOT the normal locked-preview treatment (Lock icon, muted/opacity-60,
-// "Unlocks after you complete Day X") used for a day the user simply hasn't reached yet
-// — that's an earned-progression lock. This is a same-day pacing wait after a genuine
-// completion, so it reads as success + "come back tomorrow," not as something withheld.
-function TodayCompletionWaitState({ completedDayIndex, nextDayIndex }: { completedDayIndex: number; nextDayIndex: number | null }) {
+// Shown on the Today tab, alongside (not instead of) today's lesson, once it's already
+// been marked complete — a visual acknowledgment in place of the Mark Complete button,
+// not a replacement for the lesson content itself. Today's video/description stay
+// mounted and replayable; this never triggers a write on its own (see the render branch
+// below), so revisiting/refreshing/replaying is always idempotent.
+function CompletedTodayBanner({ completedDayIndex, nextDayIndex }: { completedDayIndex: number; nextDayIndex: number | null }) {
   return (
-    <div className="bg-[#0f1829] p-8 rounded-2xl border border-[#00e096]/20 text-center">
-      <CheckCircle className="text-[#00e096] mx-auto mb-3" size={40} />
-      <h2 className="text-xl font-bold text-[#f0f4f8] mb-1">Day {completedDayIndex} complete</h2>
-      <p className="text-[#6b849e] text-sm">
-        {nextDayIndex !== null ? `Day ${nextDayIndex} unlocks tomorrow.` : 'Nice work today.'}
-      </p>
+    <div className="bg-[#0f1829] p-4 rounded-2xl border border-[#00e096]/20 flex items-center gap-3">
+      <CheckCircle className="text-[#00e096] flex-shrink-0" size={22} />
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-bold text-[#f0f4f8]">Day {completedDayIndex} complete</p>
+        <p className="text-xs text-[#6b849e]">
+          {nextDayIndex !== null ? `Day ${nextDayIndex} unlocks tomorrow — this one's still here to replay anytime.` : 'Nice work today.'}
+        </p>
+      </div>
     </div>
   );
 }
@@ -320,6 +437,7 @@ export default function DNSCourseView({
   onUpdateDnsCourse,
   today,
   dnsEntitlementState,
+  dnsHydrationReady,
   onBack,
   onOpenSettings,
   auth,
@@ -334,8 +452,77 @@ export default function DNSCourseView({
   isInAppBrowser,
 }: Props) {
   // Hooks must run unconditionally, before the early returns below.
+
+  // isOwnerUid alone is never a security boundary — it only ever gates UI reachability.
+  // Real access is still enforced by dnsEntitlementState (isQaOwner below, and the
+  // unmodified entitlement/paywall check further down) and, independently, by
+  // getDnsCourseDayMedia server-side.
+  const isOwnerUid = QA_OWNER_UIDS.includes(auth?.currentUser?.uid ?? '');
+  const isQaOwner = dnsEntitlementState === 'entitled' && isOwnerUid;
+
+  // Phase 1 (structural) — read and shape-validate the stored candidate exactly once, at
+  // mount, via useState's lazy initializer. Deliberately does NOT depend on
+  // dnsCourse/isQaOwner (see parseRawSubViewCandidate's block comment above) — this is
+  // always safe to compute immediately, before Firestore hydration.
+  const [pendingCandidate] = useState<StoredSubView | null>(() =>
+    parseRawSubViewCandidate(safeSessionStorageGet(DNS_COURSE_SUBVIEW_STORAGE_KEY))
+  );
+
+  // activeTab/viewingDay start at their coherent safe defaults, NEVER at pendingCandidate
+  // directly — applying the candidate before dnsCourse/isQaOwner have hydrated from
+  // Firestore is exactly the race this repair closes (a real Past Day 5 rejected against
+  // the DEFAULT_DNS_COURSE placeholder currentDay of 1, etc.). The restoration effect
+  // below is the only place these are ever set to anything else, and only once.
   const [activeTab, setActiveTab] = useState<'today' | 'past' | 'history' | 'qa'>('today');
   const [viewingDay, setViewingDay] = useState<number | null>(null);
+
+  // Gates the persistence effect further below: sessionStorage must never be overwritten
+  // with the temporary 'today'/null defaults above while the restoration decision is
+  // still pending — that overwrite (firing on every mount, before hydration had a chance
+  // to complete) was the actual mechanism of the bug this repair fixes, not just a
+  // display glitch: it permanently destroyed the real candidate in storage too. Also
+  // guards Phase 2 (right below) against ever reapplying pendingCandidate after the user
+  // has since navigated on their own, once it's flipped true.
+  const [restorationFinalized, setRestorationFinalized] = useState(false);
+
+  // Phase 2 (context validation + apply) — fires on any render where dnsHydrationReady
+  // is true AND restoration hasn't been finalized yet (readiness-based, not a
+  // false-to-true transition: a transition comparison against a prevHydrationReady seeded
+  // from dnsHydrationReady's OWN initial value is false on the very first render whenever
+  // this component happens to mount with dnsHydrationReady already true — e.g. hydration
+  // settling before this component's first render — so no transition is ever observed and
+  // restoration, and therefore persistence, would stay disabled forever. Reading
+  // readiness directly instead removes that failure mode entirely). This is React's
+  // documented "adjust state during render" pattern — the SAME shape as
+  // isQaOwner/prevIsQaOwner just below — deliberately NOT a useEffect: an effect version
+  // needs a ref (mutated inside the effect) to guard against re-firing on every later
+  // dnsCourse/isQaOwner change, and mutating a ref is a side effect in its own right,
+  // which is exactly what react-hooks/set-state-in-effect flags — moving the whole
+  // decision into the render phase avoids that guard needing a ref at all.
+  // restorationFinalized is the one-shot guard: once true, this block can never run its
+  // body again, so a later completed day, entitlement change, or Strict Mode's dev-only
+  // double-invocation of the render function can never reapply — or re-reject — the
+  // candidate. Strict Mode safety follows from React's render-phase-update guarantee: a
+  // setState called during render is applied before any subsequent invocation of that
+  // same render observes the old value, so restorationFinalized already reads true by the
+  // second (Strict Mode) invocation, and the `!restorationFinalized` guard below is
+  // false on it.
+  if (dnsHydrationReady && !restorationFinalized) {
+    if (pendingCandidate) {
+      const validated = validateSubViewCandidate(pendingCandidate, dnsCourse, isQaOwner);
+      if (validated) {
+        setActiveTab(validated.activeTab);
+        setViewingDay(validated.viewingDay);
+      }
+      // else: rejected — activeTab/viewingDay simply stay at the coherent safe
+      // defaults already in place since mount ('today'/null).
+    }
+    // No candidate at all (first-time visitor, or App.tsx's owner-binding check
+    // already cleared it for a mismatched/missing owner) — nothing to apply; same
+    // safe defaults.
+    setRestorationFinalized(true);
+  }
+
   const [historyMonth, setHistoryMonth] = useState(() => {
     const [y, m] = today.split('-').map(Number);
     return { year: y, month: m - 1 }; // 0-indexed month, to match Date's convention
@@ -347,12 +534,16 @@ export default function DNSCourseView({
   // paywall never writes user/course data and never participates in authorization.
   const [showPaywall, setShowPaywall] = useState(false);
 
-  // isOwnerUid alone is never a security boundary — it only ever gates UI reachability.
-  // Real access is still enforced by dnsEntitlementState (isQaOwner below, and the
-  // unmodified entitlement/paywall check further down) and, independently, by
-  // getDnsCourseDayMedia server-side.
-  const isOwnerUid = QA_OWNER_UIDS.includes(auth?.currentUser?.uid ?? '');
-  const isQaOwner = dnsEntitlementState === 'entitled' && isOwnerUid;
+  // Session-only refresh convenience (see DNS_COURSE_SUBVIEW_STORAGE_KEY) — never a
+  // routing mechanism, never touches the URL/window.history. Gated on
+  // restorationFinalized (see above) so this can never fire — and so never overwrite a
+  // still-valid stored candidate with the provisional pre-hydration defaults — before
+  // Phase 2 has had a chance to run. Every ordinary user-driven tab/day change after that
+  // point persists exactly as before.
+  useEffect(() => {
+    if (!restorationFinalized) return;
+    safeSessionStorageSet(DNS_COURSE_SUBVIEW_STORAGE_KEY, JSON.stringify({ activeTab, viewingDay }));
+  }, [activeTab, viewingDay, restorationFinalized]);
 
   // QA is a local convenience for one hardcoded uid and must never survive a uid change or
   // entitlement loss into a different session on the same mounted instance — closes the
@@ -610,20 +801,39 @@ export default function DNSCourseView({
                 Start Week 1, Day 1
               </button>
             </>
-          ) : !currentDayData ? (
+          ) : isSameDayAlreadyCompleted && DNS_COURSE[(completedTodayDayIndex as number) - 1] ? (() => {
+            // Checked BEFORE !currentDayData below — completing Day 84 advances
+            // currentDay to 85, which makes currentDayData (DNS_COURSE[84]) undefined,
+            // so the ordinary "no current day" course-complete branch would otherwise win
+            // first and make Day 84 unreachable from Today on its own completion date.
+            // completedTodayDayIndex is always the day that WAS just completed (1..84,
+            // never 85 — see its derivation above), so DNS_COURSE[completedTodayDayIndex-1]
+            // is always the real, valid Day 84 (or any earlier day) entry here, distinct
+            // from currentDayData/dnsCourse.currentDay, which may already be one past it.
+            // Read-only: no onUpdateDnsCourse call anywhere in this branch, so mounting it
+            // (including on a refresh that restores straight back into this exact state,
+            // or a Retry inside VideoPlayer) never writes completion data again —
+            // handleMarkComplete's own isNewDay guard means even a stray extra call here
+            // would still be a no-op, but there isn't one to begin with.
+            const completedDay = DNS_COURSE[(completedTodayDayIndex as number) - 1] as DNSCourseDay; // guaranteed by this branch's own condition above
+            const nextDayIndex =
+              (completedTodayDayIndex as number) + 1 <= DNS_COURSE.length ? (completedTodayDayIndex as number) + 1 : null;
+            return (
+              <>
+                <DayContent day={completedDay} dayIndex={completedTodayDayIndex as number} />
+                <CompletedTodayBanner completedDayIndex={completedTodayDayIndex as number} nextDayIndex={nextDayIndex} />
+                {/* Day 84 specifically: acknowledge the whole program is done, without
+                    replacing the replayable content above the way CourseCompleteState
+                    (the *later-date* landing screen — see !currentDayData below) does. */}
+                {nextDayIndex === null && (
+                  <p className="mt-3 text-center text-xs text-[#6b849e]">
+                    That's all 12 weeks — you've completed the DNS Foundations program.
+                  </p>
+                )}
+              </>
+            );
+          })() : !currentDayData ? (
             <CourseCompleteState onReviewPastDays={() => setActiveTab('past')} />
-          ) : isSameDayAlreadyCompleted ? (
-            // currentDay has already advanced to the next lesson, but at most one new
-            // lesson unlocks per local calendar day — don't mount DayContent (and so
-            // don't mount DayVideo / call getDnsCourseDayMedia) for it until then.
-            <TodayCompletionWaitState
-              completedDayIndex={completedTodayDayIndex as number}
-              nextDayIndex={
-                (completedTodayDayIndex as number) + 1 <= DNS_COURSE.length
-                  ? (completedTodayDayIndex as number) + 1
-                  : null
-              }
-            />
           ) : (
             <>
               <DayContent day={currentDayData} dayIndex={dnsCourse.currentDay} />
