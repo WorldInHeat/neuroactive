@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth, UserRecord } from 'firebase-admin/auth';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue, Firestore } from 'firebase-admin/firestore';
 import { defineSecret } from 'firebase-functions/params';
 import { HttpsError, onCall, onRequest } from 'firebase-functions/v2/https';
 import Stripe from 'stripe';
@@ -14,6 +14,16 @@ import {
 
 const DNS_CHECKOUT_SUCCESS_URL = 'https://neuroactivehealth.com/?payment=success';
 const DNS_CHECKOUT_CANCEL_URL = 'https://neuroactivehealth.com/?payment=canceled';
+
+// How long a single checkout "attempt" (see getOrCreateCheckoutAttempt below) stays
+// eligible for reuse before a subsequent call mints a genuinely new one. Deliberately
+// far shorter than Stripe's own idempotency-key retention window (~24h, undocumented
+// exact value, treated as an implementation detail not to rely on) — this value only
+// needs to comfortably cover realistic retry/double-click/two-tab timing (seconds), and
+// staying well under Stripe's own window means this code's "is it still fresh" decision
+// and Stripe's own idempotency cache can never disagree about whether a given key is
+// still "live."
+const DNS_CHECKOUT_ATTEMPT_TTL_MS = 30 * 60 * 1000;
 
 // This is the API version bundled with stripe@22.5.0. Pinning it prevents the
 // account's older default API version from disabling no-cost Checkout Sessions.
@@ -165,6 +175,322 @@ async function getOrCreateStripeCustomer(
   });
 }
 
+// Produces a Stripe idempotency key for the Checkout Session creation call, scoped to a
+// single "attempt" per uid rather than the uid alone forever — see the module-level
+// design note above DNS_CHECKOUT_ATTEMPT_TTL_MS. A fresh (non-expired) prior attempt for
+// this uid is reused as-is, so: a client retry after an ambiguous response, a
+// double-click, and two tabs racing this same call within the window all resolve to the
+// SAME idempotency key — Stripe itself then guarantees at most one Checkout Session is
+// ever created for that key, regardless of how many times this function executes it.
+// Once the window elapses, the next call mints a genuinely new attempt (and therefore a
+// new key), so an abandoned/expired attempt can never permanently block a later,
+// intentional checkout.
+//
+// Deliberately mirrors getOrCreateStripeCustomer's own shape immediately above: a
+// Firestore transaction is the concurrency boundary (real Firestore transactions retry
+// automatically on conflicting concurrent reads/writes to the same document, which is
+// what actually makes two truly simultaneous calls collapse onto the same attempt rather
+// than a plain read-then-write race), and the key is derived from server-controlled state
+// only — never a value invented independently on every invocation, and never the uid
+// alone with no bound on how long it stays authoritative.
+//
+// `db` and `ttlMs` are parameters (rather than reading the module-level `db`/constant
+// directly) purely so this function is unit-testable against a fake Firestore with a
+// short TTL, without needing a real Firestore emulator or a mocked system clock; the
+// production call site below always passes the real db and the real TTL.
+//
+// options.forceNew: Stripe's idempotency cache replays the ORIGINAL response for a reused
+// key regardless of what has since happened to the object it returned — a Checkout
+// Session that has since been completed, expired, or otherwise closed is still handed
+// back as-is. The call site below checks the returned session's own status and, if it is
+// no longer 'open', calls this again with forceNew so a stale-but-still-within-the-TTL
+// attempt can never keep handing back an unusable session (or block a genuinely new one)
+// for the rest of the window. A forced attempt still goes through the same transaction as
+// every other path — it just skips the freshness check unconditionally.
+async function getOrCreateCheckoutAttempt(
+  db: Firestore,
+  uid: string,
+  ttlMs: number = DNS_CHECKOUT_ATTEMPT_TTL_MS,
+  options?: { forceNew?: boolean }
+): Promise<{ attemptId: string; idempotencyKey: string }> {
+  const attemptRef = db.doc(`dnsCheckoutAttempts/${uid}`);
+  const now = Date.now();
+  const forceNew = options?.forceNew === true;
+
+  const attemptId = await db.runTransaction(async (transaction) => {
+    const snap = await transaction.get(attemptRef);
+    const data = snap.exists ? (snap.data() as { attemptId?: unknown; createdAtMs?: unknown } | undefined) : undefined;
+    const existingAttemptId = data?.attemptId;
+    const existingCreatedAtMs = data?.createdAtMs;
+    const isFresh =
+      !forceNew &&
+      typeof existingAttemptId === 'string' &&
+      typeof existingCreatedAtMs === 'number' &&
+      now - existingCreatedAtMs < ttlMs;
+
+    if (isFresh) {
+      // Reuse: either a retry/duplicate of the SAME logical attempt, or a genuinely
+      // concurrent call racing this same transaction for the same uid.
+      return existingAttemptId;
+    }
+
+    // No fresh attempt exists (first-ever call for this uid, or the previous one aged
+    // out) — mint a new one. Never trusted as a security boundary; it only needs to
+    // reliably distinguish "this attempt" from whatever attempt preceded it for this uid,
+    // which a fresh random id does regardless of predictability.
+    const newAttemptId = randomUUID();
+    // A plain numeric field (createdAtMs), not FieldValue.serverTimestamp(): this value
+    // is read back and compared against Date.now() in the SAME kind of check above on
+    // every subsequent call, including possibly within the same transaction retry — a
+    // server-timestamp sentinel doesn't resolve to a concrete value until after commit,
+    // which is exactly wrong for a value this function needs to reason about immediately.
+    transaction.set(attemptRef, { attemptId: newAttemptId, createdAtMs: now });
+    return newAttemptId;
+  });
+
+  const idempotencyKey = createHash('sha256').update(`${uid}:${attemptId}`).digest('hex');
+  return { attemptId, idempotencyKey: `neuroactive-dns-checkout-session-${idempotencyKey}` };
+}
+
+// True for the Admin SDK's "document already exists" failure from DocumentReference.create
+// — checked defensively across the shapes actually observed from @google-cloud/firestore
+// (a numeric gRPC code, its string alias, or a message substring) rather than committing to
+// exactly one, since getting this wrong in either direction is asymmetric: a false negative
+// here just falls through to the existing generic error path below (still fails closed,
+// merely with a less specific log), while a false positive would have to *match* an
+// unrelated error to matter at all, which none of these three signals do independently.
+function isFirestoreAlreadyExistsError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === 6 || code === 'already-exists') return true;
+  const message = (error as { message?: unknown }).message;
+  return typeof message === 'string' && /already exists/i.test(message);
+}
+
+// Idempotently records the (uid, Stripe customer, Checkout Session) correlation used by
+// handleDnsNoCostCheckout to resolve identity. Never blindly overwrites: if a document is
+// already there — written by an earlier invocation of this SAME attempt (retry,
+// double-click, two tabs, all sharing the Stripe idempotency key and therefore the same
+// session.id) — it is read back and validated with the exact same correlationMatches
+// check the webhook itself uses, and an exact match is treated as idempotent success.
+// A document that exists but does NOT match is a genuine integrity conflict (this
+// session.id somehow correlates to a different uid/customer/price/mode than this
+// invocation expects) and fails closed rather than silently reusing or overwriting it.
+//
+// Also closes the narrower race where the document appears AFTER this function's own
+// existence check but BEFORE its own .create() call commits (two concurrent invocations
+// that both observed "absent" and both proceed to create): the .create() failure is
+// inspected specifically for "already exists" and, only then, re-read and validated the
+// same way — every other error still fails closed as a genuine, unrecognized failure.
+async function recordCheckoutCorrelation(
+  db: Firestore,
+  params: {
+    sessionId: string;
+    uid: string;
+    stripeCustomerId: string;
+    livemode: boolean;
+  }
+): Promise<void> {
+  const { sessionId, uid, stripeCustomerId, livemode } = params;
+  const correlationRef = db.doc(`stripeDnsCheckoutSessions/${sessionId}`);
+  const conflictError = () =>
+    new HttpsError(
+      'internal',
+      'Checkout could not be verified. Please contact support before retrying.'
+    );
+
+  const existing = await correlationRef.get();
+  if (existing.exists) {
+    if (!correlationMatches(existing.data() as CorrelationRecord | undefined, sessionId, uid, stripeCustomerId)) {
+      throw conflictError();
+    }
+    return; // Idempotent success — an earlier invocation of this same attempt already recorded this exact session.
+  }
+
+  try {
+    await correlationRef.create({
+      uid,
+      stripeCustomerId,
+      stripePriceId: DNS_PROGRAM_PRICE_ID,
+      quantity: 1,
+      mode: 'payment',
+      livemode,
+      checkoutSessionId: sessionId,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  } catch (error) {
+    if (!isFirestoreAlreadyExistsError(error)) throw error;
+    // A concurrent invocation of this same attempt won the race between our own
+    // existence check above and this .create() call — re-read and validate exactly as
+    // above rather than assuming success outright.
+    const reread = await correlationRef.get();
+    if (!reread.exists || !correlationMatches(reread.data() as CorrelationRecord | undefined, sessionId, uid, stripeCustomerId)) {
+      throw conflictError();
+    }
+  }
+}
+
+// Minimal structural subset of Stripe actually needed to create AND authoritatively
+// re-read a Checkout Session — lets tests exercise the REAL call path below against a
+// fake Stripe object, without needing a fake for the entire Stripe SDK surface. The real
+// `Stripe` client satisfies this structurally as-is.
+type CheckoutSessionCreator = {
+  checkout: {
+    sessions: {
+      create(
+        params: Stripe.Checkout.SessionCreateParams,
+        options: Stripe.RequestOptions
+      ): Promise<Stripe.Checkout.Session>;
+      retrieve(id: string): Promise<Stripe.Checkout.Session>;
+    };
+  };
+};
+
+// Resolves this uid's current checkout attempt into a USABLE outcome: either a Checkout
+// Session the client should be sent to pay via, or — for a session Stripe's own
+// authoritative state already shows as finished — a safe "already completed" outcome that
+// reuses this app's own success destination instead of ever creating a second payable
+// Checkout Session for the same one-time-access purchase.
+//
+// CRITICAL correctness note (this function previously checked `.status` on the object
+// returned directly from stripe.checkout.sessions.create, which cannot detect a session
+// that has since completed or expired — see below):
+//
+// Stripe's idempotency layer replays the ORIGINAL cached HTTP response body verbatim for
+// a reused key: "Stripe's idempotency works by saving the resulting status code and body
+// of the first request made for any given idempotency key... Subsequent requests with the
+// same key return the same result." (https://docs.stripe.com/api/idempotent_requests). A
+// Checkout Session is always created with status:'open' — the API reference defines
+// 'open' as "Payment processing has not started" (https://docs.stripe.com/api/checkout/
+// sessions/object) — so the response returned directly from create(), whether this
+// particular call is a brand-new creation or an idempotency-cache replay of an old one,
+// ALWAYS reports status:'open', regardless of what has actually happened to the session
+// since (paid, expired, etc.). The only way to learn the session's actual current state
+// is a separate, non-idempotent `retrieve` call: a GET is never cached by Stripe's
+// idempotency layer ("Don't send idempotency keys in GET ... requests because it has no
+// effect. These requests are idempotent by definition." — same docs page), so it always
+// reflects live state. `stripe`/`db`/`ttlMs` are parameters purely for testability — the
+// onCall handler below always passes the real Stripe client, the real db, and the real
+// TTL.
+async function createDnsCheckoutSessionCore(
+  stripe: CheckoutSessionCreator,
+  db: Firestore,
+  uid: string,
+  stripeCustomerId: string,
+  ttlMs: number = DNS_CHECKOUT_ATTEMPT_TTL_MS
+): Promise<{ url: string; sessionId: string; livemode: boolean }> {
+  const failClosed = (detail: string, extra: Record<string, unknown>): HttpsError => {
+    console.error(`[DNS Checkout] ${detail}`, extra);
+    return new HttpsError('internal', 'Unable to start checkout. Please try again.');
+  };
+
+  // Creates a session for the given idempotency key, then immediately re-reads its
+  // authoritative current state via `retrieve` — see the function header above for why
+  // the create() response itself must never be trusted for `.status`.
+  const createAndResolveLiveSession = async (key: string): Promise<Stripe.Checkout.Session> => {
+    let created: Stripe.Checkout.Session;
+    try {
+      created = await stripe.checkout.sessions.create(
+        {
+          customer: stripeCustomerId,
+          line_items: [{ price: DNS_PROGRAM_PRICE_ID, quantity: 1 }],
+          mode: 'payment',
+          allow_promotion_codes: true,
+          success_url: DNS_CHECKOUT_SUCCESS_URL,
+          cancel_url: DNS_CHECKOUT_CANCEL_URL,
+        },
+        { idempotencyKey: key }
+      );
+    } catch (error) {
+      throw failClosed('Stripe Session creation failed.', { error });
+    }
+    try {
+      return await stripe.checkout.sessions.retrieve(created.id);
+    } catch (error) {
+      throw failClosed('Stripe Session live-state retrieval failed.', { sessionId: created.id, error });
+    }
+  };
+
+  // See getOrCreateCheckoutAttempt above: this makes a retry of the same logical
+  // checkout attempt (client retry after an ambiguous response, a double-click, two
+  // tabs racing each other) reuse the exact same Stripe idempotency key, so at most one
+  // Checkout Session is ever created for it — while a genuinely later, intentional
+  // checkout (after the attempt window elapses) still gets a fresh key and a fresh
+  // session, exactly as before.
+  let idempotencyKey: string;
+  try {
+    ({ idempotencyKey } = await getOrCreateCheckoutAttempt(db, uid, ttlMs));
+  } catch (error) {
+    throw failClosed('Checkout attempt provisioning failed.', { error });
+  }
+
+  let session = await createAndResolveLiveSession(idempotencyKey);
+
+  if (session.status === 'expired') {
+    // The attempt this uid held resolves to a session that has since expired — Stripe's
+    // idempotency cache would keep handing back this same dead session (see the header
+    // comment above) for the rest of the attempt TTL otherwise. Force a genuinely new
+    // attempt: a brand-new idempotency key that has never been used before always yields
+    // a brand-new, just-created session.
+    let freshKey: string;
+    try {
+      ({ idempotencyKey: freshKey } = await getOrCreateCheckoutAttempt(db, uid, ttlMs, { forceNew: true }));
+    } catch (error) {
+      throw failClosed('Fresh checkout attempt provisioning failed.', { error });
+    }
+    session = await createAndResolveLiveSession(freshKey);
+    if (session.status !== 'open') {
+      // A session obtained through a brand-new idempotency key is, by Stripe's own
+      // contract, always created 'open' — reaching here means something is badly wrong.
+      // Fail closed rather than loop indefinitely.
+      throw failClosed('Freshly created checkout session was not open.', {
+        sessionId: session.id,
+        status: session.status,
+      });
+    }
+  }
+
+  if (session.status === 'open') {
+    if (!session.url) {
+      throw failClosed('Open checkout session had no URL.', { sessionId: session.id });
+    }
+    return { url: session.url, sessionId: session.id, livemode: session.livemode };
+  }
+
+  if (session.status === 'complete') {
+    // This is a ONE-TIME-ACCESS product: a session Stripe already reports as complete
+    // must never result in a second payable Checkout Session being handed to the client —
+    // that would turn an innocuous retry after a successful purchase into a second
+    // purchase opportunity. Only the two payment_status values Stripe defines as "funds
+    // secured, nothing further to collect" are treated as safe to short-circuit here.
+    // Anything else (e.g. 'unpaid' — an async payment method still settling; the API
+    // reference itself notes status:'complete' means "Payment processing may still be in
+    // progress") is NOT assumed safe and fails closed instead, without ever creating
+    // another session.
+    if (session.payment_status === 'paid' || session.payment_status === 'no_payment_required') {
+      // Entitlement fulfillment is driven asynchronously by the completion webhook and
+      // may not have run yet — webhook delivery can lag — so this deliberately does not
+      // wait for or assume entitlement has been granted. It only avoids ever creating a
+      // second payable session for a purchase Stripe itself already reports as finished.
+      // Reusing this app's own existing success destination (the same URL Stripe's own
+      // success_url would have sent the customer to) means the EXISTING client contract
+      // ({ url }) already handles this outcome correctly by simply navigating there — no
+      // client change is required (see src/services/stripe.ts: it only ever reads
+      // result.data.url and redirects to it).
+      return { url: DNS_CHECKOUT_SUCCESS_URL, sessionId: session.id, livemode: session.livemode };
+    }
+    throw failClosed('Completed checkout session had an unexpected payment_status.', {
+      sessionId: session.id,
+      paymentStatus: session.payment_status,
+    });
+  }
+
+  throw failClosed('Checkout session had an unexpected status.', {
+    sessionId: session.id,
+    status: session.status,
+  });
+}
+
 export const createDnsCheckoutSession = onCall(
   { secrets: [stripeSecretKey] },
   async (request) => {
@@ -191,44 +517,27 @@ export const createDnsCheckoutSession = onCall(
       throw new HttpsError('internal', 'Unable to prepare your payment account. Please try again.');
     }
 
-    let session: Stripe.Checkout.Session;
-    try {
-      session = await stripe.checkout.sessions.create({
-        customer: stripeCustomerId,
-        line_items: [{ price: DNS_PROGRAM_PRICE_ID, quantity: 1 }],
-        mode: 'payment',
-        allow_promotion_codes: true,
-        success_url: DNS_CHECKOUT_SUCCESS_URL,
-        cancel_url: DNS_CHECKOUT_CANCEL_URL,
-      });
-    } catch (error) {
-      console.error('[DNS Checkout] Stripe Session creation failed.', error);
-      throw new HttpsError('internal', 'Unable to start checkout. Please try again.');
-    }
-
-    if (!session.url) {
-      throw new HttpsError('internal', 'Stripe did not return a Checkout URL.');
-    }
+    const { url, sessionId, livemode } = await createDnsCheckoutSessionCore(stripe, db, uid, stripeCustomerId);
 
     // This Admin-only record binds fulfillment to a Session created by this callable.
     // Firestore's default deny applies because no client rule matches this collection.
+    // See recordCheckoutCorrelation above for how it safely handles a retry of the same
+    // attempt (or a later, already-completed re-resolution) reaching this point a second
+    // time with the same session.id.
     try {
-      await db.doc(`stripeDnsCheckoutSessions/${session.id}`).create({
+      await recordCheckoutCorrelation(db, {
+        sessionId,
         uid,
         stripeCustomerId,
-        stripePriceId: DNS_PROGRAM_PRICE_ID,
-        quantity: 1,
-        mode: 'payment',
-        livemode: session.livemode,
-        checkoutSessionId: session.id,
-        createdAt: FieldValue.serverTimestamp(),
+        livemode,
       });
     } catch (error) {
+      if (error instanceof HttpsError) throw error;
       console.error('[DNS Checkout] Correlation record creation failed.', error);
       throw new HttpsError('internal', 'Unable to finalize checkout setup. Please try again.');
     }
 
-    return { url: session.url, sessionId: session.id };
+    return { url, sessionId };
   }
 );
 
@@ -564,3 +873,12 @@ export const handleDnsRefund = onRequest(
     }
   }
 );
+
+// Exported for tests only — not part of the public callable surface.
+export const __test__ = {
+  getOrCreateCheckoutAttempt,
+  recordCheckoutCorrelation,
+  isFirestoreAlreadyExistsError,
+  createDnsCheckoutSessionCore,
+  DNS_CHECKOUT_SUCCESS_URL,
+};
