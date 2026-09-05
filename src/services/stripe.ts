@@ -18,6 +18,15 @@ const PRICES: Record<string, string> = {
 
 export type PriceKey = keyof typeof PRICES;
 
+// Static customer-facing display string for the 'program' tier's live price — never
+// fetched from Stripe (this is just a label, not a source of truth for what gets
+// charged; Stripe itself is authoritative for the actual amount). Stripe Adaptive
+// Pricing may show international customers an equivalent local-currency amount at
+// checkout, but the account's configured price is USD $149, one-time (see
+// PROGRAM_PRICE_LIVE above). Keep this in sync if that price is ever changed in the
+// Stripe Dashboard.
+export const PROGRAM_DISPLAY_PRICE = '$149 USD';
+
 // 'program' and 'elite' are one-time purchases — Stripe rejects a one-time price
 // submitted under the extension's default 'subscription' mode, so they need
 // 'payment' mode explicitly. monthly/annual are recurring prices and use 'subscription'.

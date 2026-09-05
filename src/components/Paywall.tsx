@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Auth } from 'firebase/auth';
 import { ArrowLeft, User, CheckCircle, CreditCard, AlertCircle } from 'lucide-react';
-import { createCheckoutSession, type PriceKey } from '../services/stripe';
+import { createCheckoutSession, type PriceKey, PROGRAM_DISPLAY_PRICE } from '../services/stripe';
 import { DNS_ONLY_LAUNCH } from '../config/launchConfig';
 import VideoPlayer from './VideoPlayer';
 
@@ -31,7 +31,7 @@ const MIN_PASSWORD_LENGTH = 10;
 const ALL_TIERS = [
   { key: 'monthly' as PriceKey, label: 'Monthly', sublabel: 'Billed monthly, cancel anytime' },
   { key: 'annual'  as PriceKey, label: 'Annual',  sublabel: 'Best value — save vs monthly' },
-  { key: 'program' as PriceKey, label: '12-Week Program', sublabel: 'One-time guided program access' },
+  { key: 'program' as PriceKey, label: '12-Week Program', sublabel: 'Self-guided 12-week DNS video course' },
   { key: 'elite'   as PriceKey, label: 'Elite',   sublabel: 'Full access + priority support' },
 ] as const;
 
@@ -414,6 +414,20 @@ export default function Paywall({
             const loading = checkoutLoading === key;
             return (
               <div key={key}>
+                {/* Price disclosure — required to be visible before checkout begins, for
+                    both signed-out and signed-in states (this block renders regardless of
+                    isAnonymous), without a modal/tooltip/redirect. Scoped to the 'program'
+                    tier specifically since it's the only one-time-purchase tier; the other
+                    (currently hidden) tiers are subscriptions and must never carry this
+                    "one-time" wording. */}
+                {key === 'program' && (
+                  <p className="text-center text-sm text-[#f0f4f8] mb-2">
+                    <span className="font-bold">{PROGRAM_DISPLAY_PRICE}</span> — one-time purchase
+                    <span className="block text-xs text-[#6b849e] mt-1">
+                      International customers may see the equivalent amount in their local currency at checkout.
+                    </span>
+                  </p>
+                )}
                 <button
                   disabled={checkoutLoading !== null || !uid || isAnonymous}
                   onClick={async () => {
