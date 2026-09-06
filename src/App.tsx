@@ -61,6 +61,8 @@ import { useNotifications, type NotificationStatus } from './hooks/useNotificati
 import { useNotificationPreferences, type NotificationPreferences } from './hooks/useNotificationPreferences';
 import { auth, db, appId } from './services/firebase';
 import { createPortalLink, type PriceKey } from './services/stripe';
+import { reduceDnsCourseCompletion } from './services/dnsCourseProgression';
+import { DNS_COURSE_LENGTH } from './data/dnsCourse';
 import {
   captureLandingSignalOnce,
   reconcileRemoteAttribution,
@@ -1362,6 +1364,41 @@ export default function App() {
     const merged = { ...dnsCourse, ...updates };
     setDnsCourse(merged);
     saveUserData({ dnsCourse: merged });
+  };
+
+  // Dedicated, TRANSACTIONAL completion action for the DNS course's Mark Complete button —
+  // unlike updateDnsCourse's generic merge-write above (which trusts the caller's already
+  // -stale local `dnsCourse` closure), this always recomputes the next state from
+  // Firestore's own CURRENT value inside a transaction, so a double-click, a race between
+  // two tabs, or a stale local render can never regress currentDay/completionDates or
+  // double-advance past what the calendar ceiling for `today` actually allows —
+  // reduceDnsCourseCompletion (services/dnsCourseProgression.ts) is a pure, deterministic
+  // function of whatever the transaction actually reads, so a losing/retried transaction
+  // recomputes from the winner's committed state and is naturally a safe no-op once the
+  // ceiling is reached, never a regression. Firestore's client SDK retries the whole
+  // callback automatically on a conflicting concurrent write, exactly like the equivalent
+  // pattern already used for attribution (see services/attribution.ts).
+  //
+  // expectedCompletedDay: the day DNSCourseView actually displayed/watched and is
+  // completing (its own availability.openDay at click time) — passed through unchanged so
+  // reduceDnsCourseCompletion can refuse to complete a DIFFERENT day than the one the user
+  // saw, if currentDay has since moved on (e.g. another tab already completed it).
+  const completeDnsCourseDay = async (today: string, expectedCompletedDay: number): Promise<void> => {
+    if (!auth?.currentUser) return;
+    const uid = auth.currentUser.uid;
+    const ref = doc(db, 'artifacts', appId, 'users', uid, 'userData', 'main');
+    const next = await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(ref);
+      const existing = normalizeDnsCourse(
+        (snap.exists() ? (snap.data() as { dnsCourse?: DnsCourseProgress }).dnsCourse : undefined) ?? DEFAULT_DNS_COURSE
+      );
+      const updated = reduceDnsCourseCompletion(existing, today, DNS_COURSE_LENGTH, expectedCompletedDay);
+      if (updated !== existing) {
+        transaction.set(ref, { dnsCourse: updated }, { merge: true });
+      }
+      return updated;
+    });
+    setDnsCourse(next);
   };
 
   // NOTE: Unused in this build
@@ -3215,6 +3252,7 @@ export default function App() {
           key={auth?.currentUser?.uid ?? 'signed-out'}
           dnsCourse={dnsCourse}
           onUpdateDnsCourse={updateDnsCourse}
+          onCompleteDay={completeDnsCourseDay}
           today={todayLocalISO()}
           dnsEntitlementState={dnsEntitlementState}
           // True only once BOTH the first userData/main snapshot and the first

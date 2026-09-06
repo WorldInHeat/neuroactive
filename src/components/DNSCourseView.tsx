@@ -4,8 +4,9 @@
 import { useEffect, useState, type ReactElement } from 'react';
 import type { Auth } from 'firebase/auth';
 import { ArrowLeft, CheckCircle, ChevronLeft, ChevronRight, HelpCircle, Lock, User, X } from 'lucide-react';
-import { DNS_COURSE } from '../data/dnsCourse';
+import { DNS_COURSE, DNS_COURSE_LENGTH } from '../data/dnsCourse';
 import type { DNSCourseDay } from '../data/dnsCourse';
+import { computeDnsDayAvailability } from '../services/dnsCourseProgression';
 import type { DnsCourseProgress } from '../state/types';
 import type { PriceKey } from '../services/stripe';
 import { fetchDnsCourseDayMedia, type DnsCourseDayMedia } from '../services/dnsCourseMedia';
@@ -132,6 +133,15 @@ function validateSubViewCandidate(
 type Props = {
   dnsCourse: DnsCourseProgress;
   onUpdateDnsCourse: (updates: Partial<DnsCourseProgress>) => void;
+  // Transactional Mark Complete action (see App.tsx's completeDnsCourseDay) — the ONLY
+  // path that ever advances currentDay/completionDates, so a double-click or a race
+  // between two tabs can never regress progress or double-advance past the calendar
+  // ceiling. onUpdateDnsCourse above remains the path for the separate, idempotent
+  // startedAt-only write ("Start Week 1, Day 1"), which carries no such race risk.
+  // expectedCompletedDay is the day THIS render actually displayed (availability.openDay)
+  // — never re-derived from dnsCourse.currentDay inside the transaction, so a stale tab
+  // can never have its click silently reinterpreted as completing a different, later day.
+  onCompleteDay: (today: string, expectedCompletedDay: number) => Promise<void>;
   today: string; // local calendar date, e.g. from todayLocalISO()
   // Server-verified DNS Foundations entitlement — 'loading' until the first snapshot for
   // the current uid resolves. Only 'entitled' unlocks anything; both 'loading' and
@@ -435,6 +445,7 @@ const QA_OWNER_UIDS = ['y8ZkA5HM93gcwGrhXHUMf3fBue32'];
 export default function DNSCourseView({
   dnsCourse,
   onUpdateDnsCourse,
+  onCompleteDay,
   today,
   dnsEntitlementState,
   dnsHydrationReady,
@@ -641,37 +652,26 @@ export default function DNSCourseView({
     );
   }
 
-  const isSameDayAlreadyCompleted = dnsCourse.lastCompletedDate === today;
-  // Which day was actually completed today — read from completionDates (keyed by the day
-  // that was current AT THE MOMENT it was completed, before currentDay advanced) rather
-  // than derived as `currentDay - 1`, so this stays correct even at the Day 84 ceiling
-  // where currentDay no longer advances past the day that was just completed.
-  const completedTodayDayIndex = isSameDayAlreadyCompleted
-    ? Number(
-        Object.entries(dnsCourse.completionDates ?? {}).find(([, date]) => date === today)?.[0] ??
-          dnsCourse.currentDay - 1
-      )
-    : null;
+  // See services/dnsCourseProgression.ts for the full model — availability.openDay is the
+  // ONLY lesson viewable/completable right now (calendar ceiling AND sequence both
+  // satisfied); availability.waitingForNextDay is the "come back tomorrow" state, gated on
+  // elapsed calendar days since startedAt rather than on whether Mark Complete happened to
+  // be clicked today (the fix for the reported defect — see that module's header comment).
+  const availability = computeDnsDayAvailability(dnsCourse, today, DNS_COURSE_LENGTH);
+  const showCompletionBanner = availability.waitingForNextDay || (availability.courseComplete && availability.completedSomethingToday);
+  const bannerDayIndex = availability.mostRecentlyCompletedDay;
   const nextDayData = DNS_COURSE[dnsCourse.currentDay]; // currentDay is 1-based, so this is the next entry
   const pastDays = DNS_COURSE.slice(0, dnsCourse.currentDay - 1); // days 1..currentDay-1
 
   const handleMarkComplete = () => {
-    const isNewDay = dnsCourse.lastCompletedDate !== today;
-    // Capped at DNS_COURSE.length + 1 (85), one past the last real day, rather than at
-    // DNS_COURSE.length (84) — completing Day 84 must actually advance past it so
-    // currentDayData above becomes undefined and the course-complete state is reached;
-    // capping at 84 forever was the pre-existing defect that made Course Complete
-    // unreachable. The +1 cap still stops currentDay from growing without bound if this
-    // were ever invoked again after completion (it isn't, from the UI, once
-    // currentDayData is undefined).
-    const nextDay = isNewDay ? Math.min(dnsCourse.currentDay + 1, DNS_COURSE.length + 1) : dnsCourse.currentDay;
-    // Record which real calendar date this day was completed on, for the History tab.
-    // Only touched on an actual new completion — spread the existing map first so
-    // earlier entries are never dropped (same reasoning as dnsCourse itself elsewhere).
-    const completionDates = isNewDay
-      ? { ...dnsCourse.completionDates, [dnsCourse.currentDay]: today }
-      : dnsCourse.completionDates;
-    onUpdateDnsCourse({ lastCompletedDate: today, currentDay: nextDay, completionDates });
+    // Guaranteed non-null: this handler is only ever wired to the button rendered in the
+    // availability.openDay !== null branch below. The defensive check exists purely so
+    // this can never silently pass `null` through as some other numeric day if that
+    // invariant is ever violated by a future edit — it does NOT re-derive "which day" from
+    // dnsCourse.currentDay, which is exactly what must never happen here (see the prop's
+    // own doc comment above).
+    if (availability.openDay === null) return;
+    void onCompleteDay(today, availability.openDay);
   };
 
   const tabButtonStyle = (tab: 'today' | 'past' | 'history') =>
@@ -801,30 +801,27 @@ export default function DNSCourseView({
                 Start Week 1, Day 1
               </button>
             </>
-          ) : isSameDayAlreadyCompleted && DNS_COURSE[(completedTodayDayIndex as number) - 1] ? (() => {
-            // Checked BEFORE !currentDayData below — completing Day 84 advances
-            // currentDay to 85, which makes currentDayData (DNS_COURSE[84]) undefined,
-            // so the ordinary "no current day" course-complete branch would otherwise win
-            // first and make Day 84 unreachable from Today on its own completion date.
-            // completedTodayDayIndex is always the day that WAS just completed (1..84,
-            // never 85 — see its derivation above), so DNS_COURSE[completedTodayDayIndex-1]
-            // is always the real, valid Day 84 (or any earlier day) entry here, distinct
-            // from currentDayData/dnsCourse.currentDay, which may already be one past it.
-            // Read-only: no onUpdateDnsCourse call anywhere in this branch, so mounting it
+          ) : showCompletionBanner ? (() => {
+            // Checked BEFORE the courseComplete branch below — completing Day 84 advances
+            // currentDay to 85, so the ordinary permanent course-complete screen would
+            // otherwise win first and make Day 84 unreachable from Today on its own
+            // completion date. bannerDayIndex (dnsCourse.currentDay - 1) is always the
+            // real, valid day that was just completed — see computeDnsDayAvailability's
+            // invariant that this is always >= 1 whenever showCompletionBanner is true.
+            // Read-only: no onCompleteDay call anywhere in this branch, so mounting it
             // (including on a refresh that restores straight back into this exact state,
             // or a Retry inside VideoPlayer) never writes completion data again —
-            // handleMarkComplete's own isNewDay guard means even a stray extra call here
+            // completeDnsCourseDay's own ceiling check means even a stray extra call here
             // would still be a no-op, but there isn't one to begin with.
-            const completedDay = DNS_COURSE[(completedTodayDayIndex as number) - 1] as DNSCourseDay; // guaranteed by this branch's own condition above
-            const nextDayIndex =
-              (completedTodayDayIndex as number) + 1 <= DNS_COURSE.length ? (completedTodayDayIndex as number) + 1 : null;
+            const completedDay = DNS_COURSE[bannerDayIndex - 1] as DNSCourseDay;
+            const nextDayIndex = availability.waitingForNextDay ? dnsCourse.currentDay : null;
             return (
               <>
-                <DayContent day={completedDay} dayIndex={completedTodayDayIndex as number} />
-                <CompletedTodayBanner completedDayIndex={completedTodayDayIndex as number} nextDayIndex={nextDayIndex} />
+                <DayContent day={completedDay} dayIndex={bannerDayIndex} />
+                <CompletedTodayBanner completedDayIndex={bannerDayIndex} nextDayIndex={nextDayIndex} />
                 {/* Day 84 specifically: acknowledge the whole program is done, without
                     replacing the replayable content above the way CourseCompleteState
-                    (the *later-date* landing screen — see !currentDayData below) does. */}
+                    (the *later-date* landing screen — see the branch below) does. */}
                 {nextDayIndex === null && (
                   <p className="mt-3 text-center text-xs text-[#6b849e]">
                     That's all 12 weeks — you've completed the DNS Foundations program.
@@ -832,11 +829,11 @@ export default function DNSCourseView({
                 )}
               </>
             );
-          })() : !currentDayData ? (
+          })() : availability.openDay === null ? (
             <CourseCompleteState onReviewPastDays={() => setActiveTab('past')} />
           ) : (
             <>
-              <DayContent day={currentDayData} dayIndex={dnsCourse.currentDay} />
+              <DayContent day={DNS_COURSE[availability.openDay - 1] as DNSCourseDay} dayIndex={availability.openDay} />
 
               <button
                 onClick={handleMarkComplete}
@@ -858,7 +855,11 @@ export default function DNSCourseView({
                       Week {nextDayData.week}, Day {nextDayData.day}
                     </p>
                     <p className="text-sm font-semibold text-[#f0f4f8] truncate">{nextDayData.dayTitle}</p>
-                    <p className="text-xs text-[#6b849e] mt-0.5">Unlocks after you complete Day {dnsCourse.currentDay}</p>
+                    <p className="text-xs text-[#6b849e] mt-0.5">
+                      {availability.nextLessonAvailableImmediately
+                        ? `Unlocks after you complete Day ${dnsCourse.currentDay}`
+                        : 'Unlocks tomorrow'}
+                    </p>
                   </div>
                 </div>
               )}

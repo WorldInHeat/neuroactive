@@ -798,3 +798,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     isPremium: true,
   },
 ];
+
+// Exported so pacing/progression logic (services/dnsCourseProgression.ts, App.tsx) can
+// reference the course length without importing the entire (800-line) content array.
+export const DNS_COURSE_LENGTH = DNS_COURSE.length;
