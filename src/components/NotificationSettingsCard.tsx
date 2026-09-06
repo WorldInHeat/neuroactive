@@ -1,9 +1,12 @@
 // src/components/NotificationSettingsCard.tsx
 // Phase 3A-1: device-registration status/enable button (unchanged below).
-// Phase 3A-3 Step 1: reminder SCHEDULE PREFERENCES only, added below that. There is still
-// no scheduled sender anywhere in this project — this UI configures what a future sender
-// will read, it does not promise reminders are currently being sent, and its copy says so
-// explicitly rather than implying otherwise.
+// Phase 3A-3 Step 1: reminder SCHEDULE PREFERENCES only, added below that.
+// Phase 3 (reminder-messaging fix): a real scheduler + delivery worker now exist and send
+// live push notifications once the systemConfig/notificationRollout doc authorizes it — the
+// success copy below reflects that (it no longer claims reminders "aren't sending yet"),
+// but still avoids promising exact-to-the-minute delivery: two independently-cadenced
+// 5-minute polling loops (scheduler claim, then delivery-worker fanout/send) mean delivery
+// time is only ever approximate, never guaranteed to the minute.
 import { useEffect, useRef, useState } from 'react';
 import { Bell } from 'lucide-react';
 import type { NotificationStatus } from '../hooks/useNotifications';
@@ -18,6 +21,20 @@ const WEEKDAY_LABELS: { value: number; label: string }[] = [
   { value: 5, label: 'Fri' },
   { value: 6, label: 'Sat' },
 ];
+
+// `localTime` is always a plain "HH:MM" 24-hour string straight from an <input type="time">
+// (see the `draft.localTime` field below) — never a Date, never timezone-aware math. This
+// only reformats those same two numbers for display; it cannot silently render the wrong
+// instant because it never computes one.
+function formatLocalTime12h(localTime: string): string {
+  const match = /^(\d{2}):(\d{2})$/.exec(localTime);
+  if (!match) return localTime;
+  const hour24 = Number(match[1]);
+  const minute = match[2];
+  const period = hour24 < 12 ? 'AM' : 'PM';
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return `${hour12}:${minute} ${period}`;
+}
 
 // Remounted by the caller via `key={preferencesUid}` whenever the authenticated uid
 // changes (see NotificationSettingsCard below) — a fresh component instance means fresh
@@ -214,7 +231,11 @@ function SchedulePreferences({
         </p>
       )}
       {saved && !preferencesSaving && (
-        <p className="text-xs text-[#00e096]">Schedule saved. Reminders aren't sending yet — this sets up when they will.</p>
+        <p className="text-xs text-[#00e096]">
+          {draft.enabled
+            ? `Reminder schedule saved for ${formatLocalTime12h(draft.localTime)}. Delivery timing may vary depending on your device and notification service.`
+            : 'Reminder schedule saved. Reminders are turned off.'}
+        </p>
       )}
       {preferencesError && (
         <p className="text-xs text-red-400" role="alert">
