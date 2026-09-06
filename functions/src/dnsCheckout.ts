@@ -11,6 +11,18 @@ import {
   DNS_PROGRAM_PRICE_ID,
   readEntitlementForBasisUpdate,
 } from './dnsEntitlement';
+import {
+  ATTRIBUTION_SCHEMA_VERSION,
+  EMPTY_ATTRIBUTION_SNAPSHOT,
+  sanitizeAttributionSnapshot,
+  type SanitizedAttributionSnapshot,
+  type SanitizedAttributionTouch,
+} from './attribution';
+
+// Matches every other server file's own local APP_ID constant (calendarSubscriptions.ts,
+// dnsEntitlement.ts, notificationPreferences.ts, reminderScheduler.ts, etc.) — this
+// codebase repeats it per-file rather than sharing one import.
+const APP_ID = 'neuroactive-prod';
 
 const DNS_CHECKOUT_SUCCESS_URL = 'https://neuroactivehealth.com/?payment=success';
 const DNS_CHECKOUT_CANCEL_URL = 'https://neuroactivehealth.com/?payment=canceled';
@@ -48,7 +60,97 @@ type CorrelationRecord = {
   mode?: unknown;
   livemode?: unknown;
   checkoutSessionId?: unknown;
+  // Untrusted marketing metadata (see attribution.ts) — deliberately NOT read by
+  // correlationMatches below: a differing or absent attribution snapshot must never be
+  // treated as an integrity conflict, only the identity fields above are load-bearing.
+  attribution?: unknown;
 };
+
+// `db` is a parameter (not the module-level Firestore instance) purely for testability —
+// mirrors getOrCreateStripeCustomer/getOrCreateCheckoutAttempt's own shape above.
+function userDataRef(db: Firestore, uid: string) {
+  return db.doc(`artifacts/${APP_ID}/users/${uid}/userData/main`);
+}
+
+// True only for a touch that is BOTH structurally valid (already guaranteed by
+// sanitizeAttributionSnapshot) AND semantically eligible to occupy the lastTouch slot —
+// 'direct' is a valid touch source in general, but reduceAttributionState's own contract
+// never lets a 'direct' touch become a last-touch (see isMeaningfulTouch client-side); a
+// 'direct' value found sitting in the lastTouch slot violates that invariant and must be
+// treated as invalid for this slot specifically, not repaired or reinterpreted.
+function isEligibleLastTouch(touch: SanitizedAttributionTouch | null): touch is SanitizedAttributionTouch {
+  return touch !== null && (touch.source === 'utm' || touch.source === 'referral');
+}
+
+// Deterministically selects ONE COMPLETE last-touch object — never a composite of fields
+// from both sources (see the header comment on resolveCheckoutAttributionSnapshot below
+// for why field-level merging is never done anywhere in this module). Only touches that
+// are independently eligible (see isEligibleLastTouch) are even considered. When both
+// sources have one, the one with the strictly newer capturedAt wins whole; a tie (or
+// Firestore being newer-or-equal) deterministically prefers Firestore, since it is the
+// more-established, cross-device source of truth once it exists — this mirrors
+// firstTouch's own "existing beats fresh" bias at the tie boundary specifically, while
+// still letting a genuinely newer client touch win when it truly is newer.
+function selectLastTouch(
+  remoteLastTouch: SanitizedAttributionTouch | null,
+  clientLastTouch: SanitizedAttributionTouch | null
+): SanitizedAttributionTouch | null {
+  const remote = isEligibleLastTouch(remoteLastTouch) ? remoteLastTouch : null;
+  const client = isEligibleLastTouch(clientLastTouch) ? clientLastTouch : null;
+  if (remote && client) {
+    return client.capturedAt > remote.capturedAt ? client : remote; // tie -> remote
+  }
+  return remote ?? client;
+}
+
+// Best-effort read of this uid's client-captured attribution (see src/services/
+// attribution.ts for how the client populates it), reconciled with an OPTIONAL
+// client-supplied fallback (see services/stripe.ts's checkout-time flush — a client that
+// just landed and purchases immediately may not have finished writing to Firestore yet).
+// Never blocks or fails checkout: a missing document, a Firestore read error, and a
+// malformed/tampered value from EITHER source all degrade gracefully rather than
+// throwing.
+//
+// sanitizeAttributionSnapshot performs an INDEPENDENT server-side re-validation of BOTH
+// sources — the Firestore document was written under a client-owned Firestore rule
+// (owner-write-only), which restricts WHO can write it but not WHAT shape or content it
+// contains, and the request payload is raw client input by definition — neither is ever
+// trusted merely because of where it came from. Critically, that validation already
+// treats each touch as ONE INDIVISIBLE OBJECT (valid whole, or discarded whole) — nothing
+// in this function (or sanitizeAttributionSnapshot) ever builds a hybrid touch out of
+// fields taken from two different sources, since that could describe a visit that never
+// actually happened (e.g. a UTM campaign paired with a landing path/timestamp from an
+// unrelated direct visit).
+//
+// firstTouch: Firestore's entire touch wins whenever it has one (it is the more
+// established, cross-device source of truth); the client payload's entire touch is used
+// only when Firestore has none at all. lastTouch: see selectLastTouch above — the same
+// "pick one complete object" rule, additionally scoped to touches that are actually
+// eligible to be a last-touch, with a capturedAt-based freshness comparison specifically
+// for this slot (since, unlike firstTouch, a genuinely newer last-touch IS the more
+// useful signal for checkout-time attribution).
+async function resolveCheckoutAttributionSnapshot(
+  db: Firestore,
+  uid: string,
+  clientSuppliedRaw: unknown
+): Promise<SanitizedAttributionSnapshot> {
+  const nowMs = Date.now(); // shared reference so remote and client are judged against the same "now"
+  const clientSanitized = sanitizeAttributionSnapshot(clientSuppliedRaw, nowMs);
+  let remote: SanitizedAttributionSnapshot;
+  try {
+    const snap = await userDataRef(db, uid).get();
+    const raw = snap.exists ? (snap.data() as Record<string, unknown> | undefined)?.attribution : undefined;
+    remote = sanitizeAttributionSnapshot(raw, nowMs);
+  } catch (error) {
+    console.warn('[DNS Checkout] Attribution snapshot read failed; falling back to client-supplied value only.', { uid, error });
+    remote = EMPTY_ATTRIBUTION_SNAPSHOT;
+  }
+  return {
+    v: ATTRIBUTION_SCHEMA_VERSION,
+    firstTouch: remote.firstTouch ?? clientSanitized.firstTouch,
+    lastTouch: selectLastTouch(remote.lastTouch, clientSanitized.lastTouch),
+  };
+}
 
 function stripeClient(): Stripe {
   return new Stripe(stripeSecretKey.value(), { apiVersion: STRIPE_API_VERSION });
@@ -289,9 +391,16 @@ async function recordCheckoutCorrelation(
     uid: string;
     stripeCustomerId: string;
     livemode: boolean;
+    // Immutable marketing-attribution snapshot — see attribution.ts. Deliberately NOT
+    // part of correlationMatches' comparison (see CorrelationRecord above): whichever
+    // invocation's .create() call actually wins the race below is the one whose
+    // attribution snapshot is permanently recorded. A concurrent retry that read a
+    // different (or no) snapshot is treated as fully compatible regardless — first
+    // successful writer wins, and this field is never re-validated or updated afterward.
+    attribution: SanitizedAttributionSnapshot;
   }
 ): Promise<void> {
-  const { sessionId, uid, stripeCustomerId, livemode } = params;
+  const { sessionId, uid, stripeCustomerId, livemode, attribution } = params;
   const correlationRef = db.doc(`stripeDnsCheckoutSessions/${sessionId}`);
   const conflictError = () =>
     new HttpsError(
@@ -316,6 +425,7 @@ async function recordCheckoutCorrelation(
       mode: 'payment',
       livemode,
       checkoutSessionId: sessionId,
+      attribution,
       createdAt: FieldValue.serverTimestamp(),
     });
   } catch (error) {
@@ -503,6 +613,21 @@ export const createDnsCheckoutSession = onCall(
       throw new HttpsError('failed-precondition', 'Sign in before purchasing DNS Foundations.');
     }
 
+    // Optional, additive request field — omitted entirely (request.data is undefined/null)
+    // by any client that doesn't send it, which behaves identically to before this field
+    // existed. See services/stripe.ts: a client that just landed and purchases
+    // immediately flushes to Firestore first, but also attaches its own freshest local
+    // state here as a fallback in case that flush didn't land in time. Raw, untrusted
+    // client input either way — resolveCheckoutAttributionSnapshot re-validates it
+    // independently, exactly like the Firestore-read path.
+    const clientSuppliedAttribution = (request.data as { attribution?: unknown } | null | undefined)?.attribution;
+
+    // Kicked off in parallel with Stripe customer/session provisioning below — a single,
+    // independent, best-effort Firestore read (see resolveCheckoutAttributionSnapshot)
+    // that never throws and is never awaited until the correlation record is about to be
+    // written, so it adds no serial latency to the checkout path.
+    const attributionPromise = resolveCheckoutAttributionSnapshot(db, uid, clientSuppliedAttribution);
+
     const stripe = stripeClient();
     let stripeCustomerId: string;
     try {
@@ -518,6 +643,7 @@ export const createDnsCheckoutSession = onCall(
     }
 
     const { url, sessionId, livemode } = await createDnsCheckoutSessionCore(stripe, db, uid, stripeCustomerId);
+    const attribution = await attributionPromise;
 
     // This Admin-only record binds fulfillment to a Session created by this callable.
     // Firestore's default deny applies because no client rule matches this collection.
@@ -530,6 +656,7 @@ export const createDnsCheckoutSession = onCall(
         uid,
         stripeCustomerId,
         livemode,
+        attribution,
       });
     } catch (error) {
       if (error instanceof HttpsError) throw error;
@@ -881,4 +1008,8 @@ export const __test__ = {
   isFirestoreAlreadyExistsError,
   createDnsCheckoutSessionCore,
   DNS_CHECKOUT_SUCCESS_URL,
+  resolveCheckoutAttributionSnapshot,
+  userDataRef,
+  APP_ID,
+  correlationMatches,
 };

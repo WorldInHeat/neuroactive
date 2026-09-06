@@ -1,4 +1,5 @@
 // src/state/types.ts
+import type { AttributionState } from '../services/attribution';
 
 export type DecisionNode = {
   id: string;
@@ -73,4 +74,10 @@ export type UserData = {
 
   // 12-Week DNS Foundations course — structurally separate from the assessment tree
   dnsCourse?: DnsCourseProgress;
+
+  // First-party marketing attribution (see services/attribution.ts). Deliberately NOT
+  // stripped by DNS_ONLY_LAUNCH's ASSESSMENT_FIELDS_GATED_UNDER_DNS_ONLY_LAUNCH list below
+  // — it's unrelated to the assessment feature and should always persist. Untrusted
+  // client-supplied marketing metadata; never used for auth, price, or entitlement.
+  attribution?: AttributionState;
 };

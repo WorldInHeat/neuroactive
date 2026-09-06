@@ -1,6 +1,20 @@
-import { db } from './firebase';
-import { collection, addDoc, onSnapshot } from 'firebase/firestore';
+import { db, appId } from './firebase';
+import { collection, addDoc, doc, onSnapshot, runTransaction } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
+import {
+  captureLandingSignalOnce,
+  readLocalAttributionState,
+  bestEffortReconcileWithTimeout,
+  checkoutWithAttributionFlush,
+  validateAttributionState,
+  type AttributionState,
+} from './attribution';
+
+// Bounded, single-attempt timeout for the checkout-time attribution flush below — see
+// createCheckoutSession. Deliberately short: this exists to close the "just landed and
+// bought immediately" gap, not to guarantee delivery — a slow/blocked/offline Firestore
+// must cost at most this long, never hold up checkout waiting for a retry.
+const ATTRIBUTION_FLUSH_TIMEOUT_MS = 1500;
 
 // 'program' now points at a live-mode Stripe price. import.meta.env.DEV (same pattern as
 // DevTimeSkip in App.tsx) keeps local dev on the test-mode price so `npm run dev` can
@@ -37,18 +51,63 @@ const CHECKOUT_MODE: Record<PriceKey, 'payment' | 'subscription'> = {
   elite: 'payment',
 };
 
+// Fast-checkout attribution gap: a visitor who lands and purchases within moments may
+// invoke checkout before App.tsx's own (fire-and-forget, once-per-page-load) Firestore
+// reconciliation has had a chance to run or land — see App.tsx's syncAttribution. This
+// performs one bounded, best-effort, AWAITED attempt to flush the current local
+// buffer into Firestore immediately before checkout, so the common case (Firestore
+// reachable) is captured even on a rapid purchase. Never throws — a blocked/slow/offline
+// Firestore degrades to "didn't finish in time," not an error, and the caller
+// (checkoutWithAttributionFlush) proceeds to checkout exactly once regardless.
+async function flushAttributionBeforeCheckout(userId: string): Promise<void> {
+  const touch = captureLandingSignalOnce(); // idempotent — same touch as page load, this app has no router
+  const attributionDocRef = doc(db, 'artifacts', appId, 'users', userId, 'userData', 'main');
+  await bestEffortReconcileWithTimeout(
+    {
+      runAtomicUpdate: (update) => runTransaction(db, async (transaction) => {
+        const snap = await transaction.get(attributionDocRef);
+        const data = snap.exists() ? (snap.data() as { attribution?: AttributionState }) : undefined;
+        const existing = validateAttributionState(data?.attribution);
+        const next = update(existing);
+        if (next.firstTouch !== existing.firstTouch || next.lastTouch !== existing.lastTouch) {
+          transaction.set(attributionDocRef, { attribution: next }, { merge: true });
+        }
+        return next;
+      }),
+    },
+    touch,
+    ATTRIBUTION_FLUSH_TIMEOUT_MS
+  );
+}
+
 export async function createCheckoutSession(userId: string, priceKey: PriceKey): Promise<void> {
   // Production DNS Checkout is created at a trusted server boundary using a modern
   // Stripe API version. Keep local development on the existing test price so running
   // the dev client can never create a live charge.
   if (priceKey === 'program' && !import.meta.env.DEV) {
-    const createDnsCheckout = httpsCallable<void, { url: string }>(
-      getFunctions(),
-      'createDnsCheckoutSession'
+    await checkoutWithAttributionFlush(
+      () => flushAttributionBeforeCheckout(userId),
+      async () => {
+        const createDnsCheckout = httpsCallable<{ attribution?: AttributionState } | undefined, { url: string }>(
+          getFunctions(),
+          'createDnsCheckoutSession'
+        );
+        // Sent alongside the Firestore flush attempt above (not instead of it) — a
+        // fallback the server reconciles as complete, indivisible touch objects (see
+        // resolveCheckoutAttributionSnapshot), for the case where the flush
+        // just above didn't land in time. Untrusted, independently re-validated
+        // server-side either way; never a second call to this callable.
+        let clientAttribution: AttributionState | undefined;
+        try {
+          clientAttribution = readLocalAttributionState();
+        } catch {
+          clientAttribution = undefined;
+        }
+        const result = await createDnsCheckout(clientAttribution ? { attribution: clientAttribution } : undefined);
+        if (!result.data.url) throw new Error('Checkout URL was not returned.');
+        window.location.assign(result.data.url);
+      }
     );
-    const result = await createDnsCheckout();
-    if (!result.data.url) throw new Error('Checkout URL was not returned.');
-    window.location.assign(result.data.url);
     return;
   }
 

@@ -33,6 +33,15 @@ export default function PrivacyPolicyPage() {
           we can grant access to paid content.
         </p>
         <p>
+          <strong className="text-[#f0f4f8] font-semibold">Marketing attribution.</strong> We do not use third-party
+          advertising pixels or third-party behavioral-analytics tools for marketing attribution. We collect limited
+          first-party attribution information — such as the initial page visited, a referring website's hostname, and
+          campaign parameters (utm_source, utm_medium, utm_campaign, utm_content, utm_term) included in a NeuroActive
+          link — to understand how people discover the app. We do not collect the full referring web address through
+          this feature, and attribution information is not used to determine eligibility, pricing, payment status, or
+          access to course content.
+        </p>
+        <p>
           <strong className="text-[#f0f4f8] font-semibold">Pain and symptom assessment data.</strong> No pain,
           symptom, or assessment data is currently collected from new use of the app — this feature is present in
           our underlying platform but is not reachable or active. If you used an earlier version of the app that
@@ -55,10 +64,11 @@ export default function PrivacyPolicyPage() {
 
       <LegalSection number={3} title="Third-Party Services">
         <p>
-          The app relies on the following services to operate. We do not install or run any analytics,
-          advertising, or tracking software of our own. Some of these third-party services may receive standard
-          technical request data (such as your device's IP address) simply as a normal part of loading their
-          content — this is standard for any web-connected service, not something we configure or control.
+          The app relies on the following services to operate. We have not added third-party advertising pixels or
+          third-party behavioral-analytics tools of our own — see "Marketing attribution" above for the limited
+          first-party attribution information we collect ourselves. Those providers may process operational data
+          (such as your device's IP address) under their own terms and privacy policies as part of delivering their
+          services.
         </p>
         <LegalList>
           <li>

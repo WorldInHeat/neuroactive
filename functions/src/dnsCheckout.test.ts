@@ -19,9 +19,41 @@
 
 import { __test__ } from './dnsCheckout';
 import { DNS_PROGRAM_PRICE_ID } from './dnsEntitlement';
+import { EMPTY_ATTRIBUTION_SNAPSHOT, ATTRIBUTION_SCHEMA_VERSION, type SanitizedAttributionSnapshot, type SanitizedAttributionTouch } from './attribution';
 
-const { getOrCreateCheckoutAttempt, recordCheckoutCorrelation, createDnsCheckoutSessionCore, DNS_CHECKOUT_SUCCESS_URL } =
-  __test__;
+const {
+  getOrCreateCheckoutAttempt,
+  recordCheckoutCorrelation,
+  createDnsCheckoutSessionCore,
+  DNS_CHECKOUT_SUCCESS_URL,
+  resolveCheckoutAttributionSnapshot,
+  userDataRef,
+  correlationMatches,
+} = __test__;
+
+function makeAttributionSnapshot(utmCampaign: string): SanitizedAttributionSnapshot {
+  return {
+    v: ATTRIBUTION_SCHEMA_VERSION,
+    firstTouch: makeAttributionTouch(utmCampaign),
+    lastTouch: null,
+  };
+}
+
+function makeAttributionTouch(utmCampaign: string, capturedAt = Date.UTC(2026, 0, 1)): SanitizedAttributionTouch {
+  return {
+      v: ATTRIBUTION_SCHEMA_VERSION,
+      landingPath: '/',
+      referrerHostname: null,
+      utmSource: 'instagram',
+      utmMedium: 'social',
+      utmCampaign,
+      utmContent: null,
+      utmTerm: null,
+      source: 'utm',
+      sourceLabel: null,
+      capturedAt,
+  };
+}
 
 let pass = 0;
 let fail = 0;
@@ -328,7 +360,7 @@ async function run() {
 
   await checkAsync('two simultaneous invocations resolving to the same Checkout Session both succeed, and only one compatible document results', async () => {
     const { db, store } = makeFakeCorrelationDb();
-    const params = { sessionId: 'cs_race1', uid: 'uid-R1', stripeCustomerId: 'cus_R1', livemode: true };
+    const params = { sessionId: 'cs_race1', uid: 'uid-R1', stripeCustomerId: 'cus_R1', livemode: true, attribution: EMPTY_ATTRIBUTION_SNAPSHOT };
     const results = await Promise.allSettled([
       recordCheckoutCorrelation(db, params),
       recordCheckoutCorrelation(db, params),
@@ -343,9 +375,76 @@ async function run() {
     return bothSucceeded && exactlyOneMatchingDoc;
   });
 
+  await checkAsync('idempotent checkout retries with DIFFERING attribution snapshots produce exactly one compatible document (first successful writer wins, neither call throws)', async () => {
+    const { db, store } = makeFakeCorrelationDb();
+    const sessionId = 'cs_race_attr1';
+    const uid = 'uid-R1B';
+    const stripeCustomerId = 'cus_R1B';
+    const attrA = makeAttributionSnapshot('campaign-A');
+    const attrB = makeAttributionSnapshot('campaign-B');
+    const results = await Promise.allSettled([
+      recordCheckoutCorrelation(db, { sessionId, uid, stripeCustomerId, livemode: true, attribution: attrA }),
+      recordCheckoutCorrelation(db, { sessionId, uid, stripeCustomerId, livemode: true, attribution: attrB }),
+    ]);
+    const bothSucceeded = results.every((r) => r.status === 'fulfilled');
+    const doc = store.get(`stripeDnsCheckoutSessions/${sessionId}`);
+    const storedCampaign = (doc?.attribution as SanitizedAttributionSnapshot | undefined)?.firstTouch?.utmCampaign;
+    // Exactly one document, and its attribution is WHICHEVER call's snapshot actually won
+    // the underlying create() race — never a merge, never both, and (critically) never a
+    // thrown "mismatch" error merely because the two calls carried different attribution.
+    const oneCompatibleSnapshot = store.size === 1 && (storedCampaign === 'campaign-A' || storedCampaign === 'campaign-B');
+    return bothSucceeded && oneCompatibleSnapshot;
+  });
+
+  check('correlationMatches (the idempotent-reuse/conflict check) ignores attribution entirely — a differing attribution snapshot is never treated as a conflict', (() => {
+    const base = {
+      uid: 'uid-M1',
+      stripeCustomerId: 'cus_M1',
+      stripePriceId: DNS_PROGRAM_PRICE_ID,
+      quantity: 1,
+      mode: 'payment',
+      livemode: true,
+      checkoutSessionId: 'cs_m1',
+    };
+    const withAttrA = { ...base, attribution: makeAttributionSnapshot('A') };
+    const withAttrB = { ...base, attribution: makeAttributionSnapshot('B') };
+    const withNoAttr = { ...base };
+    return (
+      correlationMatches(withAttrA, 'cs_m1', 'uid-M1', 'cus_M1') === true &&
+      correlationMatches(withAttrB, 'cs_m1', 'uid-M1', 'cus_M1') === true &&
+      correlationMatches(withNoAttr, 'cs_m1', 'uid-M1', 'cus_M1') === true
+    );
+  })());
+
+  await checkAsync('a sequential retry with attribution ABSENT after the first write had it PRESENT is still accepted as idempotent success (never a conflict)', async () => {
+    const { db } = makeFakeCorrelationDb();
+    const sessionId = 'cs_seq1';
+    const uid = 'uid-SEQ1';
+    const stripeCustomerId = 'cus_SEQ1';
+    await recordCheckoutCorrelation(db, { sessionId, uid, stripeCustomerId, livemode: true, attribution: makeAttributionSnapshot('present-first') });
+    // A later retry of the SAME logical attempt whose own attribution resolution came up
+    // empty this time (e.g. Firestore was briefly unreachable on this particular retry) —
+    // must still be accepted, and must NOT overwrite the first (already-recorded) snapshot.
+    await recordCheckoutCorrelation(db, { sessionId, uid, stripeCustomerId, livemode: true, attribution: EMPTY_ATTRIBUTION_SNAPSHOT });
+    return true; // must not have thrown
+  });
+
+  await checkAsync('a sequential retry with attribution PRESENT after the first write had it ABSENT is still accepted as idempotent success (and does not retroactively overwrite the recorded — empty — snapshot)', async () => {
+    const { db, store } = makeFakeCorrelationDb();
+    const sessionId = 'cs_seq2';
+    const uid = 'uid-SEQ2';
+    const stripeCustomerId = 'cus_SEQ2';
+    await recordCheckoutCorrelation(db, { sessionId, uid, stripeCustomerId, livemode: true, attribution: EMPTY_ATTRIBUTION_SNAPSHOT });
+    await recordCheckoutCorrelation(db, { sessionId, uid, stripeCustomerId, livemode: true, attribution: makeAttributionSnapshot('present-second') });
+    const doc = store.get(`stripeDnsCheckoutSessions/${sessionId}`);
+    // First successful writer wins — the second call's (differing) attribution is
+    // silently discarded, exactly like the concurrent case, just observed sequentially.
+    return (doc?.attribution as SanitizedAttributionSnapshot)?.firstTouch === null;
+  });
+
   await checkAsync('an already-existing compatible correlation document is accepted as idempotent success', async () => {
     const { db } = makeFakeCorrelationDb();
-    const params = { sessionId: 'cs_ok1', uid: 'uid-R2', stripeCustomerId: 'cus_R2', livemode: true };
+    const params = { sessionId: 'cs_ok1', uid: 'uid-R2', stripeCustomerId: 'cus_R2', livemode: true, attribution: EMPTY_ATTRIBUTION_SNAPSHOT };
     await recordCheckoutCorrelation(db, params);
     await recordCheckoutCorrelation(db, params); // second call: doc already exists, must not throw
     return true;
@@ -368,6 +467,7 @@ async function run() {
         uid: 'uid-R3', // different uid than the seeded doc -> mismatch
         stripeCustomerId: 'cus_R3',
         livemode: true,
+        attribution: EMPTY_ATTRIBUTION_SNAPSHOT,
       });
       return false; // must have thrown
     } catch {
@@ -376,7 +476,7 @@ async function run() {
   });
 
   await checkAsync('a create-time ALREADY_EXISTS race is recovered by rereading and validating', async () => {
-    const params = { sessionId: 'cs_race2', uid: 'uid-R4', stripeCustomerId: 'cus_R4', livemode: true };
+    const params = { sessionId: 'cs_race2', uid: 'uid-R4', stripeCustomerId: 'cus_R4', livemode: true, attribution: EMPTY_ATTRIBUTION_SNAPSHOT };
     const db = makeFakeCorrelationDbWithInjectedCreateRace({
       uid: params.uid,
       stripeCustomerId: params.stripeCustomerId,
@@ -391,7 +491,7 @@ async function run() {
   });
 
   await checkAsync('a create-time ALREADY_EXISTS race whose winner does NOT match still fails closed', async () => {
-    const params = { sessionId: 'cs_race3', uid: 'uid-R5', stripeCustomerId: 'cus_R5', livemode: true };
+    const params = { sessionId: 'cs_race3', uid: 'uid-R5', stripeCustomerId: 'cus_R5', livemode: true, attribution: EMPTY_ATTRIBUTION_SNAPSHOT };
     const db = makeFakeCorrelationDbWithInjectedCreateRace({
       uid: 'uid-DIFFERENT', // race winner recorded a DIFFERENT uid for this session id
       stripeCustomerId: params.stripeCustomerId,
@@ -528,6 +628,171 @@ async function run() {
     } catch {
       return createCalls.length === 1;
     }
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // resolveCheckoutAttributionSnapshot — best-effort, never-blocking read at checkout time.
+  // ---------------------------------------------------------------------------------------
+
+  await checkAsync('missing userData document -> empty attribution snapshot, no throw (checkout proceeds normally)', async () => {
+    const { db } = makeFakeCorrelationDb();
+    const result = await resolveCheckoutAttributionSnapshot(db, 'uid-NOATTR1', undefined);
+    return result.firstTouch === null && result.lastTouch === null;
+  });
+
+  await checkAsync('a userData document with no attribution field -> empty snapshot, no throw', async () => {
+    const { db, seed } = makeFakeCorrelationDb();
+    seed(userDataRef(db, 'uid-NOATTR2').path, { dnsCourse: { currentDay: 3 } });
+    const result = await resolveCheckoutAttributionSnapshot(db, 'uid-NOATTR2', undefined);
+    return result.firstTouch === null && result.lastTouch === null;
+  });
+
+  await checkAsync('a valid attribution field on the userData document is read and passed through sanitization intact', async () => {
+    const { db, seed } = makeFakeCorrelationDb();
+    const snapshot = makeAttributionSnapshot('read-through-campaign');
+    seed(userDataRef(db, 'uid-ATTR1').path, { attribution: snapshot });
+    const result = await resolveCheckoutAttributionSnapshot(db, 'uid-ATTR1', undefined);
+    return result.firstTouch?.utmCampaign === 'read-through-campaign';
+  });
+
+  await checkAsync('a malformed attribution field on the userData document degrades to an empty snapshot rather than throwing', async () => {
+    const { db, seed } = makeFakeCorrelationDb();
+    seed(userDataRef(db, 'uid-ATTR2').path, {
+      attribution: { firstTouch: { v: 999, garbage: true } },
+    });
+    const result = await resolveCheckoutAttributionSnapshot(db, 'uid-ATTR2', undefined);
+    return result.firstTouch === null && result.lastTouch === null;
+  });
+
+  await checkAsync('a Firestore read failure degrades to an empty snapshot rather than throwing (never blocks checkout)', async () => {
+    const throwingDb = {
+      doc: () => ({
+        async get() {
+          throw new Error('simulated Firestore outage');
+        },
+      }),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await resolveCheckoutAttributionSnapshot(throwingDb as any, 'uid-ATTR3', undefined);
+    return result.firstTouch === null && result.lastTouch === null;
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // Fast-checkout attribution gap fix: the OPTIONAL client-supplied request payload is a
+  // atomic-touch reconciliation for whatever the Firestore flush didn't land in time.
+  // ---------------------------------------------------------------------------------------
+
+  await checkAsync('Firestore has no attribution document at all: the client-supplied payload is used as a fallback (the fast-checkout case)', async () => {
+    const { db } = makeFakeCorrelationDb();
+    const clientPayload = makeAttributionSnapshot('rapid-purchase-campaign');
+    const result = await resolveCheckoutAttributionSnapshot(db, 'uid-FAST1', clientPayload);
+    return result.firstTouch?.utmCampaign === 'rapid-purchase-campaign';
+  });
+
+  await checkAsync('Firestore already has a (different) firstTouch: Firestore wins, the client payload is ignored for that field — a client can never override an already-established first touch', async () => {
+    const { db, seed } = makeFakeCorrelationDb();
+    const firestoreSnapshot = makeAttributionSnapshot('original-firestore-campaign');
+    seed(userDataRef(db, 'uid-FAST2').path, { attribution: firestoreSnapshot });
+    const clientPayload = makeAttributionSnapshot('spoofed-client-campaign');
+    const result = await resolveCheckoutAttributionSnapshot(db, 'uid-FAST2', clientPayload);
+    return result.firstTouch?.utmCampaign === 'original-firestore-campaign';
+  });
+
+  await checkAsync('Firestore firstTouch and client lastTouch are selected as separate complete touches, never merged within a touch', async () => {
+    const { db, seed } = makeFakeCorrelationDb();
+    seed(userDataRef(db, 'uid-FAST3').path, {
+      attribution: { v: ATTRIBUTION_SCHEMA_VERSION, firstTouch: makeAttributionSnapshot('remote-first').firstTouch, lastTouch: null },
+    });
+    const clientPayload: SanitizedAttributionSnapshot = {
+      v: ATTRIBUTION_SCHEMA_VERSION,
+      firstTouch: makeAttributionSnapshot('client-first-should-be-ignored').firstTouch,
+      lastTouch: makeAttributionSnapshot('client-last-should-win').firstTouch, // reused as a lastTouch value
+    };
+    const result = await resolveCheckoutAttributionSnapshot(db, 'uid-FAST3', clientPayload);
+    return result.firstTouch?.utmCampaign === 'remote-first' && result.lastTouch?.utmCampaign === 'client-last-should-win';
+  });
+
+  await checkAsync('a complete Firestore direct first touch remains whole when the client supplies a complete UTM first touch', async () => {
+    const { db, seed } = makeFakeCorrelationDb();
+    const remoteDirect = { ...makeAttributionTouch('unused'), source: 'direct' as const, landingPath: '/', utmSource: null, utmMedium: null, utmCampaign: null };
+    seed(userDataRef(db, 'uid-ATOMIC1').path, { attribution: { v: ATTRIBUTION_SCHEMA_VERSION, firstTouch: remoteDirect, lastTouch: null } });
+    const client = makeAttributionSnapshot('instagram-client');
+    const result = await resolveCheckoutAttributionSnapshot(db, 'uid-ATOMIC1', client);
+    return JSON.stringify(result.firstTouch) === JSON.stringify(remoteDirect);
+  });
+
+  await checkAsync('a partial Firestore first touch is discarded whole and falls back to the complete client first touch', async () => {
+    const { db, seed } = makeFakeCorrelationDb();
+    const client = makeAttributionSnapshot('complete-client');
+    seed(userDataRef(db, 'uid-ATOMIC2').path, { attribution: { v: ATTRIBUTION_SCHEMA_VERSION, firstTouch: { v: 1, source: 'direct', capturedAt: Date.UTC(2026, 0, 1) }, lastTouch: null } });
+    const result = await resolveCheckoutAttributionSnapshot(db, 'uid-ATOMIC2', client);
+    return JSON.stringify(result.firstTouch) === JSON.stringify(client.firstTouch);
+  });
+
+  for (const [label, remoteAt, clientAt, expected] of [
+    ['newer client last touch wins whole', Date.UTC(2026, 0, 1), Date.UTC(2026, 0, 2), 'client'],
+    ['newer Firestore last touch wins whole', Date.UTC(2026, 0, 2), Date.UTC(2026, 0, 1), 'remote'],
+    ['timestamp tie deterministically prefers Firestore whole', Date.UTC(2026, 0, 1), Date.UTC(2026, 0, 1), 'remote'],
+  ] as const) {
+    await checkAsync(label, async () => {
+      const { db, seed } = makeFakeCorrelationDb();
+      const remote = makeAttributionTouch('remote', remoteAt);
+      const client = makeAttributionTouch('client', clientAt);
+      seed(userDataRef(db, `uid-LAST-${label}`).path, { attribution: { v: ATTRIBUTION_SCHEMA_VERSION, firstTouch: null, lastTouch: remote } });
+      const result = await resolveCheckoutAttributionSnapshot(db, `uid-LAST-${label}`, { v: ATTRIBUTION_SCHEMA_VERSION, firstTouch: null, lastTouch: client });
+      return JSON.stringify(result.lastTouch) === JSON.stringify(expected === 'remote' ? remote : client);
+    });
+  }
+
+  await checkAsync('a Firestore read failure falls back entirely to the (independently re-sanitized) client-supplied payload rather than an empty snapshot', async () => {
+    const throwingDb = {
+      doc: () => ({
+        async get() {
+          throw new Error('simulated Firestore outage');
+        },
+      }),
+    };
+    const clientPayload = makeAttributionSnapshot('offline-fallback-campaign');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await resolveCheckoutAttributionSnapshot(throwingDb as any, 'uid-FAST4', clientPayload);
+    return result.firstTouch?.utmCampaign === 'offline-fallback-campaign';
+  });
+
+  await checkAsync('no attribution ANYWHERE (Firestore empty, no client payload) still resolves harmlessly — checkout is never blocked', async () => {
+    const { db } = makeFakeCorrelationDb();
+    const result = await resolveCheckoutAttributionSnapshot(db, 'uid-FAST5', undefined);
+    return result.firstTouch === null && result.lastTouch === null;
+  });
+
+  await checkAsync('a malicious/malformed client-supplied payload (oversized value, control character, fabricated PII-shaped field) is independently re-sanitized — nothing raw ever survives into the recorded snapshot', async () => {
+    const { db } = makeFakeCorrelationDb();
+    const maliciousPayload = {
+      v: ATTRIBUTION_SCHEMA_VERSION,
+      firstTouch: {
+        v: ATTRIBUTION_SCHEMA_VERSION,
+        landingPath: '/',
+        referrerHostname: null,
+        utmSource: 'x'.repeat(9999), // wildly oversized
+        utmMedium: 'evil\x07bell', // control character
+        utmCampaign: null,
+        utmContent: null,
+        utmTerm: null,
+        source: 'utm',
+        sourceLabel: null,
+        capturedAt: Date.now(),
+        email: 'attacker@example.com', // fabricated field this schema has no place for
+        ipAddress: '1.2.3.4',
+      },
+      lastTouch: null,
+    };
+    const result = await resolveCheckoutAttributionSnapshot(db, 'uid-FAST6', maliciousPayload);
+    const json = JSON.stringify(result);
+    return (
+      result.firstTouch?.utmSource?.length === 100 && // truncated to the real limit, not 9999
+      result.firstTouch?.utmMedium === null && // control character -> dropped, not stored raw
+      !json.includes('attacker@example.com') &&
+      !json.includes('1.2.3.4')
+    );
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

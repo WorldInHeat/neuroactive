@@ -46,7 +46,7 @@ import {
   signOut,
   type Auth,
 } from 'firebase/auth';
-import { doc, setDoc, getDoc, onSnapshot, collection } from 'firebase/firestore';
+import { doc, setDoc, getDoc, onSnapshot, collection, runTransaction } from 'firebase/firestore';
 
 import { DECISION_TREE } from './data/decisionTree';
 import type { PainLogEntry, UserData, DnsCourseProgress } from './state/types';
@@ -61,6 +61,13 @@ import { useNotifications, type NotificationStatus } from './hooks/useNotificati
 import { useNotificationPreferences, type NotificationPreferences } from './hooks/useNotificationPreferences';
 import { auth, db, appId } from './services/firebase';
 import { createPortalLink, type PriceKey } from './services/stripe';
+import {
+  captureLandingSignalOnce,
+  reconcileRemoteAttribution,
+  validateAttributionState,
+  type AttributionTouch,
+  type AttributionState,
+} from './services/attribution';
 import { DNS_ONLY_LAUNCH } from './config/launchConfig';
 
 // Firebase itself is initialized exactly once, in src/services/firebase.ts — imported above,
@@ -1244,6 +1251,22 @@ export default function App() {
   const [userDataHydrated, setUserDataHydrated] = useState(false);
   const [entitlementHydrated, setEntitlementHydrated] = useState(false);
 
+  // Marketing-attribution capture (see services/attribution.ts). Computed synchronously,
+  // exactly once for this page load, via the null-guard-on-a-ref idiom rather than an
+  // effect — this app has no real routing (every "view" is a conditional render, not a
+  // URL change), so window.location/document.referrer never change after this point
+  // anyway, but capturing this early costs nothing and matches the general principle of
+  // never risking losing landing-page signal to later code. Read, never written, by
+  // anything below except the one reconciliation site inside the userData listener.
+  const attributionTouchRef = useRef<AttributionTouch | null>(null);
+  if (attributionTouchRef.current === null) {
+    attributionTouchRef.current = captureLandingSignalOnce();
+  }
+  // Guards the one-time-per-uid-per-page-load Firestore reconciliation below — mirrors
+  // hydrationUidRef's own shape/reasoning, kept separate since attribution sync and
+  // hydration-flag semantics are otherwise unrelated concerns.
+  const attributionSyncedUidRef = useRef<string | null>(null);
+
   // Distinguishes the FIRST onAuthStateChanged resolution this page load from every
   // later one — see the navigation-ownership state machine documented at its one call
   // site below. Deliberately separate from userDataUidRef (which starts null too, but
@@ -1598,6 +1621,39 @@ export default function App() {
         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'userData', 'main');
         const userDataListenerUid = user.uid; // closed over below — see hydrationUidRef comment above
 
+        // Marketing-attribution reconciliation (see services/attribution.ts). Runs at
+        // most once per uid per page load (attributionSyncedUidRef guard) — applies THIS
+        // page load's already-captured touch (attributionTouchRef.current) against
+        // whatever this uid's Firestore document currently holds, via the shared
+        // reconcileRemoteAttribution helper (same one services/stripe.ts uses for the
+        // checkout-time flush), so every write path agrees about when it's OK to
+        // overwrite last-touch. A no-op if the result doesn't actually change anything
+        // (avoids a pointless write on every listener re-fire). Never blocks hydration:
+        // fire-and-forget, with any failure merely logged, same as the isPremium write a
+        // few lines below.
+        const syncAttribution = () => {
+          if (attributionSyncedUidRef.current === userDataListenerUid) return;
+          attributionSyncedUidRef.current = userDataListenerUid;
+          const touch = attributionTouchRef.current;
+          if (!touch) return;
+          const attributionDocRef = doc(db, 'artifacts', appId, 'users', userDataListenerUid, 'userData', 'main');
+          reconcileRemoteAttribution(
+            {
+              runAtomicUpdate: (update) => runTransaction(db, async (transaction) => {
+                const snap = await transaction.get(attributionDocRef);
+                const data = snap.exists() ? (snap.data() as { attribution?: AttributionState }) : undefined;
+                const existing = validateAttributionState(data?.attribution);
+                const next = update(existing);
+                if (next.firstTouch !== existing.firstTouch || next.lastTouch !== existing.lastTouch) {
+                  transaction.set(attributionDocRef, { attribution: next }, { merge: true });
+                }
+                return next;
+              }),
+            },
+            touch
+          ).catch((err) => console.warn('[Attribution] sync failed:', err));
+        };
+
         unsubscribeSnapshot = onSnapshot(
           docRef,
           (docSnap) => {
@@ -1605,6 +1661,7 @@ export default function App() {
               // Deterministic absence, not "still loading" — a brand-new account with no
               // document yet is a real, resolved state, so hydration still proceeds; the
               // already-reset defaults above are correct and simply stay.
+              syncAttribution();
               if (hydrationUidRef.current === userDataListenerUid) setUserDataHydrated(true);
               return;
             }
@@ -1624,6 +1681,7 @@ export default function App() {
             setHasWatchedWelcome(data.hasWatchedWelcome ?? false);
             setHasWatchedAssessmentIntro(data.hasWatchedAssessmentIntro ?? false);
             if (data.dnsCourse) setDnsCourse(normalizeDnsCourse(data.dnsCourse));
+            syncAttribution();
             if (hydrationUidRef.current === userDataListenerUid) setUserDataHydrated(true);
           },
           (err) => {
