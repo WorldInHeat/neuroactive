@@ -6,7 +6,7 @@ import type { Auth } from 'firebase/auth';
 import { ArrowLeft, CheckCircle, ChevronLeft, ChevronRight, HelpCircle, Lock, User, X } from 'lucide-react';
 import { DNS_COURSE, DNS_COURSE_LENGTH } from '../data/dnsCourse';
 import type { DNSCourseDay } from '../data/dnsCourse';
-import { computeDnsDayAvailability } from '../services/dnsCourseProgression';
+import { computeDnsDayAvailability, MAX_COMPLETIONS_PER_DAY } from '../services/dnsCourseProgression';
 import type { DnsCourseProgress } from '../state/types';
 import type { PriceKey } from '../services/stripe';
 import { fetchDnsCourseDayMedia, type DnsCourseDayMedia } from '../services/dnsCourseMedia';
@@ -397,14 +397,30 @@ function GuidanceModal({ view, onNavigate, onClose }: { view: string; onNavigate
 // not a replacement for the lesson content itself. Today's video/description stay
 // mounted and replayable; this never triggers a write on its own (see the render branch
 // below), so revisiting/refreshing/replaying is always idempotent.
-function CompletedTodayBanner({ completedDayIndex, nextDayIndex }: { completedDayIndex: number; nextDayIndex: number | null }) {
+// `dailyCapReached` distinguishes WHY nextDayIndex is locked — calendar (not yet earned)
+// vs. today's MAX_COMPLETIONS_PER_DAY cap (already earned, just paced) — so the copy
+// never tells someone a calendar-earned lesson is "unearned" (see
+// dnsCourseProgression.ts's DnsDayAvailability.dailyCapReached doc comment).
+function CompletedTodayBanner({
+  completedDayIndex,
+  nextDayIndex,
+  dailyCapReached,
+}: {
+  completedDayIndex: number;
+  nextDayIndex: number | null;
+  dailyCapReached: boolean;
+}) {
   return (
     <div className="bg-[#0f1829] p-4 rounded-2xl border border-[#00e096]/20 flex items-center gap-3">
       <CheckCircle className="text-[#00e096] flex-shrink-0" size={22} />
       <div className="flex-1 min-w-0">
         <p className="text-sm font-bold text-[#f0f4f8]">Day {completedDayIndex} complete</p>
         <p className="text-xs text-[#6b849e]">
-          {nextDayIndex !== null ? `Day ${nextDayIndex} unlocks tomorrow — this one's still here to replay anytime.` : 'Nice work today.'}
+          {nextDayIndex === null
+            ? 'Nice work today.'
+            : dailyCapReached
+            ? `You've completed two sessions today. Come back tomorrow to continue with Day ${nextDayIndex}.`
+            : `Day ${nextDayIndex} unlocks tomorrow — this one's still here to replay anytime.`}
         </p>
       </div>
     </div>
@@ -658,10 +674,20 @@ export default function DNSCourseView({
   // elapsed calendar days since startedAt rather than on whether Mark Complete happened to
   // be clicked today (the fix for the reported defect — see that module's header comment).
   const availability = computeDnsDayAvailability(dnsCourse, today, DNS_COURSE_LENGTH);
-  const showCompletionBanner = availability.waitingForNextDay || (availability.courseComplete && availability.completedSomethingToday);
+  // dailyCapReached is included here (alongside the existing calendar/course-complete
+  // reasons) so the completion banner shows immediately once today's two sessions are
+  // done — a truthful wait state, not a silent dead end — without changing what
+  // waitingForNextDay itself means.
+  const showCompletionBanner =
+    availability.waitingForNextDay || availability.dailyCapReached || (availability.courseComplete && availability.completedSomethingToday);
   const bannerDayIndex = availability.mostRecentlyCompletedDay;
   const nextDayData = DNS_COURSE[dnsCourse.currentDay]; // currentDay is 1-based, so this is the next entry
   const pastDays = DNS_COURSE.slice(0, dnsCourse.currentDay - 1); // days 1..currentDay-1
+  // Would completing the CURRENTLY open lesson be the completion that reaches today's
+  // cap? Distinct from availability.dailyCapReached (which reflects the cap BEFORE this
+  // action) — used only to keep the Mark Complete button and locked-next-day teaser from
+  // promising an immediate "Continue" that the cap would actually block.
+  const completingOpenDayWouldReachCap = availability.completionsToday + 1 >= MAX_COMPLETIONS_PER_DAY;
 
   const handleMarkComplete = () => {
     // Guaranteed non-null: this handler is only ever wired to the button rendered in the
@@ -814,11 +840,15 @@ export default function DNSCourseView({
             // completeDnsCourseDay's own ceiling check means even a stray extra call here
             // would still be a no-op, but there isn't one to begin with.
             const completedDay = DNS_COURSE[bannerDayIndex - 1] as DNSCourseDay;
-            const nextDayIndex = availability.waitingForNextDay ? dnsCourse.currentDay : null;
+            const nextDayIndex = availability.waitingForNextDay || availability.dailyCapReached ? dnsCourse.currentDay : null;
             return (
               <>
                 <DayContent day={completedDay} dayIndex={bannerDayIndex} />
-                <CompletedTodayBanner completedDayIndex={bannerDayIndex} nextDayIndex={nextDayIndex} />
+                <CompletedTodayBanner
+                  completedDayIndex={bannerDayIndex}
+                  nextDayIndex={nextDayIndex}
+                  dailyCapReached={availability.dailyCapReached}
+                />
                 {/* Day 84 specifically: acknowledge the whole program is done, without
                     replacing the replayable content above the way CourseCompleteState
                     (the *later-date* landing screen — see the branch below) does. */}
@@ -841,7 +871,7 @@ export default function DNSCourseView({
                 style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
               >
                 <CheckCircle size={18} />
-                Mark Complete & Continue
+                {completingOpenDayWouldReachCap ? 'Mark Complete' : 'Mark Complete & Continue'}
               </button>
 
               {nextDayData && (
@@ -856,7 +886,14 @@ export default function DNSCourseView({
                     </p>
                     <p className="text-sm font-semibold text-[#f0f4f8] truncate">{nextDayData.dayTitle}</p>
                     <p className="text-xs text-[#6b849e] mt-0.5">
-                      {availability.nextLessonAvailableImmediately
+                      {/* completingOpenDayWouldReachCap takes priority: even when calendar
+                          time would otherwise reveal the next lesson immediately, today's
+                          two-session cap means completing this one will not actually
+                          unlock it until tomorrow — the CTA/teaser must never promise
+                          "Continue" into a lesson the cap is about to block. */}
+                      {completingOpenDayWouldReachCap
+                        ? 'Unlocks tomorrow'
+                        : availability.nextLessonAvailableImmediately
                         ? `Unlocks after you complete Day ${dnsCourse.currentDay}`
                         : 'Unlocks tomorrow'}
                     </p>

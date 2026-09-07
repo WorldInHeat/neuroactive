@@ -563,7 +563,13 @@ const SettingsView = ({
           </h3>
           <div className="flex justify-between items-center bg-[#080d1a] p-4 rounded-xl border border-[#1a2a42]">
             <div>
-              <span className="text-xs font-bold text-[#6b849e] uppercase">Current Plan</span>
+              {/* DNS Foundations is a one-time $149 purchase, not a recurring subscription — this
+                  label (and the button below) must stay tier-aware so a real, dormant recurring
+                  tier (see !DNS_ONLY_LAUNCH/isPremium below) keeps genuine subscription wording,
+                  while a one-time purchaser is never told they have a "plan" to manage. */}
+              <span className="text-xs font-bold text-[#6b849e] uppercase">
+                {DNS_ONLY_LAUNCH ? 'Program Access' : 'Current Plan'}
+              </span>
               <div className="text-lg font-bold text-[#f0f4f8]">
                 {DNS_ONLY_LAUNCH
                   ? dnsAccountStatus === 'active'
@@ -585,7 +591,7 @@ const SettingsView = ({
                     disabled={portalLoading}
                     className="text-xs text-[#6b849e] hover:text-[#f0f4f8] transition-colors underline disabled:opacity-50"
                   >
-                    {portalLoading ? 'Opening…' : 'Manage Subscription'}
+                    {portalLoading ? 'Opening…' : DNS_ONLY_LAUNCH ? 'Billing portal' : 'Manage Subscription'}
                   </button>
                 )}
               </div>

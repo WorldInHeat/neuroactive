@@ -83,17 +83,39 @@ export type DnsCourseProgressLike = {
   completionDates?: Record<number, string>;
 };
 
+// Calendar eligibility determines the furthest lesson a user has EARNED; this is a
+// separate, independent ceiling on how many of those earned lessons may actually be
+// CONSUMED on any one device-local calendar date — a user returning after a long absence
+// must not clear an arbitrarily large backlog in one sitting. Pacing UX only, exactly
+// like the calendar ceiling itself (see the module header) — not a security/entitlement
+// boundary, and device-local date remains user/device controlled, same as every other
+// date in this model.
+export const MAX_COMPLETIONS_PER_DAY = 2;
+
 export type DnsDayAvailability = {
   // How many lessons elapsed calendar time has made available as of `today`.
   maxAvailableDay: number;
   // The lesson currently open for viewing/completion — null whenever there's nothing to
-  // show (waiting for tomorrow, or the course is already finished).
+  // show (waiting for tomorrow, the course is already finished, or today's completion
+  // cap has been reached).
   openDay: number | null;
   // The "come back tomorrow" wait state: every lesson calendar time allows has already
-  // been completed, but the course itself isn't finished yet.
+  // been completed, but the course itself isn't finished yet. Calendar-only — never true
+  // merely because of the same-day completion cap (see dailyCapReached below).
   waitingForNextDay: boolean;
   // Every lesson (1..courseLength) has been completed.
   courseComplete: boolean;
+  // How many lessons have been completed on today's device-local calendar date, per
+  // completionDates entries whose value equals `today` — never derived from currentDay,
+  // so it is unaffected by history recorded before this cap existed (see
+  // reduceDnsCourseCompletion's compatibility notes).
+  completionsToday: number;
+  // True once completionsToday has reached MAX_COMPLETIONS_PER_DAY — independent of
+  // waitingForNextDay, and can be true even while calendar time would otherwise allow
+  // further progress today. This is what folds into `openDay` below to enforce the cap;
+  // callers must not conflate this with waitingForNextDay when choosing UI copy (a
+  // calendar-blocked lesson is "not yet earned", a cap-blocked one already is).
+  dailyCapReached: boolean;
   // True when the user's most recent completion happened on today's local calendar date
   // — drives the "Day N complete" confirmation banner's content specifically, orthogonal
   // to whether a NEW lesson is open right now (a catch-up completion earlier today, for
@@ -108,7 +130,9 @@ export type DnsDayAvailability = {
   // Whether completing openDay right now would immediately reveal the NEXT lesson (still
   // within today's calendar ceiling) versus hitting the wait state — used to give the
   // locked-next-day teaser accurate copy ("unlocks after you complete this one" vs.
-  // "unlocks tomorrow").
+  // "unlocks tomorrow"). Calendar-only, same as before this cap existed — callers must
+  // separately check completionsToday against MAX_COMPLETIONS_PER_DAY before promising
+  // this, since completing openDay may itself be the completion that reaches the cap.
   nextLessonAvailableImmediately: boolean;
 };
 
@@ -127,12 +151,20 @@ export function computeDnsDayAvailability(
   const maxAvailableDay = computeMaxAvailableDay(effectiveStartedAt, today, courseLength);
   const courseComplete = dnsCourse.currentDay > courseLength;
   const waitingForNextDay = !courseComplete && dnsCourse.currentDay > maxAvailableDay;
-  const openDay = !courseComplete && !waitingForNextDay ? dnsCourse.currentDay : null;
+  // Counts only entries dated exactly `today` — a malformed (non-string) entry simply
+  // never matches and is safely ignored, and historical dates (including a past date that
+  // already carries more than MAX_COMPLETIONS_PER_DAY entries, from before this cap
+  // existed) are never inspected, touched, or rewritten by this count.
+  const completionsToday = Object.values(dnsCourse.completionDates ?? {}).filter((d) => d === today).length;
+  const dailyCapReached = completionsToday >= MAX_COMPLETIONS_PER_DAY;
+  const openDay = !courseComplete && !waitingForNextDay && !dailyCapReached ? dnsCourse.currentDay : null;
   return {
     maxAvailableDay,
     openDay,
     waitingForNextDay,
     courseComplete,
+    completionsToday,
+    dailyCapReached,
     completedSomethingToday: dnsCourse.lastCompletedDate === today,
     mostRecentlyCompletedDay: dnsCourse.currentDay - 1,
     nextLessonAvailableImmediately: openDay !== null && openDay < maxAvailableDay,
@@ -143,8 +175,15 @@ export function computeDnsDayAvailability(
 // progress (read fresh — e.g. inside a Firestore transaction, see App.tsx's
 // completeDnsCourseDay) and today's date, returns the next state — or the UNCHANGED
 // input (by reference) if there's genuinely nothing left to complete today (the calendar
-// ceiling was already reached, or the course is already finished). Returning the same
-// reference for a no-op lets a caller cheaply detect "nothing changed, don't write."
+// ceiling was already reached, the course is already finished, or today's
+// MAX_COMPLETIONS_PER_DAY cap has already been reached — this function needs no separate
+// check for that: computeDnsDayAvailability already folds it into openDay above, so this
+// reducer enforces the cap for free by virtue of gating on availability.openDay exactly
+// as it always has). Returning the same reference for a no-op lets a caller cheaply
+// detect "nothing changed, don't write." A historical date already carrying more than
+// MAX_COMPLETIONS_PER_DAY entries (recorded before this cap existed) is never touched —
+// completionsToday only ever counts entries dated `today`, so old records are preserved
+// exactly as they were and are never moved backward or rewritten.
 //
 // `expectedCompletedDay` is the day the CALLER actually displayed/watched and clicked
 // Mark Complete for (see DNSCourseView's handleMarkComplete, which passes its own
