@@ -363,3 +363,11 @@ export function applyDnsEntitlementBasisWithData(
 ): { effective: boolean } {
   return computeAndWriteBasis(transaction, ref, data, basisKey, basis);
 }
+
+// Exported for tests only — not part of the public callable surface. Mirrors the same
+// pattern already used in dnsCheckout.ts's own __test__ bundle.
+export const __test__ = {
+  isValidActiveBasis,
+  migrateLegacyBasis,
+  pickPrimarySource,
+};

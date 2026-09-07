@@ -804,6 +804,36 @@ export const handleDnsNoCostCheckout = onRequest(
   }
 );
 
+// Pure, side-effect-free extractions of handleDnsRefund's three decision points below —
+// each replaces what was previously an inline boolean expression with an identically-
+// behaving named function, so the refund-vs-ignore decision logic can be unit tested
+// directly against plain data without mocking the Stripe SDK/HTTP layer. Zero behavior
+// change: each call site below passes exactly the same inputs it always computed inline.
+
+// Stripe's refund model lives on the Charge, not the PaymentIntent: `refunded` only
+// becomes true once `amount_refunded` equals the original `amount` — so this is also
+// correct, unchanged, for the LAST of several cumulative partial refunds that happen to
+// sum to the full amount (Stripe sets `refunded: true` on that final event, same as a
+// single one-shot full refund).
+function isFullRefundAmount(charge: { refunded: boolean; amount: number; amount_refunded: number }): boolean {
+  return charge.refunded === true && charge.amount_refunded === charge.amount;
+}
+
+// A PaymentIntent can't actually change owning customer between its Checkout Session and
+// its resulting Charge in practice — this is cheap, load-bearing insurance against ever
+// sealing/reasoning about a basis using a session that turns out not to belong to the
+// same customer as the charge being refunded.
+function sessionBelongsToRefundedCharge(sessionCustomerId: string | null, chargeCustomerId: string | null): boolean {
+  return sessionCustomerId === chargeCustomerId;
+}
+
+// Whether the originating Checkout Session's single line item is actually a genuine DNS
+// Foundations purchase — a refund on any other product/price must never revoke DNS
+// access just because it happened to arrive at this endpoint.
+function dnsProgramProvenanceMatches(priceId: string | null, quantity: number | null | undefined): boolean {
+  return priceId === DNS_PROGRAM_PRICE_ID && quantity === 1;
+}
+
 // A full refund of a DNS Foundations purchase revokes only the specific `stripe_program`
 // basis that purchase created — never any other basis on the same uid (a beta grant, a
 // separate purchase, a legitimate $0 promotional Checkout). $0 promotional completions
@@ -936,7 +966,7 @@ export const handleDnsRefund = onRequest(
       // ever sealing or reasoning about a basis using a session that turns out not to be
       // the one this specific charge/customer pairing actually belongs to.
       const sessionCustomerId = stripeObjectId(originatingSession.customer);
-      if (sessionCustomerId !== customerId) {
+      if (!sessionBelongsToRefundedCharge(sessionCustomerId, customerId)) {
         console.warn(
           '[DNS Refund] Originating Checkout Session customer does not match the refunded Charge customer — refusing to proceed.',
           { paymentIntentId, sessionCustomerId, chargeCustomerId: customerId }
@@ -954,7 +984,7 @@ export const handleDnsRefund = onRequest(
       }
       const lineItem = lineItems.data[0];
       const priceId = stripeObjectId(lineItem.price);
-      if (priceId !== DNS_PROGRAM_PRICE_ID || lineItem.quantity !== 1) {
+      if (!dnsProgramProvenanceMatches(priceId, lineItem.quantity)) {
         response.status(200).send('Ignored');
         return;
       }
@@ -962,7 +992,7 @@ export const handleDnsRefund = onRequest(
       const basisKey = `stripe_program:${paymentIntentId}`;
       const amount = charge.amount;
       const amountRefunded = charge.amount_refunded;
-      const isFullRefund = charge.refunded === true && amountRefunded === amount;
+      const isFullRefund = isFullRefundAmount(charge);
 
       if (!isFullRefund) {
         console.warn('[DNS Refund] Partial refund recorded — DNS entitlement unchanged.', {
@@ -1012,4 +1042,7 @@ export const __test__ = {
   userDataRef,
   APP_ID,
   correlationMatches,
+  isFullRefundAmount,
+  sessionBelongsToRefundedCharge,
+  dnsProgramProvenanceMatches,
 };
