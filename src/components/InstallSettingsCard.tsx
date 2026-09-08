@@ -1,14 +1,15 @@
 // src/components/InstallSettingsCard.tsx
 // Persistent "Install NeuroActive" row for Settings — unlike InstallPromptCard, this
 // never self-dismisses for the session, so a user who dismissed the contextual prompt
-// can still install later from here. PWA Phase 2: install UX only.
+// (or who deleted the app after having it installed) can always find the real
+// install/re-install instructions here. PWA Phase 2: install UX only.
 import { Download, Share } from 'lucide-react';
 import { useInstallPrompt } from '../hooks/useInstallPrompt';
 
 export default function InstallSettingsCard() {
-  const { isStandalone, platform, canInstall, promptInstall } = useInstallPrompt();
+  const { displayState, platform, canInstall, promptInstall } = useInstallPrompt();
 
-  if (isStandalone) {
+  if (displayState === 'standalone') {
     return (
       <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42]">
         <h3 className="font-bold text-[#f0f4f8] mb-1 flex items-center gap-2">
@@ -22,11 +23,22 @@ export default function InstallSettingsCard() {
   const showsInstructionsOnly = platform === 'ios' || platform === 'macos-safari';
   if (!showsInstructionsOnly && !canInstall) return null;
 
+  // `previously-standalone` (see useInstallPrompt.ts's StandaloneDisplayState) is
+  // historical evidence only — this origin was opened standalone at some point, never
+  // proof the Home Screen icon still exists today. The instructions below are therefore
+  // always shown regardless of this state, never suppressed — a user who deleted the app
+  // must still land on a real, complete route back to installing it, not a dead end.
   return (
     <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42]">
       <h3 className="font-bold text-[#f0f4f8] mb-1 flex items-center gap-2">
-        <Download size={20} className="text-[#00d4c8]" /> Install NeuroActive
+        <Download size={20} className="text-[#00d4c8]" /> {displayState === 'previously-standalone' ? 'App' : 'Install NeuroActive'}
       </h3>
+      {displayState === 'previously-standalone' && (
+        <p className="text-sm text-[#f0f4f8] leading-relaxed mb-3">
+          NeuroActive may already be on your Home Screen — open it from there for the full experience. If you
+          don't see the icon, you can add it again below.
+        </p>
+      )}
       <p className="text-sm text-[#6b849e] mb-4 leading-relaxed">
         Keep your program one tap away. Add NeuroActive to your Home Screen for quick access and, on supported
         devices, optional reminders.

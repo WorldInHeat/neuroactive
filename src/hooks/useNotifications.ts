@@ -39,11 +39,12 @@ import { onIdTokenChanged, type User } from 'firebase/auth';
 import { getFunctions, httpsCallable, type FunctionsError } from 'firebase/functions';
 import { getToken as getFcmToken, deleteToken as deleteFcmToken } from 'firebase/messaging';
 import { auth, getMessagingIfSupported } from '../services/firebase';
-import { useInstallPrompt } from './useInstallPrompt';
+import { useInstallPrompt, computeStandaloneDisplayState } from './useInstallPrompt';
 
 export type NotificationStatus =
   | 'unsupported'
   | 'ios-not-installed'
+  | 'ios-open-from-home-screen'
   | 'default'
   | 'denied'
   | 'registering'
@@ -205,7 +206,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 export function useNotifications() {
-  const { platform, isStandalone } = useInstallPrompt();
+  const { platform, isStandalone, everStandalone } = useInstallPrompt();
   const [status, setStatus] = useState<NotificationStatus>('default');
   const [error, setError] = useState<string | null>(null);
   const [uid, setUid] = useState<string | null>(null);
@@ -223,7 +224,18 @@ export function useNotifications() {
     return switchBusyRef.current || readJSON<PendingTransfer>(PENDING_TRANSFER_KEY) !== null;
   }, []);
 
-  const iosNotInstalled = platform === 'ios' && !isStandalone;
+  // iOS/iPadOS Web Push requires the app to be running as the installed, standalone Home
+  // Screen app — Safari never supports it in an ordinary browser tab, regardless of
+  // whether NeuroActive was ever installed on this device. Distinguishing "never seen
+  // standalone" from "seen standalone before, but this tab isn't it right now" (via the
+  // persisted everStandalone flag — see useInstallPrompt.ts) is what lets the UI give
+  // accurate, non-predictably-failing guidance in each case instead of a single generic
+  // gate. `previouslyStandalone` is historical evidence only, never proof the Home Screen
+  // icon still exists today — see StandaloneDisplayState's doc comment.
+  const iosStandaloneState = computeStandaloneDisplayState({ isStandalone, everStandalone });
+  const iosBlocked = platform === 'ios' && iosStandaloneState !== 'standalone';
+  const iosNotInstalled = platform === 'ios' && iosStandaloneState === 'not-installed';
+  const iosPreviouslyStandalone = platform === 'ios' && iosStandaloneState === 'previously-standalone';
   const baseUnsupported =
     typeof window === 'undefined' ||
     !('Notification' in window) ||
@@ -567,7 +579,7 @@ export function useNotifications() {
   }, []);
 
   const enable = useCallback(async () => {
-    if (baseUnsupported || iosNotInstalled) return;
+    if (baseUnsupported || iosBlocked) return;
     try {
       const permission = await Notification.requestPermission();
       if (permission === 'granted') {
@@ -582,7 +594,7 @@ export function useNotifications() {
       setError('Something went wrong requesting permission.');
       setStatus('error');
     }
-  }, [baseUnsupported, iosNotInstalled, register]);
+  }, [baseUnsupported, iosBlocked, register]);
 
   // Step 1 of an account switch. Returns:
   //  - 'not-applicable': nothing registered on this device for the current uid — proceed
@@ -748,6 +760,10 @@ export function useNotifications() {
       setStatus('unsupported');
       return;
     }
+    if (iosPreviouslyStandalone) {
+      setStatus('ios-open-from-home-screen');
+      return;
+    }
     if (iosNotInstalled) {
       setStatus('ios-not-installed');
       return;
@@ -793,7 +809,7 @@ export function useNotifications() {
     return () => {
       cancelled = true;
     };
-  }, [baseUnsupported, iosNotInstalled, uid, register, reconcilePendingTransfer, retryPendingRevocation]);
+  }, [baseUnsupported, iosNotInstalled, iosPreviouslyStandalone, uid, register, reconcilePendingTransfer, retryPendingRevocation]);
 
   return {
     status,

@@ -2,6 +2,14 @@
 // Contextual, dismissible "Install NeuroActive" card shown inside the DNS course
 // experience — never before entitlement/checkout. PWA Phase 2: install UX only, no
 // notification permission requests, no push, no reminder scheduling.
+//
+// Encouragement, never a requirement: this card must never block or degrade course access
+// (it renders inline, above the day content, never as a modal/overlay), and its copy must
+// always make clear the course remains usable in the browser without installing anything.
+// Dismissing it (via either the X or "Maybe later") is remembered for the rest of this
+// browser session (see useInstallPrompt.ts's SESSION_DISMISS_KEY) so it never nags on
+// every navigation — but it is intentionally NOT dismissed forever: the full instructions
+// remain reachable any time from Settings (see InstallSettingsCard.tsx).
 import { Download, Share, X } from 'lucide-react';
 import { useInstallPrompt } from '../hooks/useInstallPrompt';
 
@@ -13,14 +21,17 @@ type Props = {
 };
 
 export default function InstallPromptCard({ eligible }: Props) {
-  const { isStandalone, platform, canInstall, promptInstall, dismissedThisSession, dismissForSession } =
+  const { displayState, platform, canInstall, promptInstall, dismissedThisSession, dismissForSession } =
     useInstallPrompt();
 
-  if (!eligible || isStandalone || dismissedThisSession) return null;
+  if (!eligible || displayState === 'standalone' || dismissedThisSession) return null;
 
   // iOS/macOS Safari always have actionable manual instructions; Android/desktop
   // Chromium only have something to offer once beforeinstallprompt has actually fired —
-  // fail gracefully (render nothing) rather than show a button that can't install.
+  // fail gracefully (render nothing) rather than show a button that can't install. Applies
+  // to 'previously-standalone' too: that state is historical evidence only (see
+  // useInstallPrompt.ts), never proof the app is still installed, so it must fall back to
+  // the same real install action a genuinely-uninstalled user would see, not skip it.
   const showsInstructionsOnly = platform === 'ios' || platform === 'macos-safari';
   if (!showsInstructionsOnly && !canInstall) return null;
 
@@ -33,13 +44,22 @@ export default function InstallPromptCard({ eligible }: Props) {
       >
         <X size={16} />
       </button>
-      <h3 className="font-bold text-[#f0f4f8] pr-8 mb-1">Install NeuroActive</h3>
+      <h3 className="font-bold text-[#f0f4f8] pr-8 mb-1">Get the best NeuroActive experience</h3>
       <p className="text-sm text-[#6b849e] leading-relaxed mb-4">
-        Keep your program one tap away. Add NeuroActive to your Home Screen for quick access and, on supported
-        devices, optional reminders.
+        Add NeuroActive to your Home Screen for quicker access and session reminders. You can continue using the
+        course in your browser anytime.
       </p>
 
-      {platform === 'ios' ? (
+      {displayState === 'previously-standalone' ? (
+        // Historical evidence only (see StandaloneDisplayState's doc comment) — never
+        // asserted as a confirmed-current-install fact. Offers the likely path (open the
+        // existing icon) alongside the fallback (re-add it), concise since the full
+        // step-by-step instructions remain one tap away in Settings.
+        <p className="text-sm text-[#f0f4f8] leading-relaxed">
+          To enable notifications on this iPhone or iPad, open NeuroActive from its Home Screen icon. If you no
+          longer see the icon, add NeuroActive to your Home Screen again.
+        </p>
+      ) : platform === 'ios' ? (
         <div className="space-y-2">
           <ol className="text-sm text-[#f0f4f8] space-y-1.5 list-decimal list-inside">
             <li className="flex items-start gap-1.5">
@@ -71,6 +91,14 @@ export default function InstallPromptCard({ eligible }: Props) {
           <Download size={16} /> Install NeuroActive
         </button>
       )}
+
+      <button
+        type="button"
+        onClick={dismissForSession}
+        className="mt-4 text-xs text-[#6b849e] hover:text-[#f0f4f8] underline transition-colors"
+      >
+        Maybe later
+      </button>
     </div>
   );
 }

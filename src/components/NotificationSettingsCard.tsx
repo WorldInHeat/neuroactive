@@ -296,9 +296,21 @@ export default function NotificationSettingsCard({
 
       {status === 'registered' ? (
         <p className="text-sm text-[#00e096]">Notifications are enabled on this device.</p>
+      ) : status === 'ios-open-from-home-screen' ? (
+        // Distinct from 'ios-not-installed' below: this device HAS been confirmed
+        // standalone before (see useInstallPrompt.ts's everStandalone flag) — but that's
+        // historical evidence only, never proof the Home Screen icon still exists today
+        // (the user may have deleted it since). The copy below must never assert
+        // "you have it installed" as fact — it offers the likely path (open the existing
+        // icon) alongside the fallback path (re-add it) rather than dead-ending someone
+        // who genuinely uninstalled.
+        <p className="text-sm text-[#6b849e] leading-relaxed">
+          To enable notifications on this iPhone or iPad, open NeuroActive from its Home Screen icon. If you no
+          longer see the icon, add NeuroActive to your Home Screen again.
+        </p>
       ) : status === 'ios-not-installed' ? (
         <p className="text-sm text-[#6b849e] leading-relaxed">
-          Add NeuroActive to your Home Screen before enabling notifications on iPhone or iPad.
+          Tap Share, choose Add to Home Screen, then open NeuroActive from the new Home Screen icon.
         </p>
       ) : status === 'denied' ? (
         <p className="text-sm text-[#6b849e] leading-relaxed">
