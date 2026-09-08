@@ -3,7 +3,7 @@
 // does not touch activePrescriptions, history, or any assessment-flow state.
 import { useEffect, useState, type ReactElement } from 'react';
 import type { Auth } from 'firebase/auth';
-import { ArrowLeft, CheckCircle, ChevronLeft, ChevronRight, HelpCircle, Lock, User, X } from 'lucide-react';
+import { ArrowLeft, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, HelpCircle, Lock, User, X } from 'lucide-react';
 import { DNS_COURSE, DNS_COURSE_LENGTH } from '../data/dnsCourse';
 import type { DNSCourseDay } from '../data/dnsCourse';
 import { computeDnsDayAvailability, MAX_COMPLETIONS_PER_DAY } from '../services/dnsCourseProgression';
@@ -271,6 +271,40 @@ function DayContent({ day, dayIndex }: { day: DNSCourseDay; dayIndex: number }) 
   );
 }
 
+// Collapsed by default, deliberately — this is the "in the course experience" surface
+// (Phase 2A), placed immediately above Mark Complete on the one screen where a user is
+// actually about to act, not a warning wall stacked above every video. Fuller guidance
+// lives in the "Modifying the Program" entry (see ModifyingTheProgramContent) reachable
+// from the header's Guidance icon on every tab — this note's own copy stays short and
+// links the reader there implicitly by mentioning Past Days, not by duplicating it.
+function ModificationNote() {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="bg-[#0f1829] border border-[#1a2a42] rounded-xl mb-4">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left"
+        aria-expanded={expanded}
+      >
+        <span className="text-sm font-semibold text-[#f0f4f8]">Make the session work for you</span>
+        <ChevronDown
+          size={16}
+          className={`text-[#6b849e] flex-shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
+        />
+      </button>
+      {expanded && (
+        <p className="px-4 pb-4 text-xs text-[#6b849e] leading-relaxed">
+          Use a smaller range, additional support, fewer repetitions, or a different stable position when
+          needed. Skip anything that feels unsafe. You can also revisit an earlier lesson under Past Days —
+          repetition is part of learning, not falling behind. A modified session still counts — you don't need
+          to match the video exactly to mark today complete.
+        </p>
+      )}
+    </div>
+  );
+}
+
 // Shared between the one-time pre-Day-1 gate below and the revisitable "Before You
 // Start" guidance entry, so the copy lives in exactly one place.
 function BeforeYouStartContent() {
@@ -335,12 +369,56 @@ function HowMuchToPracticeContent() {
   );
 }
 
+// Complements BeforeYouStartContent (pacing: repetition/quality/missed days) and
+// HowMuchToPracticeContent (session length/frequency) — neither covers PHYSICAL
+// modification (range, support, position, an elevated surface) or when to stop for
+// safety, so this is genuinely new guidance, not a restatement. Deliberately does not
+// re-say "it's okay to repeat a day" at length — that's already covered elsewhere; this
+// only adds the one new pointer back to Past Days a reader here would actually need.
+function ModifyingTheProgramContent() {
+  return (
+    <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] space-y-5">
+      <p className="text-[#6b849e] text-sm leading-relaxed">
+        You do not need to perform every movement exactly as demonstrated. Adjust the range, repetitions,
+        duration, position, and level of support to match what you can control safely today.
+      </p>
+      <div>
+        <h3 className="font-bold text-[#f0f4f8] mb-1">Using a bed or elevated surface</h3>
+        <p className="text-[#6b849e] text-sm leading-relaxed">
+          If getting to the floor is difficult, some lying or kneeling exercises may be performed on a firm bed
+          or another stable, elevated surface when appropriate. Make sure you can get on and off safely. Soft or
+          unstable surfaces may not be appropriate for standing, balance, or loaded exercises.
+        </p>
+      </div>
+      <div>
+        <h3 className="font-bold text-[#f0f4f8] mb-1">Repetition is part of learning</h3>
+        <p className="text-[#6b849e] text-sm leading-relaxed">
+          If a new lesson is too difficult, revisit an earlier lesson (see Past Days) or practice only the
+          portions you can perform well. Repetition is part of learning, not a setback. A thoughtfully modified
+          session still counts — you do not need to complete every repetition or variation before marking the
+          day complete.
+        </p>
+      </div>
+      <div>
+        <h3 className="font-bold text-[#f0f4f8] mb-1">Listen to your body</h3>
+        <p className="text-[#6b849e] text-sm leading-relaxed">
+          Do not force a movement that causes sharp, increasing, or concerning symptoms. Stop if you feel
+          unsafe, dizzy, unusually short of breath, or unsteady, or if you develop new numbness, weakness, or
+          radiating pain. If you are uncertain whether an exercise is appropriate for you, consult a qualified
+          healthcare professional.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // Small, deliberately generic list+modal pattern — more reference entries will likely be
 // added later, so each entry is just a label + title + content renderer.
 type GuidanceEntry = { id: string; label: string; title: string; Content: () => ReactElement };
 
 const GUIDANCE_ENTRIES: GuidanceEntry[] = [
   { id: 'before-you-start', label: 'Before You Start', title: 'Before You Start', Content: BeforeYouStartContent },
+  { id: 'modifying-the-program', label: 'Modifying the Program', title: 'Modifying the Program', Content: ModifyingTheProgramContent },
   { id: 'how-much-to-practice', label: 'How Much to Practice', title: 'How Much to Practice', Content: HowMuchToPracticeContent },
 ];
 
@@ -864,6 +942,8 @@ export default function DNSCourseView({
           ) : (
             <>
               <DayContent day={DNS_COURSE[availability.openDay - 1] as DNSCourseDay} dayIndex={availability.openDay} />
+
+              <ModificationNote />
 
               <button
                 onClick={handleMarkComplete}
