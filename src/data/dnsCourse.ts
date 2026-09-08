@@ -366,7 +366,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     week: 6, day: 3,
     weekTitle: 'Tripod → High Kneel to Sit',
     weekPhase: 'Integration',
-    dayTitle: 'Post Tilt Bridge Review — Foot Loading',
+    dayTitle: 'Foot Loading & Knee Tracking (Tripod)',
     description: 'Foot loading and knee tracking with rocking.',
     hasVideo: true,
     isPremium: true,
