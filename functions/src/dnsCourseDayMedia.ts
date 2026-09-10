@@ -62,4 +62,11 @@ export const DNS_COURSE_DAY_MEDIA: Record<number, DnsCourseDayMedia> = {
   47: { videoId: '1225101195', hash: 'd284132b2c' },
   48: { videoId: '1225100758', hash: 'e164d1383e' },
   49: { videoId: '1225100761', hash: 'e5dd480529' },
+  50: { videoId: '1225739646', hash: '80f230db88' },
+  51: { videoId: '1225739898', hash: 'dc9d375d12' },
+  52: { videoId: '1225739755', hash: '312734203e' },
+  53: { videoId: '1225739648', hash: '7a224996a0' },
+  54: { videoId: '1225739843', hash: '2f587a5eb8' },
+  55: { videoId: '1225739649', hash: '482f1be213' },
+  56: { videoId: '1225739647', hash: 'b081e68316' },
 };
