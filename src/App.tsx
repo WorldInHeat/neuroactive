@@ -2657,6 +2657,17 @@ export default function App() {
       red: '#ff4466',
     };
 
+    // Header UPGRADE button: must never show while DNS entitlement is still loading (that
+    // would flash a false "you don't own this" prompt at an entitled user before their
+    // real status resolves) or once entitled, regardless of course progress — and must
+    // still respect a legacy (non-DNS) premium subscriber's existing isPremium-based
+    // access. dnsAccountStatus can't be used here since it collapses 'loading' into the
+    // same 'none' value as 'not-entitled' — dnsEntitlementState is read directly instead
+    // so loading and confirmed-unentitled stay distinguishable.
+    const showUpgradeButton = DNS_ONLY_LAUNCH
+      ? dnsEntitlementState === 'not-entitled' && !isPremium
+      : !isPremium;
+
     return (
       <div className="min-h-screen bg-[#080d1a] pb-20">
         <div className="border-b sticky top-0 z-30 bg-[#0f1829] border-[#1a2a42]">
@@ -2666,7 +2677,7 @@ export default function App() {
               <span className="font-bold text-[#f0f4f8]">NeuroActive</span>
             </div>
             <div className="flex items-center gap-4">
-              {!isPremium && (
+              {showUpgradeButton && (
                 <button
                   onClick={openUpgrade}
                   className="text-xs font-bold text-[#080d1a] px-3 py-1.5 rounded-full hover:opacity-90 transition-all"

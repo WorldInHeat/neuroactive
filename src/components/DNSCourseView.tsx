@@ -235,6 +235,7 @@ function DayVideo({ dayIndex, title }: { dayIndex: number; title: string }) {
       hash={media.hash}
       autoplayToken={null}
       onConsumeAutoplay={() => {}}
+      nativePlayback
     />
   );
 }
@@ -340,6 +341,24 @@ function BeforeYouStartContent() {
           <h3 className="font-bold text-[#f0f4f8] mb-1">Missing a day won't set you back.</h3>
           <p className="text-[#6b849e] text-sm leading-relaxed">
             Life happens. Come back whenever you're ready — your progress is exactly where you left it.
+          </p>
+        </div>
+        <div>
+          <h3 className="font-bold text-[#f0f4f8] mb-1">Record your starting point (optional)</h3>
+          <p className="text-[#6b849e] text-sm leading-relaxed mb-2">
+            Before beginning the program, consider recording a few short videos of yourself:
+          </p>
+          <ul className="text-[#6b849e] text-sm leading-relaxed space-y-1 list-disc list-inside mb-2">
+            <li>Breathing normally.</li>
+            <li>Lying on your back while holding your legs in the air with your knees bent.</li>
+            <li>Standing naturally from four views: facing the camera, facing away, and from your left and right sides.</li>
+            <li>Squatting from the same four views: front, back, left side, and right side.</li>
+          </ul>
+          <p className="text-[#6b849e] text-sm leading-relaxed mb-2">
+            Don’t try to make the movements look perfect—these videos are simply a record of where you started. Keep them so you can look back later and see what has changed.
+          </p>
+          <p className="text-[#6b849e] text-sm leading-relaxed">
+            Recording is completely optional and isn’t required to begin or complete the program. You record and keep these videos yourself; NeuroActive does not upload or store them.
           </p>
         </div>
         <p className="text-[#f0f4f8] text-sm font-semibold text-center pt-2">This isn't a race. It's practice.</p>

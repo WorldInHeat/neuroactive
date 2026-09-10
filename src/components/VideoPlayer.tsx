@@ -16,6 +16,17 @@ type Props = {
   // Every video in the app is landscape except the Paywall's portrait testimonial —
   // default stays 16:9 so no other call site is affected.
   orientation?: 'landscape' | 'portrait';
+  // DNS lesson videos only. Mounts the real Vimeo iframe immediately (skipping this
+  // component's own custom paused-thumbnail overlay below) and omits autoplay/muted from
+  // the embed URL entirely, so the user's one click lands directly on Vimeo's own native
+  // Play control — the one case every major browser's autoplay policy unconditionally
+  // allows to start audible playback. A prior custom-overlay click followed by a freshly
+  // mounted cross-origin iframe requesting unmuted autoplay is NOT reliably honored across
+  // browsers (confirmed against Chromium's and WebKit's own autoplay-policy documentation
+  // during the investigation this prop resolves) — this sidesteps that entirely rather
+  // than relying on it. Defaults to false: every existing caller (onboarding video,
+  // assessment-flow autoplay-token videos, paywall testimonial) is completely unaffected.
+  nativePlayback?: boolean;
 };
 
 export default function VideoPlayer({
@@ -27,6 +38,7 @@ export default function VideoPlayer({
   autoplayToken,
   onConsumeAutoplay,
   orientation = 'landscape',
+  nativePlayback = false,
 }: Props) {
   const [isPlaying, setIsPlaying] = useState(false);
   // Bumped by the "Trouble playing? Retry" control below to force a fresh iframe mount
@@ -94,11 +106,14 @@ export default function VideoPlayer({
     // Confirmed against Vimeo's own embed documentation, not assumed.
     const params = new URLSearchParams();
     if (hash) params.set('h', hash);
-    params.set('autoplay', '1');
+    // nativePlayback (DNS lessons) deliberately omits both — see the prop's own doc
+    // comment above for why a prior custom-overlay click can't reliably substitute for a
+    // direct click on Vimeo's own native Play control across browsers.
+    if (!nativePlayback) params.set('autoplay', '1');
     params.set('title', '0');
     params.set('byline', '0');
     params.set('portrait', '0');
-    params.set('muted', '1'); // required by most browsers for autoplay
+    if (!nativePlayback) params.set('muted', '1'); // required by most browsers for autoplay
     params.set('playsinline', '1');
     params.set('loop', '1');
     // Vimeo's documented "do not track" opt-out — disables the player's own tracking
@@ -106,7 +121,7 @@ export default function VideoPlayer({
     // allowlist, or any other access control.
     params.set('dnt', '1');
     return `https://player.vimeo.com/video/${videoId}?${params.toString()}`;
-  }, [videoId, hash]);
+  }, [videoId, hash, nativePlayback]);
 
   // Only ever rendered for a hash-less (public) video — see the "Watch on Vimeo" link
   // below. Deliberately does NOT append hash: for an Unlisted/hash-protected video,
@@ -124,12 +139,17 @@ export default function VideoPlayer({
   const handlePlay = () => setIsPlaying(true);
   const handleRetry = () => setRetryKey((k) => k + 1);
 
+  // nativePlayback skips this component's own paused-thumbnail overlay entirely — the
+  // iframe (and Vimeo's own native paused frame/Play control) is what the user sees from
+  // the moment this component mounts, rather than waiting for a tap on our overlay first.
+  const showIframe = isPlaying || nativePlayback;
+
   return (
     <div className="mb-6">
       <div
         className={`bg-black ${orientation === 'portrait' ? 'aspect-[9/16] max-w-xs mx-auto' : 'aspect-video'} rounded-xl overflow-hidden shadow-lg relative`}
       >
-        {isPlaying ? (
+        {showIframe ? (
           <iframe
             // Full identity (nodeId + videoId + hash) plus the manual retry generation —
             // forces a fresh DOM node (and so a fresh request to player.vimeo.com) on any
@@ -175,7 +195,7 @@ export default function VideoPlayer({
       </div>
 
       <div className="mt-3 text-center space-y-1">
-        {isPlaying && (
+        {showIframe && (
           <button
             type="button"
             onClick={handleRetry}
