@@ -395,6 +395,7 @@ const LegalDisclaimer = ({ onAgree, onCancel }: { onAgree: () => void; onCancel:
 const SettingsView = ({
   isPremium,
   dnsAccountStatus,
+  dnsEntitlementState,
   onBack,
   onGoToDashboard,
   onLogout,
@@ -429,6 +430,12 @@ const SettingsView = ({
   // "God Mode (Pro)" merely because some unrelated legacy isPremium flag is still true.
   // When DNS_ONLY_LAUNCH is off, the legacy isPremium-driven label is used unchanged.
   dnsAccountStatus: 'active' | 'beta' | 'none';
+  // Server-authoritative DNS Foundations entitlement state (same three-state signal as
+  // App()'s own dnsEntitlementState) — needed alongside dnsAccountStatus specifically
+  // because that derived value collapses 'loading' into the same 'none' as a confirmed
+  // 'not-entitled', which is exactly what let this row briefly show "Upgrade" to an
+  // entitled user while the entitlement listener was still resolving.
+  dnsEntitlementState: 'loading' | 'entitled' | 'not-entitled';
   onBack: () => void;
   onGoToDashboard: () => void;
   onLogout: () => void;
@@ -571,7 +578,9 @@ const SettingsView = ({
                 {DNS_ONLY_LAUNCH ? 'Program Access' : 'Current Plan'}
               </span>
               <div className="text-lg font-bold text-[#f0f4f8]">
-                {DNS_ONLY_LAUNCH
+                {DNS_ONLY_LAUNCH && dnsEntitlementState === 'loading'
+                  ? 'Checking…'
+                  : DNS_ONLY_LAUNCH
                   ? dnsAccountStatus === 'active'
                     ? 'DNS Foundations — Active'
                     : dnsAccountStatus === 'beta'
@@ -582,7 +591,9 @@ const SettingsView = ({
                   : 'Free Tier'}
               </div>
             </div>
-            {(DNS_ONLY_LAUNCH ? dnsAccountStatus !== 'none' : isPremium) ? (
+            {DNS_ONLY_LAUNCH && dnsEntitlementState === 'loading' ? (
+              <span className="text-xs text-[#6b849e]">Checking access…</span>
+            ) : (DNS_ONLY_LAUNCH ? dnsAccountStatus !== 'none' : isPremium) ? (
               <div className="flex flex-col items-end gap-2">
                 <span className="bg-[#00e096]/15 text-[#00e096] border border-[#00e096]/30 px-3 py-1 rounded-full text-xs font-bold">Active</span>
                 {onManageSubscription && (
@@ -2565,6 +2576,25 @@ export default function App() {
             : 'Clinical-grade self-assessment and rehabilitation, built to guide you step by step.'}
         </p>
 
+        {/* Benefits block — answers "why would this matter to me," which the hero above it
+            deliberately doesn't (see the beta-feedback audit this addresses). DNS-only
+            launch exclusively: kept out of the non-DNS branch entirely, not just visually
+            hidden, so this never appears in that copy path. Plain floating text (no
+            card/border) matching this hero's existing borderless aesthetic — the CTA
+            button below stays the only boxed/filled element, so this stays scannable
+            without competing with it for visual weight. */}
+        {DNS_ONLY_LAUNCH && (
+          <div className="max-w-xl mb-10 relative z-10">
+            <h2 className="text-xl font-bold text-[#00d4c8] mb-3">What can you build with DNS?</h2>
+            <p className="text-base text-[#6b849e] leading-relaxed mb-3">
+              Whether you feel stiff, struggle to balance, lose control of your form during exercise, or simply don’t move as confidently as you’d like, DNS gives you a structured place to start.
+            </p>
+            <p className="text-base text-[#6b849e] leading-relaxed">
+              Over 12 weeks, you’ll progressively train breathing, trunk pressure, mobility, strength, and coordination—helping your body create stability without simply bracing harder.
+            </p>
+          </div>
+        )}
+
         {DNS_ONLY_LAUNCH ? (
           // Single-path CTA for DNS-only launch. The two-path version below is kept
           // intact (not deleted) — flip DNS_ONLY_LAUNCH in src/config/launchConfig.ts
@@ -3310,6 +3340,7 @@ export default function App() {
         <SettingsView
           isPremium={isPremium}
           dnsAccountStatus={dnsAccountStatus}
+          dnsEntitlementState={dnsEntitlementState}
           onBack={() => setCurrentView('dashboard')}
           onGoToDashboard={() => setCurrentView('dashboard')}
           onLogout={handleLogout}
