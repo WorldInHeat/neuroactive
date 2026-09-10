@@ -937,7 +937,14 @@ export default function DNSCourseView({
             // completeDnsCourseDay's own ceiling check means even a stray extra call here
             // would still be a no-op, but there isn't one to begin with.
             const completedDay = DNS_COURSE[bannerDayIndex - 1] as DNSCourseDay;
-            const nextDayIndex = availability.waitingForNextDay || availability.dailyCapReached ? dnsCourse.currentDay : null;
+            // courseComplete must win here even though dailyCapReached can ALSO be true the
+            // same day (completing Day 84 as today's second catch-up completion sets both
+            // simultaneously) — otherwise this would reference a nonexistent Day 85 in the
+            // "come back tomorrow" copy instead of the course-complete acknowledgment below.
+            const nextDayIndex =
+              !availability.courseComplete && (availability.waitingForNextDay || availability.dailyCapReached)
+                ? dnsCourse.currentDay
+                : null;
             return (
               <>
                 <DayContent day={completedDay} dayIndex={bannerDayIndex} />
