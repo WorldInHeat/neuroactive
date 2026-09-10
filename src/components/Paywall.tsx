@@ -344,10 +344,10 @@ export default function Paywall({
             tabIndex={-1}
             className="text-2xl font-extrabold text-[#f0f4f8] mb-2 focus:outline-none"
           >
-            Dr. Adam Bruene, D.C., Cert. MDT, DNSP
+            Dr. Adam Bruene, DC, Cert. MDT, DNSP, DNSET
           </h1>
           <p className="text-[#6b849e] text-sm leading-relaxed max-w-sm mx-auto">
-            The only app built on dual certification in McKenzie MDT and Dynamic Neuromuscular Stabilization
+            Built by a clinician with advanced certification in both McKenzie MDT and Dynamic Neuromuscular Stabilization
           </p>
         </div>
 
@@ -372,7 +372,7 @@ export default function Paywall({
         {/* Bio */}
         <div className="bg-[#0f1829] border border-[#1a2a42] rounded-2xl p-6">
           <p className="text-[#6b849e] text-sm leading-relaxed">
-            "15+ years of clinical experience in spine rehabilitation and movement-based care. Treated patients across MLB, NHL, MLS, and international rugby. This app runs on the same clinical reasoning frameworks used in real practice — not generic exercise content."
+            "17+ years of clinical experience in spine rehabilitation and movement-based care. Treated patients across MLB, NHL, MLS, and international rugby. This app runs on the same clinical reasoning frameworks used in real practice — not generic exercise content."
           </p>
         </div>
 

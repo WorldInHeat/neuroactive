@@ -2572,7 +2572,7 @@ export default function App() {
 
         <p className="text-lg text-[#6b849e] max-w-xl mb-10 relative z-10">
           {DNS_ONLY_LAUNCH
-            ? 'A guided 12-week developmental progression, built to rebuild your stabilization foundation one position at a time.'
+            ? 'A guided 12-week Dynamic Neuromuscular Stabilization (DNS) progression, built to rebuild your stabilization foundation one position at a time.'
             : 'Clinical-grade self-assessment and rehabilitation, built to guide you step by step.'}
         </p>
 
