@@ -25,20 +25,17 @@ const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 
-// App Check readiness (registration deployment blocker #9): the push-installation callables
-// (functions/src/pushInstallations.ts) currently run with enforceAppCheck: false, since
-// enforcing it requires App Check to first be registered for this Web app in Firebase
-// Console — a Console change this codebase deliberately does not make on its own. This block
-// makes the CLIENT side ready in advance: once VITE_FIREBASE_APPCHECK_SITE_KEY is set to a
-// real reCAPTCHA v3 site key obtained from that Console registration, App Check tokens start
-// being attached to every request automatically, with no further code change needed here —
-// only functions/src/pushInstallations.ts's CALLABLE_OPTIONS would then need
-// enforceAppCheck flipped to true, once that Console step is actually done and reviewed.
-//
-// No key is ever hardcoded — with the env var unset (the current, pre-Console-configuration
-// state), this block does nothing at all, so local dev and every existing feature behave
-// exactly as before. Wrapped defensively: a misconfigured/invalid site key must never crash
-// the rest of the app's module initialization over a feature that isn't enforced yet anyway.
+// App Check: initializes below whenever VITE_FIREBASE_APPCHECK_SITE_KEY is supplied. No
+// key is ever hardcoded — it comes from .env.local (gitignored) or the deploying
+// environment. A production build (`vite build`) now fails fast if this var is missing or
+// blank (see vite.config.ts's validateRequiredEnv); local development (`vite`/`vite dev`)
+// may still omit it, in which case this block is simply a no-op and everything else
+// behaves exactly as before. Wrapped defensively regardless — a misconfigured/invalid site
+// key must never crash the rest of the app's module initialization. Server-side,
+// functions/src/pushInstallations.ts's push-installation callables (initializePushInstallation,
+// registerPushInstallation, etc.) enforce App Check (`enforceAppCheck: true`); other
+// callables — e.g. getDnsCourseDayMedia — do not, and rely on their own
+// entitlement/auth checks instead.
 const appCheckSiteKey = import.meta.env.VITE_FIREBASE_APPCHECK_SITE_KEY as string | undefined;
 if (appCheckSiteKey) {
   try {
