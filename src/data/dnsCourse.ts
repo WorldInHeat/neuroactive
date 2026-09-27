@@ -545,7 +545,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Waking the Foot',
     description: 'Most people have switched their feet off through years of supportive footwear and sedentary patterns.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -554,7 +554,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Foot Loading in Staggered Standing',
     description: 'Isolate the demand to one foot before asking both to work together.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -563,7 +563,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Standing Open/Close the Door',
     description: 'Callback to Week 3 — the same exercise now expressed standing. Fixed points are now the feet rather than the pelvis. Tests whether rotational stability has transferred upright.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -572,7 +572,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Foot Loading in Tripod — More Detail',
     description: "People can now feel things in this position they couldn't feel in Week 6.",
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -581,7 +581,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Long Foot/Short Foot',
     description: 'Towel rolling exercise. Not purely DNS but produces excellent results. The entire intrinsic muscle system of the foot, not just the toes.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -590,7 +590,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Oblique/Transverse Squat Transitions',
     description: 'High oblique sit to squat to high oblique sit on the other side — like S position transitions but with one foot then both feet loaded. Bridge between rotational ground work and bilateral squat.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -599,7 +599,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Foot Loading During Walking',
     description: 'Taking everything into the most fundamental human movement pattern.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
 
@@ -610,7 +610,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Vertical Squat Holding onto Something',
     description: 'Removes dorsiflexion to isolate hip and spine component. Also dorsiflexion mobilization.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -619,7 +619,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Bear to Squat Transition',
     description: 'Bear to stand was Week 8 Day 2. Bear to squat here introduces the loaded descent.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -628,7 +628,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Squat as Position',
     description: 'Stability and alignment — owning the position before loading it.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -637,7 +637,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Squat as Bodyweight Exercise',
     description: 'Load and repetition now that the position is owned.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -646,7 +646,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Narrow Squat',
     description: 'Feet together, all the way down. Observed in 4-year-olds at the farmers market — kids squat this way naturally when bored. Challenges adductor and internal rotator control; wider stance allows external rotation compensation.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -655,7 +655,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Squat as Weighted/Gym Exercise',
     description: 'Squat as weighted/gym exercise.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -664,7 +664,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Front Foot Elevated Step Back Lunge',
     description: "DNS Weightlifting's preferred alternative to low bar squats — trains the same patterns with less spinal loading.",
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
 
