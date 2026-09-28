@@ -97,6 +97,80 @@ export default function Paywall({
     headingRef.current?.focus({ preventScroll: true });
   }, []);
 
+  // Renders the price disclosure, purchase button(s), loading/error state, and the
+  // promo-code note — called once near the top of the page and again near the bottom
+  // (see the two renderPurchaseSection call sites below), always from this single
+  // definition so the two placements can never drift out of sync with each other or
+  // independently trigger two Checkout Sessions: both read the same checkoutLoading prop,
+  // so a click on either instance disables both immediately.
+  function renderPurchaseSection(instanceKey: 'top' | 'bottom') {
+    return (
+      <div className="space-y-3">
+        {isAnonymous && (
+          <p className="text-center text-sm text-[#6b849e]">
+            Sign in with Google or email before purchasing DNS Foundations.
+          </p>
+        )}
+        {visibleTiers.map(({ key, label, sublabel }) => {
+          const uid = auth?.currentUser?.uid;
+          const loading = checkoutLoading === key;
+          return (
+            <div key={`${instanceKey}-${key}`}>
+              {/* Price disclosure — required to be visible before checkout begins, for
+                  both signed-out and signed-in states (this block renders regardless of
+                  isAnonymous), without a modal/tooltip/redirect. Scoped to the 'program'
+                  tier specifically since it's the only one-time-purchase tier; the other
+                  (currently hidden) tiers are subscriptions and must never carry this
+                  "one-time" wording. */}
+              {key === 'program' && (
+                <p className="text-center text-sm text-[#f0f4f8] mb-2">
+                  <span className="font-bold">{PROGRAM_DISPLAY_PRICE}</span> — one-time purchase
+                  <span className="block text-xs text-[#6b849e] mt-1">
+                    International customers may see the equivalent amount in their local currency at checkout.
+                  </span>
+                </p>
+              )}
+              <button
+                disabled={checkoutLoading !== null || !uid || isAnonymous}
+                onClick={async () => {
+                  if (!uid || isAnonymous) return;
+                  setCheckoutError(null);
+                  setCheckoutLoading(key);
+                  try {
+                    await createCheckoutSession(uid, key);
+                  } catch (err) {
+                    console.error('Checkout error:', err);
+                    setCheckoutLoading(null);
+                    setCheckoutError(key);
+                  }
+                }}
+                className="w-full py-4 rounded-xl font-bold text-base hover:opacity-90 active:scale-95 transition-all flex flex-col items-center gap-0.5 disabled:opacity-50"
+                style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)', color: '#080d1a' }}
+              >
+                <span className="flex items-center gap-2">
+                  <CreditCard size={18} />
+                  {isAnonymous ? 'Sign in or create an account to continue to secure checkout' : loading ? 'Loading…' : label}
+                </span>
+                {!loading && <span className="text-xs font-normal opacity-70">{sublabel}</span>}
+              </button>
+              {checkoutError === key && (
+                <div className="flex items-center gap-2 mt-2 px-1 text-sm text-[#ff4466]">
+                  <AlertCircle size={14} className="flex-shrink-0" />
+                  Something went wrong — please try again.
+                </div>
+              )}
+              {key === 'program' && (
+                <p className="text-center text-xs text-[#6b849e] mt-2">
+                  Have a promotional code? You can enter it on the secure Stripe checkout page.
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#080d1a] overflow-y-auto">
       <div className="max-w-lg mx-auto px-6 py-12 space-y-8">
@@ -109,6 +183,21 @@ export default function Paywall({
             <User size={20} className="text-[#6b849e]" />
           </button>
         </div>
+
+        {/* Top summary — price and access proposition visible without scrolling, before
+            the testimonial video/bio/credentials below. Signed-in visitors get a real
+            checkout CTA here (renderPurchaseSection, shared with the bottom copy so there
+            is exactly one code path that can ever start checkout); anonymous visitors get
+            the same price context plus a clear pointer to the sign-in step just below,
+            rather than a purchase button they can't yet use. */}
+        <div className="text-center space-y-3">
+          <p className="text-xl font-extrabold text-[#f0f4f8]">12-Week DNS Foundations</p>
+          <p className="text-sm text-[#6b849e] max-w-sm mx-auto">
+            A guided, self-paced program to rebuild your stabilization foundation — one new video a day for 12
+            weeks.
+          </p>
+        </div>
+        {renderPurchaseSection('top')}
 
         {/* Anonymous account upgrade — authenticated users already have an account and
             should not be prompted to sign in again or create a duplicate identity. */}
@@ -402,64 +491,10 @@ export default function Paywall({
           </p>
         </div>
 
-        {/* CTA */}
+        {/* CTA — repeats renderPurchaseSection (see top of page); "No thanks" stays
+            bottom-only since it's an exit action, not something to repeat near the top. */}
         <div className="space-y-3 pb-8">
-          {isAnonymous && (
-            <p className="text-center text-sm text-[#6b849e]">
-              Sign in with Google or email before purchasing DNS Foundations.
-            </p>
-          )}
-          {visibleTiers.map(({ key, label, sublabel }) => {
-            const uid = auth?.currentUser?.uid;
-            const loading = checkoutLoading === key;
-            return (
-              <div key={key}>
-                {/* Price disclosure — required to be visible before checkout begins, for
-                    both signed-out and signed-in states (this block renders regardless of
-                    isAnonymous), without a modal/tooltip/redirect. Scoped to the 'program'
-                    tier specifically since it's the only one-time-purchase tier; the other
-                    (currently hidden) tiers are subscriptions and must never carry this
-                    "one-time" wording. */}
-                {key === 'program' && (
-                  <p className="text-center text-sm text-[#f0f4f8] mb-2">
-                    <span className="font-bold">{PROGRAM_DISPLAY_PRICE}</span> — one-time purchase
-                    <span className="block text-xs text-[#6b849e] mt-1">
-                      International customers may see the equivalent amount in their local currency at checkout.
-                    </span>
-                  </p>
-                )}
-                <button
-                  disabled={checkoutLoading !== null || !uid || isAnonymous}
-                  onClick={async () => {
-                    if (!uid || isAnonymous) return;
-                    setCheckoutError(null);
-                    setCheckoutLoading(key);
-                    try {
-                      await createCheckoutSession(uid, key);
-                    } catch (err) {
-                      console.error('Checkout error:', err);
-                      setCheckoutLoading(null);
-                      setCheckoutError(key);
-                    }
-                  }}
-                  className="w-full py-4 rounded-xl font-bold text-base hover:opacity-90 active:scale-95 transition-all flex flex-col items-center gap-0.5 disabled:opacity-50"
-                  style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)', color: '#080d1a' }}
-                >
-                  <span className="flex items-center gap-2">
-                    <CreditCard size={18} />
-                    {isAnonymous ? 'Sign in above to purchase' : loading ? 'Loading…' : label}
-                  </span>
-                  {!loading && <span className="text-xs font-normal opacity-70">{sublabel}</span>}
-                </button>
-                {checkoutError === key && (
-                  <div className="flex items-center gap-2 mt-2 px-1 text-sm text-[#ff4466]">
-                    <AlertCircle size={14} className="flex-shrink-0" />
-                    Something went wrong — please try again.
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {renderPurchaseSection('bottom')}
           <button onClick={onBack} className="w-full text-[#6b849e] text-sm hover:text-[#f0f4f8] transition-colors py-2">
             No thanks, take me back
           </button>

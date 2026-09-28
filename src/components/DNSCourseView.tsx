@@ -3,7 +3,7 @@
 // does not touch activePrescriptions, history, or any assessment-flow state.
 import { useEffect, useState, type ReactElement } from 'react';
 import type { Auth } from 'firebase/auth';
-import { ArrowLeft, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, HelpCircle, Lock, User, X } from 'lucide-react';
+import { ArrowLeft, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, HelpCircle, Lock, ShieldCheck, User, X } from 'lucide-react';
 import { DNS_COURSE, DNS_COURSE_LENGTH } from '../data/dnsCourse';
 import type { DNSCourseDay } from '../data/dnsCourse';
 import { computeDnsDayAvailability, MAX_COMPLETIONS_PER_DAY } from '../services/dnsCourseProgression';
@@ -14,6 +14,7 @@ import VideoPlayer from './VideoPlayer';
 import Paywall from './Paywall';
 import DNSProgramIntroduction from './DNSProgramIntroduction';
 import InstallPromptCard from './InstallPromptCard';
+import LegalDisclaimer from './LegalDisclaimer';
 
 // The History tab can only ever know about completions from this date forward —
 // dnsCourse.completionDates isn't backfilled for anything completed earlier.
@@ -157,7 +158,6 @@ type Props = {
   // see the render-time restoration adjustment below (restorationFinalized), which reads
   // this value directly rather than watching for a transition into true.
   dnsHydrationReady: boolean;
-  onBack: () => void;
   onOpenSettings: () => void;
   auth: Auth | null;
   checkoutLoading: PriceKey | null;
@@ -169,6 +169,27 @@ type Props = {
   signInLoading: boolean;
   signInError: string | null;
   isInAppBrowser: boolean;
+  // Seeds the showPaywall initializer below (App.tsx's landing-page primary CTA only) —
+  // skips DNSProgramIntroduction for a visitor who already signaled purchase intent.
+  // Read once, at mount; see the prop's origin (dnsSkipIntro) in App.tsx for why a stale
+  // value can never leak into a later, differently-sourced visit.
+  initialShowPaywall?: boolean;
+  // Medical/safety disclaimer acceptance (App.tsx's hasAgreedToTerms) — required once,
+  // post-entitlement, immediately before any onboarding/course content (see the gate
+  // below). Never required before reaching the paywall.
+  hasAgreedToTerms: boolean;
+  onAgreeToTerms: () => void;
+  // Every Back/Cancel action this component renders — the public introduction, the
+  // embedded paywall, the post-entitlement safety disclaimer, and this component's own
+  // in-course header Back button — sends the user to the real DNS-only landing/home
+  // screen (App.tsx's 'landing' view). Under DNS_ONLY_LAUNCH there is no separate
+  // "onBack to Dashboard" prop here: Dashboard is largely unreachable through normal
+  // navigation once its own entry points are hidden, so this is the ONLY exit this
+  // component ever offers. Never touches entitlement, payment, disclaimer-acceptance
+  // state, or course progress (currentDay/startedAt/completionDates) — purely a
+  // navigation target; returning to the course afterward (via the landing page's CTA)
+  // resumes exactly where it left off.
+  onBackToLanding: () => void;
 };
 
 // Standard 7-column month grid: null for the leading/trailing blanks that pad the first
@@ -363,6 +384,71 @@ function BeforeYouStartContent() {
         </div>
         <p className="text-[#f0f4f8] text-sm font-semibold text-center pt-2">This isn't a race. It's practice.</p>
       </div>
+    </>
+  );
+}
+
+// Wraps BeforeYouStartContent with a short "why this works" framing (adapted from
+// DNSProgramIntroduction's "brain already has the blueprint" pitch — appropriate to
+// repeat here since the reader is now entitled and about to actually begin, not being
+// sold on starting), a concise essential summary, and the "Start Week 1, Day 1" action
+// placed both near the top (reachable without reading everything below) and repeated at
+// the bottom. Used by both the once-only pre-Day-1 full-page gate and the QA owner's
+// in-tab equivalent, so the two can never drift out of sync with each other. Distinct
+// from BeforeYouStartContent's own standalone use inside the revisitable Guidance modal
+// (see GUIDANCE_ENTRIES), which intentionally has no CTA of its own.
+function BeforeYouStartScreen({ onStart }: { onStart: () => void }) {
+  return (
+    <>
+      <h1 className="text-2xl font-bold text-[#f0f4f8] mb-2 text-center">Before You Start</h1>
+      <p className="text-[#6b849e] text-sm leading-relaxed text-center mb-6 max-w-xl mx-auto">
+        DNS retrains a stabilization strategy your nervous system already wired in as an infant. You're not
+        learning something new — you're <strong className="text-[#f0f4f8]">reminding your body what it already knows</strong>, a
+        little each day.
+      </p>
+
+      <div className="bg-[#0f1829] p-5 rounded-2xl border border-[#1a2a42] mb-4">
+        <h2 className="font-bold text-[#f0f4f8] mb-3 text-xs uppercase tracking-wider">The essentials</h2>
+        <ul className="space-y-2">
+          {[
+            'One short video a day — about 10–15 minutes of practice to start.',
+            "It's okay to repeat a day. The calendar isn't the point — the movement is.",
+            'Quality beats quantity. If it feels like survival, go back and find the version that feels effortless.',
+            "Missing a day won't set you back — come back whenever you're ready.",
+          ].map((item) => (
+            <li key={item} className="flex items-start gap-2 text-sm text-[#c3d0e0]">
+              <CheckCircle size={16} className="text-[#00d4c8] flex-shrink-0 mt-0.5" />
+              <span>{item}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="rounded-2xl border border-[#00d4c8]/30 bg-[#00d4c8]/10 p-4 mb-6 flex items-start gap-3">
+        <ShieldCheck size={20} className="text-[#00d4c8] flex-shrink-0 mt-0.5" />
+        <p className="text-sm text-[#f0f4f8] leading-relaxed">
+          <strong>Modify or stop anytime something doesn't feel right.</strong> Full guidance on adjusting or
+          pausing the program is always available from the app's Guidance section.
+        </p>
+      </div>
+
+      <button
+        onClick={onStart}
+        className="w-full py-4 rounded-xl font-bold text-base text-[#080d1a] hover:opacity-90 active:scale-95 transition-all mb-8"
+        style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+      >
+        Start Week 1, Day 1
+      </button>
+
+      <BeforeYouStartContent />
+
+      <button
+        onClick={onStart}
+        className="w-full mt-6 py-4 rounded-xl font-bold text-base text-[#080d1a] hover:opacity-90 active:scale-95 transition-all"
+        style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
+      >
+        Start Week 1, Day 1
+      </button>
     </>
   );
 }
@@ -562,7 +648,6 @@ export default function DNSCourseView({
   today,
   dnsEntitlementState,
   dnsHydrationReady,
-  onBack,
   onOpenSettings,
   auth,
   checkoutLoading,
@@ -574,6 +659,10 @@ export default function DNSCourseView({
   signInLoading,
   signInError,
   isInAppBrowser,
+  initialShowPaywall,
+  hasAgreedToTerms,
+  onAgreeToTerms,
+  onBackToLanding,
 }: Props) {
   // Hooks must run unconditionally, before the early returns below.
 
@@ -656,7 +745,10 @@ export default function DNSCourseView({
   const [guidanceView, setGuidanceView] = useState<string | null>(null);
   // Navigation-only state: advancing from the public program introduction to the
   // paywall never writes user/course data and never participates in authorization.
-  const [showPaywall, setShowPaywall] = useState(false);
+  // Seeded from initialShowPaywall (App.tsx's landing-page primary CTA) so a motivated
+  // purchaser can land straight on Paywall without an extra click through the
+  // introduction — every other entry point leaves this at its default false.
+  const [showPaywall, setShowPaywall] = useState(initialShowPaywall ?? false);
 
   // Session-only refresh convenience (see DNS_COURSE_SUBVIEW_STORAGE_KEY) — never a
   // routing mechanism, never touches the URL/window.history. Gated on
@@ -712,7 +804,7 @@ export default function DNSCourseView({
     if (!showPaywall) {
       return (
         <DNSProgramIntroduction
-          onBack={onBack}
+          onBack={onBackToLanding}
           onContinue={() => setShowPaywall(true)}
           onOpenSettings={onOpenSettings}
         />
@@ -723,7 +815,7 @@ export default function DNSCourseView({
         auth={auth}
         checkoutLoading={checkoutLoading}
         setCheckoutLoading={setCheckoutLoading}
-        onBack={onBack}
+        onBack={onBackToLanding}
         onOpenSettings={onOpenSettings}
         onGoogleSignIn={onGoogleSignIn}
         onSendSignInLink={onSendSignInLink}
@@ -734,6 +826,21 @@ export default function DNSCourseView({
         isInAppBrowser={isInAppBrowser}
       />
     );
+  }
+
+  // Medical/safety disclaimer (see LegalDisclaimer.tsx) — required once, now that
+  // entitlement is confirmed, before any onboarding or course content is shown. This is
+  // deliberately NOT a pre-purchase gate: reaching Paywall/Stripe Checkout above never
+  // depends on hasAgreedToTerms (see App.tsx's attemptNavigation/goToDnsCourse) — the
+  // disclaimer is solely an exercise/safety acknowledgment, not a purchase term, so it
+  // moved here instead. isOwnerUid exempted for the same QA-only reason as the
+  // startedAt gate just below. Already-agreed users (including every existing purchaser
+  // from before this change) see hasAgreedToTerms true immediately and this never renders.
+  // onCancel uses onBackToLanding (this component's sole exit — see its doc comment
+  // above); declining changes nothing about their entitlement, payment, or course
+  // progress.
+  if (!hasAgreedToTerms && !isOwnerUid) {
+    return <LegalDisclaimer onAgree={onAgreeToTerms} onCancel={onBackToLanding} />;
   }
 
   // Shown once, now that entitlement is confirmed — this is the first screen of the
@@ -749,17 +856,7 @@ export default function DNSCourseView({
     return (
       <div className="min-h-screen bg-[#080d1a] pb-20">
         <div className="max-w-2xl mx-auto p-6 pt-10">
-          <h1 className="text-2xl font-bold text-[#f0f4f8] mb-6 text-center">Before You Start</h1>
-
-          <BeforeYouStartContent />
-
-          <button
-            onClick={() => onUpdateDnsCourse({ startedAt: today })}
-            className="w-full py-4 rounded-xl font-bold text-base text-[#080d1a] hover:opacity-90 active:scale-95 transition-all"
-            style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
-          >
-            Start Week 1, Day 1
-          </button>
+          <BeforeYouStartScreen onStart={() => onUpdateDnsCourse({ startedAt: today })} />
         </div>
       </div>
     );
@@ -810,7 +907,12 @@ export default function DNSCourseView({
     <div className="min-h-screen bg-[#080d1a] pb-20">
       <div className="bg-[#0f1829] border-b border-[#1a2a42] sticky top-0 z-30">
         <div className="p-4 flex items-center justify-between max-w-2xl mx-auto">
-          <button onClick={onBack} className="text-[#6b849e] hover:text-[#f0f4f8] flex items-center gap-1 transition-colors">
+          {/* Under DNS_ONLY_LAUNCH, Dashboard is largely unreachable through normal
+              navigation — this returns to the real landing/home screen instead (same
+              onBackToLanding used by every other exit in this component). Never touches
+              entitlement, progress, or disclaimer state; returning to the course later
+              resumes exactly where it left off. */}
+          <button onClick={onBackToLanding} className="text-[#6b849e] hover:text-[#f0f4f8] flex items-center gap-1 transition-colors">
             <ArrowLeft size={20} /> Back
           </button>
           <div className="font-semibold text-[#f0f4f8]">12-Week DNS Foundations</div>
@@ -909,21 +1011,11 @@ export default function DNSCourseView({
           !dnsCourse.startedAt ? (
             // Only reachable here for the entitled QA owner uid with an empty
             // startedAt — every other uid already returned the full-page BeforeYouStart
-            // screen above before ever reaching this render. Same content, same single
-            // write (onUpdateDnsCourse({ startedAt: today })) as that screen — moved
-            // in-tab rather than duplicated, so QA/Past Days/History stay reachable
-            // alongside it and the normal start behavior (D) is identical once clicked.
-            <>
-              <h1 className="text-2xl font-bold text-[#f0f4f8] mb-6 text-center">Before You Start</h1>
-              <BeforeYouStartContent />
-              <button
-                onClick={() => onUpdateDnsCourse({ startedAt: today })}
-                className="w-full py-4 rounded-xl font-bold text-base text-[#080d1a] hover:opacity-90 active:scale-95 transition-all"
-                style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
-              >
-                Start Week 1, Day 1
-              </button>
-            </>
+            // screen above before ever reaching this render. Same shared component, same
+            // single write (onUpdateDnsCourse({ startedAt: today })) as that screen —
+            // moved in-tab rather than duplicated, so QA/Past Days/History stay reachable
+            // alongside it and the normal start behavior is identical once clicked.
+            <BeforeYouStartScreen onStart={() => onUpdateDnsCourse({ startedAt: today })} />
           ) : showCompletionBanner ? (() => {
             // Checked BEFORE the courseComplete branch below — completing Day 84 advances
             // currentDay to 85, so the ordinary permanent course-complete screen would

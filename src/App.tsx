@@ -54,6 +54,7 @@ import VideoPlayer from './components/VideoPlayer';
 import SessionSummary from './components/SessionSummary';
 import Paywall from './components/Paywall';
 import DNSCourseView from './components/DNSCourseView';
+import LegalDisclaimer from './components/LegalDisclaimer';
 import InstallSettingsCard from './components/InstallSettingsCard';
 import NotificationSettingsCard from './components/NotificationSettingsCard';
 import CalendarSettingsCard from './components/CalendarSettingsCard';
@@ -321,75 +322,11 @@ const GoogleLogoSvg = ({ dim = false }: { dim?: boolean }) => (
   </svg>
 );
 
-const LegalDisclaimer = ({ onAgree, onCancel }: { onAgree: () => void; onCancel: () => void }) => (
-  <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
-    <div className="bg-white max-w-2xl w-full rounded-xl shadow-2xl max-h-[90vh] flex flex-col">
-      <div className="p-6 border-b bg-red-50 rounded-t-xl">
-        <div className="flex items-center gap-3 text-red-700 mb-2">
-          <ShieldAlert size={28} />
-          <h2 className="text-2xl font-bold">Medical Disclaimer & Liability Waiver</h2>
-        </div>
-        <p className="text-sm text-red-600 font-medium">Please read carefully before proceeding.</p>
-      </div>
-
-      <div className="p-8 overflow-y-auto text-sm text-gray-700 space-y-4 flex-1">
-        <p className="font-semibold text-lg">Dr. Bruene & NeuroActive Team</p>
-
-        <div className="p-4 bg-gray-50 rounded-lg border border-gray-100">
-          <p className="mb-2">
-            <strong>1. Not Medical Advice:</strong> The content provided in this application (NeuroActive) including
-            text, graphics, images, and video, is for informational and educational purposes only. It is not intended
-            to be a substitute for professional medical advice, diagnosis, or treatment.
-          </p>
-
-          <p className="mb-2">
-            <strong>2. No Doctor-Patient Relationship:</strong> Usage of this app does not establish a doctor-patient
-            relationship between you and Dr. Bruene. Dr. Bruene is licensed in Illinois, and this application is not
-            intended to provide medical services outside of this jurisdiction.
-          </p>
-
-          <p className="mb-2">
-            <strong>3. Consult Your Doctor First:</strong> This program involves physical movement and exercise. If
-            you have a pre-existing heart, lung, or neurological condition, are pregnant or postpartum, or have had a
-            recent injury or surgery you haven't been cleared for, consult a physician before beginning.
-          </p>
-
-          <p className="mb-2">
-            <strong>4. Listen to Your Body:</strong> Stop immediately if you experience chest pain, dizziness,
-            shortness of breath beyond normal exertion, or sharp or shooting pain. Discomfort from effort is normal;
-            pain that feels wrong is not. This program is not personalized medical advice — it's based on general
-            training principles, not an evaluation of your individual body or medical history.
-          </p>
-
-          <p className="mb-2">
-            <strong>5. Assumption of Risk:</strong> You acknowledge that participation in these exercises involves a
-            risk of injury. By continuing, you voluntarily assume all risks associated with these activities.
-          </p>
-
-          <p>
-            <strong>6. Emergency:</strong> If you think you may have a medical emergency, call your doctor or 911
-            immediately. Do not disregard professional medical advice or delay in seeking it because of something you
-            have read in this app.
-          </p>
-        </div>
-
-        <p className="text-xs text-gray-500 mt-4">By clicking "I Agree", you acknowledge that you have read and understood these terms.</p>
-      </div>
-
-      <div className="p-6 border-t bg-gray-50 rounded-b-xl flex justify-end gap-3">
-        <button onClick={onCancel} className="px-4 py-2 text-gray-600 font-medium hover:bg-gray-200 rounded-lg transition-colors">
-          Decline
-        </button>
-        <button
-          onClick={onAgree}
-          className="px-6 py-2 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 shadow-lg transition-all transform hover:scale-105"
-        >
-          I Agree & Understand
-        </button>
-      </div>
-    </div>
-  </div>
-);
+// LegalDisclaimer moved to its own file (src/components/LegalDisclaimer.tsx), content
+// unchanged — it's now also required from DNSCourseView (post-entitlement, before
+// onboarding/course use), not just from this file's own assessment/dashboard/library
+// gate, so the copy needed to live in exactly one place. See that file's header comment
+// for why this is safe to require at two different points in the app.
 
 // --- Settings Component ---
 const SettingsView = ({
@@ -1308,10 +1245,21 @@ export default function App() {
 
   const [showTerms, setShowTerms] = useState(false);
   const [hasAgreedToTerms, setHasAgreedToTerms] = useState(false);
-  
+
   // Pending state for terms agreement flow + Autoplay Intent
   const [pendingNodeId, setPendingNodeId] = useState<string | null>(null);
   const [pendingView, setPendingView] = useState<'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings' | 'dns-course' | null>(null);
+
+  // Whether the next DNSCourseView mount should skip DNSProgramIntroduction and open
+  // straight to Paywall — set true only by the landing page's primary "buy now" CTA (see
+  // goToDnsCourse below). Every other dns-course entry point (the landing page's "Learn
+  // how the program works" link, the Dashboard card, cross-links) leaves this false, so
+  // they keep showing the introduction first, exactly as before. Read once by
+  // DNSCourseView's showPaywall initializer on mount — safe because DNSCourseView is
+  // fully unmounted/remounted on every transition into/out of currentView 'dns-course'
+  // (see its `{currentView === 'dns-course' && (...)}` render below), so this never
+  // leaks a stale "skip" into a later, differently-sourced visit within the same session.
+  const [dnsSkipIntro, setDnsSkipIntro] = useState(false);
 
   // Pending intent for the baseline pain-log gate — set when "Start Assessment" is
   // clicked but no baseline exists yet; replayed once the baseline is captured.
@@ -2301,12 +2249,27 @@ export default function App() {
     }
   };
 
+  // The DNS Foundations medical/safety disclaimer is required post-entitlement,
+  // immediately before onboarding/course use (see DNSCourseView) — not as a pre-purchase
+  // gate. skipIntro controls whether the DNSCourseView mount this triggers opens straight
+  // to Paywall (a motivated purchaser's primary CTA) or shows DNSProgramIntroduction
+  // first (every other entry point) — see dnsSkipIntro above.
+  const goToDnsCourse = (skipIntro: boolean = false) => {
+    setDnsSkipIntro(skipIntro);
+    setAutoplayToken(null);
+    setCurrentView('dns-course');
+  };
+
   // UPDATED: Honest navigation intent handler (Strict Mode)
   const attemptNavigation = (
     targetView: 'assessment' | 'dashboard' | 'library' | 'dns-course',
     nodeId?: string,
     autoplay: boolean = false
   ) => {
+    if (targetView === 'dns-course') {
+      goToDnsCourse(false);
+      return;
+    }
     if (hasAgreedToTerms) {
       if (targetView === 'assessment') {
         if (nodeId) {
@@ -2321,7 +2284,7 @@ export default function App() {
         // Leaving assessment implies killing the video token
         setAutoplayToken(null);
       }
-      
+
       setCurrentView(targetView);
     } else {
       setPendingView(targetView);
@@ -2334,8 +2297,18 @@ export default function App() {
   // DNS launch purchase entry points all pass through DNSCourseView so entitlement
   // loading and the pre-paywall introduction cannot be bypassed by an Upgrade button.
   const openUpgrade = () => {
-    if (DNS_ONLY_LAUNCH) attemptNavigation('dns-course');
+    if (DNS_ONLY_LAUNCH) goToDnsCourse(false);
     else setCurrentView('paywall');
+  };
+
+  // DNS Foundations' own post-entitlement safety-disclaimer gate (see DNSCourseView) —
+  // deliberately independent of handleTermsAgree/pendingView below, since by the time
+  // this fires there is no pending cross-view navigation to resume: the user is already
+  // on 'dns-course' and DNSCourseView itself decides what to render next once
+  // hasAgreedToTerms flips true.
+  const handleDnsTermsAgree = () => {
+    setHasAgreedToTerms(true);
+    saveUserData({ hasAgreedToTerms: true });
   };
 
   // Shared entry point for "Start/New/Begin Assessment" — the only callers that
@@ -2599,9 +2572,15 @@ export default function App() {
           // Single-path CTA for DNS-only launch. The two-path version below is kept
           // intact (not deleted) — flip DNS_ONLY_LAUNCH in src/config/launchConfig.ts
           // to restore it once the pain-recovery track is ready.
-          <div className="w-full max-w-md relative z-10">
+          //
+          // Primary CTA routes a motivated purchaser straight to Paywall (skipIntro),
+          // bypassing DNSProgramIntroduction entirely — entitled users still bypass both
+          // and land in their course, unchanged, since DNSCourseView's own entitlement
+          // check runs before either ever renders. The secondary link below is the only
+          // path left that opens the introduction first.
+          <div className="w-full max-w-md relative z-10 space-y-3">
             <button
-              onClick={() => attemptNavigation('dns-course')}
+              onClick={() => goToDnsCourse(true)}
               className="w-full px-8 py-4 rounded-xl font-bold text-lg shadow-lg hover:opacity-90 active:scale-95 transition-all text-[#080d1a] flex flex-col items-center gap-1"
               style={{ background: 'linear-gradient(135deg, #00d4c8, #7c5cfc)' }}
             >
@@ -2609,6 +2588,12 @@ export default function App() {
                 Start the 12-Week DNS Program <ChevronRight size={20} />
               </span>
               <span className="text-xs font-normal opacity-70">Build lasting stability, one position at a time.</span>
+            </button>
+            <button
+              onClick={() => goToDnsCourse(false)}
+              className="w-full text-sm font-semibold text-[#00d4c8] hover:underline transition-opacity"
+            >
+              Learn how the program works
             </button>
           </div>
         ) : (
@@ -3317,7 +3302,6 @@ export default function App() {
             userDataHydrated &&
             entitlementHydrated
           }
-          onBack={() => setCurrentView('dashboard')}
           onOpenSettings={() => setCurrentView('settings')}
           auth={auth}
           checkoutLoading={checkoutLoading}
@@ -3329,6 +3313,24 @@ export default function App() {
           signInLoading={signInLoading}
           signInError={signInError}
           isInAppBrowser={isInAppBrowser}
+          // Read once, at mount, by DNSCourseView's showPaywall initializer — see
+          // dnsSkipIntro/goToDnsCourse above. Only the landing page's primary CTA sets
+          // this true; every other entry point leaves it false (shows the introduction).
+          initialShowPaywall={dnsSkipIntro}
+          // Medical/safety disclaimer, required post-entitlement — see LegalDisclaimer.tsx
+          // and DNSCourseView's own gate for it. Never gates reaching the paywall itself.
+          hasAgreedToTerms={hasAgreedToTerms}
+          onAgreeToTerms={handleDnsTermsAgree}
+          // Every Back/Cancel action DNSCourseView renders — the public introduction, its
+          // embedded paywall, the post-entitlement disclaimer, and its own in-course
+          // header Back button — sends the user to the real DNS-only landing/home screen.
+          // Dashboard is largely unreachable through normal navigation once its own entry
+          // points are hidden under DNS_ONLY_LAUNCH, so this component intentionally has
+          // no separate "back to Dashboard" exit. Never touches entitlement, payment,
+          // disclaimer acceptance, or course progress (currentDay/startedAt/
+          // completionDates) — returning to the course afterward resumes exactly where it
+          // left off.
+          onBackToLanding={() => setCurrentView('landing')}
         />
       )}
       {currentView === 'dashboard' && pendingBaselineNodeId
