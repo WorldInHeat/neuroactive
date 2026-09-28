@@ -3,7 +3,7 @@
 // does not touch activePrescriptions, history, or any assessment-flow state.
 import { useEffect, useState, type ReactElement } from 'react';
 import type { Auth } from 'firebase/auth';
-import { ArrowLeft, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, HelpCircle, Lock, ShieldCheck, User, X } from 'lucide-react';
+import { ArrowLeft, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, HelpCircle, Lock, ShieldCheck, Target, User, X } from 'lucide-react';
 import { DNS_COURSE, DNS_COURSE_LENGTH } from '../data/dnsCourse';
 import type { DNSCourseDay } from '../data/dnsCourse';
 import { computeDnsDayAvailability, MAX_COMPLETIONS_PER_DAY } from '../services/dnsCourseProgression';
@@ -453,23 +453,71 @@ function BeforeYouStartScreen({ onStart }: { onStart: () => void }) {
   );
 }
 
+// Reformatted for scannability (readability pass) — every instruction/qualification
+// below is the same guidance the old wall-of-text version carried, just under bold
+// lead-ins instead of buried in paragraph 1/2/3/... Matches the h3-lead-in + <p> block
+// pattern already used by BeforeYouStartContent/ModifyingTheProgramContent, plus one
+// accent-color callout (same border/bg treatment as BeforeYouStartScreen's safety
+// callout) for the single clearest takeaway — quality over quantity, which also carries
+// the "you can split a session" guidance since the source text argues them together.
 function HowMuchToPracticeContent() {
-  const paragraphs = [
-    "The daily video itself is short, but we recommend doing your DNS exercises for 10–15 minutes once per day when you're starting out (this can grow to 10–20 minutes as you progress).",
-    "Why so little? Because these movements and positions are already wired into your brain from early development — you're not learning something new, you're reminding your brain of what it already knows. That's why a relatively short amount of focused practice is enough to create real, lasting change: it works at a subconscious (subcortical) level, below the reach of conscious effort or willpower.",
-    "Do the new exercise of the day first, then spend the remaining time returning to something from past days or weeks — unless you need the full time just to feel comfortable with the new movement, in which case, that's completely fine too.",
-    "Quality over quantity — only perfect practice makes perfect. If you're the type to want to do more, it's better to split your practice into two separate 10–15 minute sessions than one 40-minute session. Longer single sessions increase the chance that fatigue creeps in and you start compensating — at which point you're no longer training the movement, you're training the compensation.",
-    "If a new exercise feels difficult or unfamiliar, it's completely okay to stay on it for a few extra days before moving forward — there's no rush. And if something feels hard or uncomfortable later on, even weeks after you've moved past it, it's okay to come back to it. The videos will always be there waiting for you when you're ready.",
-    'Throughout every session, keep coming back to the fundamentals: abdominal breathing, nasal breathing, fixed points, and joint centration (once you understand these concepts).',
-    "Once your 12 weeks are complete, you're free to pick and choose whichever positions and movements serve you best going forward — but keep checking back in on the others, especially the foundational ones, often.",
-  ];
   return (
-    <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] space-y-4">
-      {paragraphs.map((p, i) => (
-        <p key={i} className="text-[#6b849e] text-sm leading-relaxed">
-          {p}
+    <div className="bg-[#0f1829] p-6 rounded-2xl border border-[#1a2a42] space-y-5">
+      <div>
+        <h3 className="font-bold text-[#f0f4f8] mb-1">10–15 minutes, once a day, to start.</h3>
+        <p className="text-[#6b849e] text-sm leading-relaxed">
+          The daily video itself is short. This can grow to 10–20 minutes as you progress. These movements and
+          positions are already wired into your brain from early development — you're not learning something
+          new, you're reminding your brain of what it already knows. That's why a relatively short amount of
+          focused practice is enough to create real, lasting change: it works at a subconscious (subcortical)
+          level, below the reach of conscious effort or willpower.
         </p>
-      ))}
+      </div>
+
+      <div>
+        <h3 className="font-bold text-[#f0f4f8] mb-1">New exercise first, then revisit past days.</h3>
+        <p className="text-[#6b849e] text-sm leading-relaxed">
+          Do the new exercise of the day first, then spend the remaining time returning to something from past
+          days or weeks — unless you need the full time just to feel comfortable with the new movement, in which
+          case that's completely fine too.
+        </p>
+      </div>
+
+      <div className="rounded-2xl border border-[#00d4c8]/30 bg-[#00d4c8]/10 p-4 flex items-start gap-3">
+        <Target size={20} className="text-[#00d4c8] flex-shrink-0 mt-0.5" />
+        <p className="text-sm text-[#f0f4f8] leading-relaxed">
+          <strong>Quality over quantity — only perfect practice makes perfect.</strong> If you want to do more,{' '}
+          <strong>split it into two separate 10–15 minute sessions</strong> rather than one 40-minute session.
+          Longer single sessions increase the chance that fatigue creeps in and you start compensating — at that
+          point you're no longer training the movement, you're training the compensation.
+        </p>
+      </div>
+
+      <div>
+        <h3 className="font-bold text-[#f0f4f8] mb-1">Struggling with something? Stay on it.</h3>
+        <p className="text-[#6b849e] text-sm leading-relaxed">
+          If a new exercise feels difficult or unfamiliar, it's completely okay to stay on it for a few extra days
+          before moving forward — there's no rush. And if something feels hard or uncomfortable later on, even
+          weeks after you've moved past it, it's okay to come back to it. The videos will always be there waiting
+          for you when you're ready.
+        </p>
+      </div>
+
+      <div>
+        <h3 className="font-bold text-[#f0f4f8] mb-1">Keep coming back to the fundamentals.</h3>
+        <p className="text-[#6b849e] text-sm leading-relaxed">
+          Throughout every session: abdominal breathing, nasal breathing, fixed points, and joint centration
+          (once you understand these concepts).
+        </p>
+      </div>
+
+      <div>
+        <h3 className="font-bold text-[#f0f4f8] mb-1">After your 12 weeks.</h3>
+        <p className="text-[#6b849e] text-sm leading-relaxed">
+          You're free to pick and choose whichever positions and movements serve you best going forward — but
+          keep checking back in on the others, especially the foundational ones, often.
+        </p>
+      </div>
     </div>
   );
 }
