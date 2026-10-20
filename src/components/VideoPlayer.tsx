@@ -1,5 +1,32 @@
 // src/components/VideoPlayer.tsx
-import { useMemo, useState, useEffect, useRef } from 'react';import { Play, ExternalLink } from 'lucide-react';
+import { useMemo, useState, useEffect, useRef } from 'react';import { Play, ExternalLink, Maximize } from 'lucide-react';
+import { useScreenWakeLock } from '../hooks/useScreenWakeLock';
+import { enterFullscreen, fullscreenControlFor, useFullscreenAvailable } from '../hooks/useElementFullscreen';
+
+// Vimeo's iframe postMessage protocol — the same messages @vimeo/player sends/receives,
+// used directly so no SDK dependency is needed just to observe playback state.
+const VIMEO_PLAYER_ORIGIN = 'https://player.vimeo.com';
+const VIMEO_PLAYBACK_EVENTS = ['play', 'playing', 'pause', 'ended'] as const;
+
+type VimeoMessage = { event?: string; method?: string };
+
+// Vimeo posts either an object or a JSON string depending on player version.
+function parseVimeoMessage(data: unknown): VimeoMessage | null {
+  let parsed: unknown = data;
+  if (typeof data === 'string') {
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const { event, method } = parsed as Record<string, unknown>;
+  return {
+    event: typeof event === 'string' ? event : undefined,
+    method: typeof method === 'string' ? method : undefined,
+  };
+}
 
 type Props = {
   nodeId: string;
@@ -27,6 +54,18 @@ type Props = {
   // than relying on it. Defaults to false: every existing caller (onboarding video,
   // assessment-flow autoplay-token videos, paywall testimonial) is completely unaffected.
   nativePlayback?: boolean;
+  // DNS lesson videos only. Holds a Screen Wake Lock while Vimeo reports the video is
+  // actually playing (embedded or fullscreen) — never merely because the page is open.
+  // Defaults to false so every other caller is unaffected.
+  keepScreenAwakeWhilePlaying?: boolean;
+  // DNS lesson videos only. Shows an explicit "View fullscreen" button under the video —
+  // on phone widths Vimeo tucks its own fullscreen control behind a small overflow
+  // chevron, which testers didn't find. Fullscreens the iframe itself (the same element
+  // Vimeo's native control fullscreens), so playback position and play/pause state carry
+  // over untouched. Where the standard Fullscreen API is unavailable (e.g. iPhone Safari)
+  // a short hint pointing at Vimeo's own ‹-tucked control is shown instead — never both.
+  // Defaults to false.
+  showFullscreenButton?: boolean;
 };
 
 export default function VideoPlayer({
@@ -39,6 +78,8 @@ export default function VideoPlayer({
   onConsumeAutoplay,
   orientation = 'landscape',
   nativePlayback = false,
+  keepScreenAwakeWhilePlaying = false,
+  showFullscreenButton = false,
 }: Props) {
   const [isPlaying, setIsPlaying] = useState(false);
   // Bumped by the "Trouble playing? Retry" control below to force a fresh iframe mount
@@ -144,6 +185,54 @@ export default function VideoPlayer({
   // the moment this component mounts, rather than waiting for a tap on our overlay first.
   const showIframe = isPlaying || nativePlayback;
 
+  // Full identity (nodeId + videoId + hash) plus the manual retry generation — forces a
+  // fresh DOM node (and so a fresh request to player.vimeo.com) on any video change OR a
+  // Retry tap, independent of the reset effect above.
+  const iframeKey = `${nodeId}:${videoId}:${hash ?? ''}:${retryKey}`;
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  // Which iframe instance Vimeo last reported as playing. Keyed rather than a boolean so
+  // a remount (Retry, video change) reads as "not playing" without resetting state.
+  const [playingIframeKey, setPlayingIframeKey] = useState<string | null>(null);
+  const trackPlayback = keepScreenAwakeWhilePlaying && showIframe;
+
+  useEffect(() => {
+    if (!trackPlayback) return;
+    const onMessage = (event: MessageEvent) => {
+      const frame = iframeRef.current?.contentWindow;
+      // Only genuine messages from this component's own Vimeo iframe.
+      if (!frame || event.source !== frame || event.origin !== VIMEO_PLAYER_ORIGIN) return;
+      const message = parseVimeoMessage(event.data);
+      if (!message) return;
+      if (message.event === 'ready' || message.method === 'ping') {
+        for (const value of VIMEO_PLAYBACK_EVENTS) {
+          frame.postMessage({ method: 'addEventListener', value }, VIMEO_PLAYER_ORIGIN);
+        }
+      } else if (message.event === 'play' || message.event === 'playing') {
+        setPlayingIframeKey(iframeKey);
+      } else if (message.event === 'pause' || message.event === 'ended') {
+        setPlayingIframeKey(null);
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [trackPlayback, iframeKey]);
+
+  // Covers a 'ready' that Vimeo sent before the listener above was attached — the player
+  // answers a ping the same way, which then triggers the event subscription.
+  const handleIframeLoad = () => {
+    iframeRef.current?.contentWindow?.postMessage({ method: 'ping' }, VIMEO_PLAYER_ORIGIN);
+  };
+
+  useScreenWakeLock(trackPlayback && playingIframeKey === iframeKey);
+
+  const fullscreenControl = fullscreenControlFor(showFullscreenButton, useFullscreenAvailable());
+  // Requested synchronously inside the tap handler so it carries the tap's user
+  // activation. A refusal resolves false and is ignored — no error UI.
+  const handleFullscreen = () => {
+    void enterFullscreen(iframeRef.current);
+  };
+
   return (
     <div className="mb-6">
       <div
@@ -151,10 +240,9 @@ export default function VideoPlayer({
       >
         {showIframe ? (
           <iframe
-            // Full identity (nodeId + videoId + hash) plus the manual retry generation —
-            // forces a fresh DOM node (and so a fresh request to player.vimeo.com) on any
-            // video change OR a Retry tap, independent of the reset effect above.
-            key={`${nodeId}:${videoId}:${hash ?? ''}:${retryKey}`}
+            key={iframeKey}
+            ref={iframeRef}
+            onLoad={trackPlayback ? handleIframeLoad : undefined}
             src={vimeoSrc}
             className="w-full h-full"
             frameBorder="0"
@@ -195,6 +283,23 @@ export default function VideoPlayer({
       </div>
 
       <div className="mt-3 text-center space-y-1">
+        {showIframe && fullscreenControl === 'hint' && (
+          <p className="pb-1 text-xs text-[#6b849e]">
+            For fullscreen, tap ‹ in the video controls, then tap the fullscreen icon.
+          </p>
+        )}
+        {showIframe && fullscreenControl === 'button' && (
+          <div className="pb-1">
+            <button
+              type="button"
+              onClick={handleFullscreen}
+              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-full border border-[#00d4c8]/40 bg-[#00d4c8]/10 px-5 py-2 text-sm font-semibold text-[#00d4c8] hover:bg-[#00d4c8]/20 active:scale-95 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00d4c8]/60"
+            >
+              <Maximize size={16} aria-hidden="true" />
+              View fullscreen
+            </button>
+          </div>
+        )}
         {showIframe && (
           <button
             type="button"

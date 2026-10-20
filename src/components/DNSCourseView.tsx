@@ -257,6 +257,8 @@ function DayVideo({ dayIndex, title }: { dayIndex: number; title: string }) {
       autoplayToken={null}
       onConsumeAutoplay={() => {}}
       nativePlayback
+      keepScreenAwakeWhilePlaying
+      showFullscreenButton
     />
   );
 }
