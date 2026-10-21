@@ -8,7 +8,15 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { DNS_COURSE_DAY_MEDIA } from './dnsCourseDayMedia';
-import { applyDnsEntitlementBasis, hasDnsEntitlement, paymentGrantsDnsFoundations } from './dnsEntitlement';
+import {
+  applyDnsEntitlementBasis,
+  canAccessDnsCourseDay,
+  dnsTrialCallerError,
+  entitlementDocRef,
+  paymentGrantsDnsFoundations,
+  resolveDnsAccess,
+  startDnsTrialForUid,
+} from './dnsEntitlement';
 
 export { createDnsCheckoutSession, handleDnsNoCostCheckout, handleDnsRefund } from './dnsCheckout';
 export {
@@ -83,10 +91,13 @@ export const recomputeDnsEntitlement = onDocumentWritten(
 );
 
 // Returns Vimeo credentials for exactly one requested DNS course day, and only to an
-// authenticated, DNS-entitled caller. Deliberately does NOT check the caller's course
-// progress (dnsCourse.currentDay in Firestore) — ownership of DNS Foundations is the
-// security boundary, not which day the UI has reached; the existing client-side
-// progression system remains responsible for which days the normal UI exposes.
+// authenticated caller whose server-resolved access covers that day: permanent access
+// (any day), or an active or expired free trial (Days 1–14 only — see resolveDnsAccess /
+// canAccessDnsCourseDay in dnsEntitlement.ts). Deliberately does NOT check the caller's
+// course progress (dnsCourse.currentDay in Firestore) — access level is the security
+// boundary, not which day the UI has reached; the client-side progression system remains
+// responsible for which days the normal UI exposes. Trial expiry is evaluated against the
+// server clock only; nothing the client sends besides the requested day is read.
 export const getDnsCourseDayMedia = onCall(async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Sign in required.');
@@ -97,10 +108,28 @@ export const getDnsCourseDayMedia = onCall(async (request) => {
     throw new HttpsError('invalid-argument', 'Invalid DNS course day.');
   }
 
-  const entitled = await hasDnsEntitlement(db, request.auth.uid);
-  if (!entitled) {
+  const snap = await entitlementDocRef(db, request.auth.uid).get();
+  const access = resolveDnsAccess(snap.exists ? snap.data() : undefined, Date.now());
+  if (!canAccessDnsCourseDay(access, day)) {
     throw new HttpsError('permission-denied', 'DNS Foundations entitlement required.');
   }
 
   return DNS_COURSE_DAY_MEDIA[day];
+});
+
+// Explicit, one-time activation of the no-card 14-day DNS free trial. Requires a real
+// (non-anonymous) account so the trial is tied to a durable identity. Reads NOTHING from
+// request.data — start time, duration, day limit, uid, and type all come from the server.
+// Idempotent: a duplicate click or network retry returns the existing trial unchanged.
+export const startDnsTrial = onCall(async (request) => {
+  const callerError = dnsTrialCallerError(request.auth);
+  if (callerError || !request.auth) {
+    throw new HttpsError(callerError?.code ?? 'unauthenticated', callerError?.message ?? 'Sign in required.');
+  }
+
+  const { outcome, access } = await startDnsTrialForUid(db, request.auth.uid);
+  if (outcome === 'needs_review') {
+    throw new HttpsError('failed-precondition', 'This account needs a quick review before a trial can start. Please contact support.');
+  }
+  return { outcome, access };
 });

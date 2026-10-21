@@ -72,6 +72,16 @@ import {
   type AttributionState,
 } from './services/attribution';
 import { DNS_ONLY_LAUNCH } from './config/launchConfig';
+import {
+  clearPendingTrialIntent,
+  readDnsTrialState,
+  readPendingTrialIntent,
+  resolveSettingsDnsAccessDisplay,
+  writePendingTrialIntent,
+  type DnsTrialState,
+  type IntentStorage,
+} from './services/dnsTrial';
+import { startDnsTrial } from './services/dnsTrialApi';
 
 // Firebase itself is initialized exactly once, in src/services/firebase.ts — imported above,
 // not re-initialized here. This file previously performed its OWN separate
@@ -188,6 +198,14 @@ function safeLocalStorageRemove(key: string): void {
     // best-effort only
   }
 }
+// The dnsTrial.ts intent helpers take a Storage-shaped object; these safe wrappers keep a
+// blocked/throwing localStorage from ever breaking the app.
+const safeIntentStorage: IntentStorage = {
+  getItem: safeLocalStorageGet,
+  setItem: safeLocalStorageSet,
+  removeItem: safeLocalStorageRemove,
+};
+const NO_DNS_TRIAL: DnsTrialState = { used: false, trial: null };
 
 // signInWithRedirect/linkWithRedirect navigate the page away on success, so normally
 // this promise's resolution is moot — execution just stops. But if the browser fails to
@@ -333,6 +351,8 @@ const SettingsView = ({
   isPremium,
   dnsAccountStatus,
   dnsEntitlementState,
+  dnsEntitlementSource,
+  dnsTrialState,
   onBack,
   onGoToDashboard,
   onLogout,
@@ -373,6 +393,10 @@ const SettingsView = ({
   // 'not-entitled', which is exactly what let this row briefly show "Upgrade" to an
   // entitled user while the entitlement listener was still resolving.
   dnsEntitlementState: 'loading' | 'entitled' | 'not-entitled';
+  // Display-only inputs for the DNS_ONLY_LAUNCH access label (resolveSettingsDnsAccessDisplay):
+  // the server-written entitlement `source` and free-trial record. Never an access decision.
+  dnsEntitlementSource: string | null;
+  dnsTrialState: DnsTrialState;
   onBack: () => void;
   onGoToDashboard: () => void;
   onLogout: () => void;
@@ -401,6 +425,9 @@ const SettingsView = ({
 }) => {
   const [portalLoading, setPortalLoading] = useState(false);
   const [portalError, setPortalError] = useState<string | null>(null);
+  // Display clock for the trial's remaining-days label, read once per Settings visit.
+  const [settingsNowMs] = useState(() => Date.now());
+  const dnsAccessDisplay = resolveSettingsDnsAccessDisplay(dnsEntitlementState, dnsEntitlementSource, dnsTrialState, settingsNowMs);
   const portalInFlightRef = useRef(false);
   // Task 4: existing permanent (Google or magic-link) users setting up a password for
   // reliable installed-PWA sign-in, via updatePassword (see handleSetPassword in App.tsx —
@@ -515,18 +542,15 @@ const SettingsView = ({
                 {DNS_ONLY_LAUNCH ? 'Program Access' : 'Current Plan'}
               </span>
               <div className="text-lg font-bold text-[#f0f4f8]">
-                {DNS_ONLY_LAUNCH && dnsEntitlementState === 'loading'
-                  ? 'Checking…'
-                  : DNS_ONLY_LAUNCH
-                  ? dnsAccountStatus === 'active'
-                    ? 'DNS Foundations — Active'
-                    : dnsAccountStatus === 'beta'
-                    ? 'DNS Foundations — Beta Access'
-                    : 'Free Tier'
+                {DNS_ONLY_LAUNCH
+                  ? dnsAccessDisplay.primary
                   : isPremium
                   ? 'God Mode (Pro)'
                   : 'Free Tier'}
               </div>
+              {DNS_ONLY_LAUNCH && dnsAccessDisplay.secondary && (
+                <div className="text-xs text-[#6b849e] mt-0.5">{dnsAccessDisplay.secondary}</div>
+              )}
             </div>
             {DNS_ONLY_LAUNCH && dnsEntitlementState === 'loading' ? (
               <span className="text-xs text-[#6b849e]">Checking access…</span>
@@ -1127,9 +1151,14 @@ const LibraryView = ({ isPremium, onUnlock, onPlay }: { isPremium: boolean; onUn
 // --- Main App Component ---
 export default function App() {
   const [currentView, setCurrentView] = useState<'landing' | 'assessment' | 'dashboard' | 'paywall' | 'library' | 'settings' | 'dns-course'>(() => {
+    // A pending free-trial intent (landing CTA → sign-in round trip, possibly in a new tab
+    // opened from an email link) resumes at the trial confirmation inside 'dns-course'.
+    if (readPendingTrialIntent(safeIntentStorage, Date.now())) return 'dns-course';
     const stored = safeSessionStorageGet(CURRENT_VIEW_STORAGE_KEY);
     return isRestorableView(stored) ? stored : 'landing';
   });
+  // Navigation intent only — never starts a trial (see DnsTrialStartScreen).
+  const [dnsTrialIntent, setDnsTrialIntent] = useState(() => readPendingTrialIntent(safeIntentStorage, Date.now()));
   const [currentNodeId, setCurrentNodeId] = useState<string>('start');
   const [history, setHistory] = useState<string[]>([]);
   const [isPremium, setIsPremium] = useState(false);
@@ -1150,6 +1179,11 @@ export default function App() {
   // DNS_ONLY_LAUNCH account-status label in Settings, never a security decision (that's
   // dnsEntitlementState alone). Reset alongside dnsEntitlementState everywhere below.
   const [dnsEntitlementSource, setDnsEntitlementSource] = useState<string | null>(null);
+  // Free-trial record from the same server-written entitlement document (bases.dns_trial).
+  // Display/navigation only — media access and progress advancement are enforced
+  // server-side (getDnsCourseDayMedia, firestore.rules). Reset alongside
+  // dnsEntitlementState everywhere below so a different uid never inherits it.
+  const [dnsTrialState, setDnsTrialState] = useState<DnsTrialState>(NO_DNS_TRIAL);
   // Tracks whose entitlement dnsEntitlementState currently reflects, so the auth effect
   // can tell "uid actually changed, reset to loading" apart from "same uid, listener
   // re-fired" (e.g. a token refresh) — resetting on every re-fire would flash the
@@ -1711,6 +1745,7 @@ export default function App() {
           entitlementUidRef.current = user.uid;
           setDnsEntitlementState('loading');
           setDnsEntitlementSource(null);
+          setDnsTrialState(NO_DNS_TRIAL);
         }
         const entitlementRef = doc(db, 'artifacts', appId, 'users', user.uid, 'entitlement', 'main');
         const entitlementListenerUid = user.uid; // closed over below — see hydrationUidRef comment above
@@ -1720,6 +1755,7 @@ export default function App() {
             const entitled = snap.exists() && snap.data()?.dnsFoundationsEntitled === true;
             setDnsEntitlementState(entitled ? 'entitled' : 'not-entitled');
             setDnsEntitlementSource(entitled ? (snap.data()?.source ?? null) : null);
+            setDnsTrialState(snap.exists() ? readDnsTrialState(snap.data()) : NO_DNS_TRIAL);
             if (hydrationUidRef.current === entitlementListenerUid) setEntitlementHydrated(true);
           },
           (err) => {
@@ -1731,6 +1767,7 @@ export default function App() {
             // 'not-entitled' is exactly what isQaOwner already treats as non-owner).
             setDnsEntitlementState('not-entitled');
             setDnsEntitlementSource(null);
+            setDnsTrialState(NO_DNS_TRIAL);
             if (hydrationUidRef.current === entitlementListenerUid) setEntitlementHydrated(true);
           }
         );
@@ -1785,6 +1822,7 @@ export default function App() {
         entitlementUidRef.current = null;
         setDnsEntitlementState('loading');
         setDnsEntitlementSource(null);
+        setDnsTrialState(NO_DNS_TRIAL);
         userDataUidRef.current = null;
         setDnsCourse(DEFAULT_DNS_COURSE);
         // No uid at all — nothing can be "hydrated" for it. Cleared here mainly for
@@ -1902,6 +1940,9 @@ export default function App() {
     entitlementUidRef.current = null;
     setDnsEntitlementState('loading');
     setDnsEntitlementSource(null);
+    setDnsTrialState(NO_DNS_TRIAL);
+    clearPendingTrialIntent(safeIntentStorage);
+    setDnsTrialIntent(false);
     userDataUidRef.current = null;
     setDnsCourse(DEFAULT_DNS_COURSE);
     setPainLog([]);
@@ -2260,6 +2301,28 @@ export default function App() {
     setCurrentView('dns-course');
   };
 
+  // Landing page "Try the first 14 days free" — records the intent (persisted so it
+  // survives a sign-in round trip) and opens the explicit confirmation inside
+  // DNSCourseView. Never starts the trial; only "Begin my free 14 days" does that.
+  const goToDnsTrial = () => {
+    writePendingTrialIntent(safeIntentStorage, Date.now());
+    setDnsTrialIntent(true);
+    goToDnsCourse(false);
+  };
+
+  const clearDnsTrialIntent = () => {
+    clearPendingTrialIntent(safeIntentStorage);
+    setDnsTrialIntent(false);
+  };
+
+  // The only client path that starts a trial. Sends nothing — the server decides
+  // everything — and leaves the screen transition to the entitlement listener, which
+  // delivers the server-written trial record.
+  const handleStartDnsTrial = async () => {
+    await startDnsTrial();
+    clearDnsTrialIntent();
+  };
+
   // UPDATED: Honest navigation intent handler (Strict Mode)
   const attemptNavigation = (
     targetView: 'assessment' | 'dashboard' | 'library' | 'dns-course',
@@ -2589,6 +2652,18 @@ export default function App() {
               </span>
               <span className="text-xs font-normal opacity-70">Build lasting stability, one position at a time.</span>
             </button>
+            {/* No-card free trial — subordinate to the purchase CTA above, and only for
+                visitors with no permanent access who have never used a trial (an
+                active/expired trial user's course is reached through the CTA above). */}
+            {dnsEntitlementState === 'not-entitled' && !dnsTrialState.used && (
+              <button
+                onClick={goToDnsTrial}
+                className="w-full px-8 py-3 rounded-xl font-semibold text-base text-[#00d4c8] border border-[#00d4c8]/50 hover:bg-[#00d4c8]/10 active:scale-95 transition-all flex flex-col items-center gap-0.5"
+              >
+                <span>Try the first 14 days free</span>
+                <span className="text-xs font-normal text-[#6b849e]">No card required.</span>
+              </button>
+            )}
             <button
               onClick={() => goToDnsCourse(false)}
               className="w-full text-sm font-semibold text-[#00d4c8] hover:underline transition-opacity"
@@ -3287,6 +3362,10 @@ export default function App() {
           onCompleteDay={completeDnsCourseDay}
           today={todayLocalISO()}
           dnsEntitlementState={dnsEntitlementState}
+          dnsTrialState={dnsTrialState}
+          trialIntent={dnsTrialIntent}
+          onStartTrial={handleStartDnsTrial}
+          onTrialIntentResolved={clearDnsTrialIntent}
           // True only once BOTH the first userData/main snapshot and the first
           // entitlement snapshot have resolved (success, deterministic absence, or
           // error — see the onSnapshot callbacks above) for the exact uid this ref
@@ -3330,7 +3409,10 @@ export default function App() {
           // disclaimer acceptance, or course progress (currentDay/startedAt/
           // completionDates) — returning to the course afterward resumes exactly where it
           // left off.
-          onBackToLanding={() => setCurrentView('landing')}
+          onBackToLanding={() => {
+            clearDnsTrialIntent();
+            setCurrentView('landing');
+          }}
         />
       )}
       {currentView === 'dashboard' && pendingBaselineNodeId
@@ -3343,6 +3425,8 @@ export default function App() {
           isPremium={isPremium}
           dnsAccountStatus={dnsAccountStatus}
           dnsEntitlementState={dnsEntitlementState}
+          dnsEntitlementSource={dnsEntitlementSource}
+          dnsTrialState={dnsTrialState}
           onBack={() => setCurrentView('dashboard')}
           onGoToDashboard={() => setCurrentView('dashboard')}
           onLogout={handleLogout}

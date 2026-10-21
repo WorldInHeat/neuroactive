@@ -3,8 +3,54 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // App user data
+    //
+    // DNS course progress (dnsCourse) lives here and is client-written, so the one
+    // server-side guarantee for it is enforced in this rule: dnsCourse.currentDay may only
+    // INCREASE for a caller with permanent DNS entitlement, or — for the no-card free
+    // trial — while the trial is unexpired (server request.time) and never past 15 (i.e.
+    // Day 14 completed). Every other write (attribution, disclaimer, startedAt, isPremium,
+    // a non-increasing currentDay) is unaffected. See functions/src/dnsEntitlement.ts
+    // (DNS_TRIAL_MAX_COURSE_DAY) for the matching media-side limit; keep 15 = that + 1.
     match /artifacts/{appId}/users/{uid}/userData/{doc} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read, delete: if request.auth != null && request.auth.uid == uid;
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && dnsCourseAdvanceAllowed(appId, uid);
+    }
+
+    function dnsCurrentDay(data) {
+      return data.get('dnsCourse', {}).get('currentDay', 1);
+    }
+
+    function dnsCourseAdvanceAllowed(appId, uid) {
+      let newDay = dnsCurrentDay(request.resource.data);
+      let rawOldDay = resource == null ? 1 : dnsCurrentDay(resource.data);
+      // A malformed stored value counts as Day 1, so writing junk first can never be used
+      // to launder a later numeric jump.
+      let oldDay = rawOldDay is number ? rawOldDay : 1;
+      // A non-numeric NEW value is discarded by the client (normalizeDnsCourse resets it
+      // to Day 1) and can never unlock anything, so only a numeric increase needs
+      // authorization.
+      return !(newDay is number) || newDay <= oldDay
+        || dnsPermanentlyEntitled(appId, uid)
+        || (newDay <= 15 && dnsTrialActive(appId, uid));
+    }
+
+    function dnsEntitlementPath(appId, uid) {
+      return /databases/$(database)/documents/artifacts/$(appId)/users/$(uid)/entitlement/main;
+    }
+
+    function dnsPermanentlyEntitled(appId, uid) {
+      return exists(dnsEntitlementPath(appId, uid))
+        && get(dnsEntitlementPath(appId, uid)).data.get('dnsFoundationsEntitled', false) == true;
+    }
+
+    function dnsTrialActive(appId, uid) {
+      let trial = exists(dnsEntitlementPath(appId, uid))
+        ? get(dnsEntitlementPath(appId, uid)).data.get('bases', {}).get('dns_trial', null)
+        : null;
+      return trial != null && trial.get('type', '') == 'dns_trial'
+        && trial.get('expiresAt', null) is timestamp
+        && request.time < trial.expiresAt;
     }
 
     // Push-notification device installation ownership (Phase 3A-1, third repair).

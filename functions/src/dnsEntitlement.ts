@@ -11,7 +11,7 @@
 // basis on the document. This is what lets a full-refund revocation turn off the paid
 // basis without being able to see, let alone touch, an unrelated beta_grant basis that
 // also happens to be active for the same uid.
-import { FieldValue, type Firestore } from 'firebase-admin/firestore';
+import { FieldValue, Timestamp, type Firestore } from 'firebase-admin/firestore';
 
 const APP_ID = 'neuroactive-prod';
 
@@ -139,7 +139,9 @@ function isValidActiveBasis(basisKey: string, basis: Record<string, unknown> | u
     );
   }
 
-  // Every other key shape, including any `legacy_unknown:*` key, is never authorizing.
+  // Every other key shape, including any `legacy_unknown:*` key and the `dns_trial` key
+  // (see the FREE TRIAL section below — a trial is time/day-limited access resolved by
+  // resolveDnsAccess, never permanent entitlement), is never authorizing.
   return false;
 }
 
@@ -364,10 +366,190 @@ export function applyDnsEntitlementBasisWithData(
   return computeAndWriteBasis(transaction, ref, data, basisKey, basis);
 }
 
+// ---------------------------------------------------------------------------------------
+// FREE TRIAL (no card) — Days 1–14 for 14 calendar days after explicit activation.
+//
+// Stored as one more entry in the same `bases` map, under the fixed key `dns_trial`, so
+// it travels with every existing basis writer for free: computeAndWriteBasis and
+// grantBetaEntitlement.js both copy the whole map and touch only their own key, so the
+// trial record is preserved by every purchase, refund, zero-total, and beta write.
+//
+// It is deliberately NOT an entitlement basis in the isValidActiveBasis sense: the
+// `dns_trial` key never matches any recognized key shape there, so it can never set
+// `dnsFoundationsEntitled` (which keeps meaning "permanent, full-program access" for every
+// existing reader — App.tsx's listener, Settings, firestore.rules). Trial access is
+// resolved separately by resolveDnsAccess below, and a permanent basis always wins.
+//
+// The record is created exactly once per uid, by startDnsTrialForUid, from the server
+// clock only — never from anything the client sends — and is never deleted, extended, or
+// recreated: its presence is the durable "this uid has used its trial" marker, so signing
+// out, clearing storage, switching devices, or changing the device clock cannot restart it.
+// ---------------------------------------------------------------------------------------
+
+export const DNS_TRIAL_BASIS_KEY = 'dns_trial';
+export const DNS_TRIAL_DURATION_DAYS = 14;
+export const DNS_TRIAL_MAX_COURSE_DAY = 14;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+// "14 calendar days after activation" = activation instant + 14 × 24h, computed on the
+// server. Instant arithmetic is immune to device timezone/DST/clock changes.
+export const DNS_TRIAL_DURATION_MS = DNS_TRIAL_DURATION_DAYS * MS_PER_DAY;
+
+export type DnsAccessType = 'permanent' | 'trial_active' | 'trial_expired' | 'none';
+
+// Sanitized access summary — the only entitlement shape returned to clients by a
+// callable. Never contains Vimeo credentials, Stripe IDs, or basis internals.
+export type DnsAccessStatus = {
+  accessType: DnsAccessType;
+  // True once this uid has ever activated a trial (including a malformed record — a
+  // trial that can't be parsed still counts as used and is never recreated).
+  trialUsed: boolean;
+  trialStartedAt: string | null; // ISO-8601, server clock
+  trialExpiresAt: string | null; // ISO-8601, server clock
+  // Highest course day whose media this uid may load; null = no day limit (permanent).
+  maxAccessibleDay: number | null;
+  purchaseRequired: boolean;
+};
+
+type ParsedTrial = { startedAtMs: number; expiresAtMs: number };
+
+function timestampMillis(value: unknown): number | null {
+  if (value && typeof value === 'object' && typeof (value as { toMillis?: unknown }).toMillis === 'function') {
+    const ms = (value as { toMillis: () => number }).toMillis();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  return null;
+}
+
+function trialRecordOf(data: FirebaseFirestore.DocumentData): unknown {
+  const bases = data.bases;
+  return bases && typeof bases === 'object' ? (bases as Record<string, unknown>)[DNS_TRIAL_BASIS_KEY] : undefined;
+}
+
+// Fail-closed parse: anything other than a well-formed, server-shaped record grants no
+// trial access (but still counts as "used" — see trialUsed above).
+function parseTrialRecord(record: unknown): ParsedTrial | null {
+  if (!record || typeof record !== 'object') return null;
+  const r = record as Record<string, unknown>;
+  if (r.type !== 'dns_trial') return null;
+  const startedAtMs = timestampMillis(r.startedAt);
+  const expiresAtMs = timestampMillis(r.expiresAt);
+  if (startedAtMs === null || expiresAtMs === null || expiresAtMs <= startedAtMs) return null;
+  // Never trust a stored window longer than the configured one, however it got there.
+  if (expiresAtMs - startedAtMs > DNS_TRIAL_DURATION_MS) return null;
+  return { startedAtMs, expiresAtMs };
+}
+
+// The single authoritative resolver. `nowMs` is always the SERVER clock at the call site.
+export function resolveDnsAccess(data: FirebaseFirestore.DocumentData | undefined, nowMs: number): DnsAccessStatus {
+  const doc = data ?? {};
+  const record = trialRecordOf(doc);
+  const trialUsed = record !== undefined;
+  if (doc.dnsFoundationsEntitled === true) {
+    return { accessType: 'permanent', trialUsed, trialStartedAt: null, trialExpiresAt: null, maxAccessibleDay: null, purchaseRequired: false };
+  }
+  const trial = parseTrialRecord(record);
+  if (trial) {
+    return {
+      accessType: nowMs < trial.expiresAtMs ? 'trial_active' : 'trial_expired',
+      trialUsed: true,
+      trialStartedAt: new Date(trial.startedAtMs).toISOString(),
+      trialExpiresAt: new Date(trial.expiresAtMs).toISOString(),
+      maxAccessibleDay: DNS_TRIAL_MAX_COURSE_DAY,
+      purchaseRequired: true,
+    };
+  }
+  return { accessType: 'none', trialUsed, trialStartedAt: null, trialExpiresAt: null, maxAccessibleDay: null, purchaseRequired: true };
+}
+
+// Media authorization for one requested course day. Permanent: any day. Active OR expired
+// trial: Days 1..DNS_TRIAL_MAX_COURSE_DAY only (expired keeps review access to the same
+// days). Otherwise: nothing.
+export function canAccessDnsCourseDay(access: DnsAccessStatus, day: number): boolean {
+  if (!Number.isInteger(day) || day < 1) return false;
+  if (access.accessType === 'permanent') return true;
+  if (access.accessType === 'trial_active' || access.accessType === 'trial_expired') {
+    return access.maxAccessibleDay !== null && day <= access.maxAccessibleDay;
+  }
+  return false;
+}
+
+// Caller precondition for startDnsTrial, kept pure so it can be tested without the
+// Functions runtime: a signed-in, NON-anonymous account is required, so the one-trial-per-
+// uid rule binds to a durable identity rather than a throwaway anonymous session.
+export type DnsTrialCaller = { uid: string; token: { firebase?: { sign_in_provider?: string } } } | undefined;
+export function dnsTrialCallerError(auth: DnsTrialCaller): { code: 'unauthenticated' | 'failed-precondition'; message: string } | null {
+  if (!auth) return { code: 'unauthenticated', message: 'Sign in required.' };
+  const provider = auth.token.firebase?.sign_in_provider;
+  if (!provider || provider === 'anonymous') {
+    return { code: 'failed-precondition', message: 'Create an account or sign in to start your free trial.' };
+  }
+  return null;
+}
+
+export type DnsTrialStartOutcome ='started' | 'already_active' | 'already_used' | 'permanent' | 'needs_review';
+
+// Pure decision for a start request against the CURRENT document. Never extends,
+// restarts, or replaces an existing trial record — malformed included.
+function decideDnsTrialStart(data: FirebaseFirestore.DocumentData, nowMs: number): DnsTrialStartOutcome {
+  if (data.dnsFoundationsEntitled === true) return 'permanent';
+  const record = trialRecordOf(data);
+  if (record !== undefined) {
+    const trial = parseTrialRecord(record);
+    if (!trial) return 'needs_review';
+    return nowMs < trial.expiresAtMs ? 'already_active' : 'already_used';
+  }
+  // Accounts an admin or the system has deliberately flagged/revoked are not silently
+  // handed new access: an unreviewed legacy_unknown basis, or a pre-`bases` legacy
+  // document whose dnsFoundationsEntitled was explicitly set false (the same state
+  // grantBetaEntitlement.js refuses to auto-grant over, for the same reason).
+  const bases = data.bases && typeof data.bases === 'object' ? (data.bases as Record<string, unknown>) : null;
+  if (bases && Object.values(bases).some((b) => !!b && typeof b === 'object' && (b as { needsManualReview?: unknown }).needsManualReview === true)) {
+    return 'needs_review';
+  }
+  if (!bases && data.dnsFoundationsEntitled === false && typeof data.source === 'string') return 'needs_review';
+  return 'started';
+}
+
+// Transactional start. `now` reads the server clock and is called inside the transaction
+// callback, so a retried attempt recomputes from the winner's committed state: a second,
+// concurrent, or retried request for the same uid sees the first one's record and returns
+// it unchanged ('already_active') instead of extending or recreating it.
+export async function startDnsTrialForUid(
+  db: Firestore,
+  uid: string,
+  now: () => Timestamp = () => Timestamp.now()
+): Promise<{ outcome: DnsTrialStartOutcome; access: DnsAccessStatus }> {
+  const ref = entitlementDocRef(db, uid);
+  return db.runTransaction(async (transaction) => {
+    const snap = await transaction.get(ref);
+    const data = snap.exists ? snap.data()! : {};
+    const startedAt = now();
+    const nowMs = startedAt.toMillis();
+    const outcome = decideDnsTrialStart(data, nowMs);
+    if (outcome !== 'started') return { outcome, access: resolveDnsAccess(data, nowMs) };
+
+    const record = {
+      type: 'dns_trial',
+      startedAt,
+      expiresAt: Timestamp.fromMillis(nowMs + DNS_TRIAL_DURATION_MS),
+      durationDays: DNS_TRIAL_DURATION_DAYS,
+      maximumCourseDay: DNS_TRIAL_MAX_COURSE_DAY,
+      createdAt: FieldValue.serverTimestamp(),
+    };
+    // Whole-map rewrite from the transaction's own read — the same pattern as
+    // computeAndWriteBasis — so every other basis is preserved exactly as read.
+    const bases = { ...((data.bases as Record<string, unknown> | undefined) ?? {}), [DNS_TRIAL_BASIS_KEY]: record };
+    transaction.set(ref, { bases, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    return { outcome, access: resolveDnsAccess({ ...data, bases }, nowMs) };
+  });
+}
+
 // Exported for tests only — not part of the public callable surface. Mirrors the same
 // pattern already used in dnsCheckout.ts's own __test__ bundle.
 export const __test__ = {
   isValidActiveBasis,
   migrateLegacyBasis,
   pickPrimarySource,
+  parseTrialRecord,
+  decideDnsTrialStart,
 };

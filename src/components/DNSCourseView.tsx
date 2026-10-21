@@ -8,7 +8,24 @@ import { DNS_COURSE, DNS_COURSE_LENGTH } from '../data/dnsCourse';
 import type { DNSCourseDay } from '../data/dnsCourse';
 import { computeDnsDayAvailability, MAX_COMPLETIONS_PER_DAY } from '../services/dnsCourseProgression';
 import type { DnsCourseProgress } from '../state/types';
-import type { PriceKey } from '../services/stripe';
+import { createCheckoutSession, type PriceKey } from '../services/stripe';
+import {
+  computeTrialCountdown,
+  DNS_TRIAL_DISPLAY_MAX_DAY,
+  resolveDnsCourseAccessMode,
+  reviewableDayCount,
+  trialConversionVariant,
+  trialCountdownLabel,
+  type DnsTrialState,
+} from '../services/dnsTrial';
+import {
+  DnsTrialConversion,
+  DnsTrialFramingNote,
+  DnsTrialStartScreen,
+  DnsTrialStatusBar,
+  TRIAL_MIDPOINT_FRAMING,
+  TRIAL_START_FRAMING,
+} from './DnsTrial';
 import { fetchDnsCourseDayMedia, type DnsCourseDayMedia } from '../services/dnsCourseMedia';
 import VideoPlayer from './VideoPlayer';
 import Paywall from './Paywall';
@@ -149,6 +166,17 @@ type Props = {
   // 'not-entitled' render as locked, so a legitimate purchaser sees a brief loading state
   // rather than a paywall flash, without ever trusting an unresolved/stale value.
   dnsEntitlementState: 'loading' | 'entitled' | 'not-entitled';
+  // Free-trial record from the same entitlement document. Display/navigation only: a
+  // trial user's lesson media is still authorized per day by getDnsCourseDayMedia, and
+  // progress advancement by firestore.rules. Ignored entirely whenever
+  // dnsEntitlementState is 'entitled' (permanent access always wins).
+  dnsTrialState: DnsTrialState;
+  // The visitor pressed "Try the first 14 days free" and hasn't finished/abandoned it.
+  trialIntent: boolean;
+  // Calls the startDnsTrial callable. Resolves once the server has answered; the screen
+  // then advances when the trial record arrives through the entitlement listener.
+  onStartTrial: () => Promise<void>;
+  onTrialIntentResolved: () => void;
   // True only once BOTH the first userData/main snapshot and the first entitlement
   // snapshot have resolved (success, deterministic absence, or error) for the exact uid
   // currently mounted here (this component is itself keyed on uid in App.tsx, so a real
@@ -697,6 +725,10 @@ export default function DNSCourseView({
   onCompleteDay,
   today,
   dnsEntitlementState,
+  dnsTrialState,
+  trialIntent,
+  onStartTrial,
+  onTrialIntentResolved,
   dnsHydrationReady,
   onOpenSettings,
   auth,
@@ -827,6 +859,62 @@ export default function DNSCourseView({
     }
   }
 
+  // --- Free trial (display/navigation only; see src/services/dnsTrial.ts) ---
+  // Permanent access always wins, so a purchaser/beta user never reaches trial UI.
+  const accessMode = resolveDnsCourseAccessMode(dnsEntitlementState, dnsTrialState);
+  const trialMode = accessMode === 'trial';
+  // Display clock for the countdown, refreshed each minute and whenever the page becomes
+  // visible again. Never an authorization input — the server checks expiry itself.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!trialMode) return;
+    const tick = () => setNowMs(Date.now());
+    const id = window.setInterval(tick, 60_000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') tick();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [trialMode]);
+  const trialCountdown = trialMode && dnsTrialState.trial ? computeTrialCountdown(dnsTrialState.trial, nowMs) : null;
+  // Voluntary "Unlock full program" from the status strip, mid-trial.
+  const [trialUpgradeOpen, setTrialUpgradeOpen] = useState(false);
+  const [trialCheckoutError, setTrialCheckoutError] = useState(false);
+  const [completeDayError, setCompleteDayError] = useState(false);
+
+  // A pending trial intent is moot once the user has course access of any kind, or has
+  // already used a trial that can't be restarted.
+  useEffect(() => {
+    if (trialIntent && (accessMode === 'trial' || accessMode === 'permanent' || (accessMode === 'none' && dnsTrialState.used))) {
+      onTrialIntentResolved();
+    }
+  }, [trialIntent, accessMode, dnsTrialState.used, onTrialIntentResolved]);
+
+  const openTrialUpgrade = () => {
+    setActiveTab('today');
+    setViewingDay(null);
+    setTrialUpgradeOpen(true);
+  };
+
+  // Existing Stripe Checkout for the existing $149 one-time product — the same call the
+  // Paywall's purchase button makes. Progress is never touched by purchasing.
+  const handleTrialUnlock = async () => {
+    const uid = auth?.currentUser?.uid;
+    if (!uid || auth?.currentUser?.isAnonymous || checkoutLoading !== null) return;
+    setTrialCheckoutError(false);
+    setCheckoutLoading('program');
+    try {
+      await createCheckoutSession(uid, 'program');
+    } catch (err) {
+      console.error('Checkout error:', err);
+      setCheckoutLoading(null);
+      setTrialCheckoutError(true);
+    }
+  };
+
   // undefined once currentDay has advanced past the last real day (see handleMarkComplete
   // below) — i.e. the course is complete. Previously this was handled as a full-screen
   // early return here, which made it unreachable in practice (currentDay was capped at
@@ -839,16 +927,34 @@ export default function DNSCourseView({
   // real day in DNS_COURSE is premium, so `?? true` preserves the exact same gating
   // behavior for that state (Past Days/History content is premium too) without reading
   // .isPremium off of undefined.
-  if ((currentDayData?.isPremium ?? true) && dnsEntitlementState !== 'entitled') {
+  if ((currentDayData?.isPremium ?? true) && accessMode !== 'permanent' && accessMode !== 'trial') {
     // 'loading': the current uid's entitlement snapshot hasn't resolved yet — a real
     // purchaser lands here first, so show a lightweight wait state instead of flashing
     // the paywall at them. 'not-entitled' (resolved, confirmed no access, or a uid
-    // change/listener error per the auth effect) shows the real paywall.
-    if (dnsEntitlementState === 'loading') {
+    // change/listener error per the auth effect) shows the real paywall — or, when the
+    // visitor came from "Try the first 14 days free" and has never used a trial, the
+    // explicit trial confirmation (sign-in first if still anonymous).
+    if (accessMode === 'loading') {
       return (
         <div className="min-h-screen bg-[#080d1a] flex items-center justify-center">
           <p className="text-[#6b849e] text-sm font-semibold">Checking your access…</p>
         </div>
+      );
+    }
+    if (trialIntent && !dnsTrialState.used) {
+      return (
+        <DnsTrialStartScreen
+          isAnonymous={!auth?.currentUser || auth.currentUser.isAnonymous}
+          onBegin={onStartTrial}
+          onBack={onBackToLanding}
+          onGoogleSignIn={onGoogleSignIn}
+          onSendSignInLink={onSendSignInLink}
+          onCreatePasswordAccount={onCreatePasswordAccount}
+          onSignInWithPassword={onSignInWithPassword}
+          signInLoading={signInLoading}
+          signInError={signInError}
+          isInAppBrowser={isInAppBrowser}
+        />
       );
     }
     if (!showPaywall) {
@@ -926,7 +1032,13 @@ export default function DNSCourseView({
     availability.waitingForNextDay || availability.dailyCapReached || (availability.courseComplete && availability.completedSomethingToday);
   const bannerDayIndex = availability.mostRecentlyCompletedDay;
   const nextDayData = DNS_COURSE[dnsCourse.currentDay]; // currentDay is 1-based, so this is the next entry
-  const pastDays = DNS_COURSE.slice(0, dnsCourse.currentDay - 1); // days 1..currentDay-1
+  // days 1..currentDay-1 — capped at the trial's last day for trial users, so an older
+  // record that somehow reached further never lists lessons the trial can't load.
+  const pastDays = DNS_COURSE.slice(0, reviewableDayCount(dnsCourse.currentDay, trialMode));
+  // Trial continuation boundary: Day 14 completed, or the trial window has passed (display
+  // clock — the server enforces the same boundary independently). Shown in place of the
+  // Today lesson; Past Days/History stay fully usable for review.
+  const trialBoundary = trialMode && (dnsCourse.currentDay > DNS_TRIAL_DISPLAY_MAX_DAY || trialCountdown?.expired === true);
   // Would completing the CURRENTLY open lesson be the completion that reaches today's
   // cap? Distinct from availability.dailyCapReached (which reflects the cap BEFORE this
   // action) — used only to keep the Mark Complete button and locked-next-day teaser from
@@ -941,7 +1053,14 @@ export default function DNSCourseView({
     // dnsCourse.currentDay, which is exactly what must never happen here (see the prop's
     // own doc comment above).
     if (availability.openDay === null) return;
-    void onCompleteDay(today, availability.openDay);
+    setCompleteDayError(false);
+    // A rejected write (offline, or a server-side progression rule refusing it — e.g. a
+    // trial that expired while this screen was open) leaves progress unchanged; say so
+    // instead of failing silently.
+    onCompleteDay(today, availability.openDay).catch((err) => {
+      console.warn('[DNS course] completion was not saved:', err);
+      setCompleteDayError(true);
+    });
   };
 
   const tabButtonStyle = (tab: 'today' | 'past' | 'history') =>
@@ -1028,8 +1147,24 @@ export default function DNSCourseView({
             the user experiences the program before being asked to install. No new
             persisted field — this reads the same currentDay already driving Today/Past
             Days/History. */}
+        {trialCountdown && (
+          <DnsTrialStatusBar label={trialCountdownLabel(trialCountdown)} onUnlock={openTrialUpgrade} />
+        )}
         <InstallPromptCard eligible={dnsCourse.currentDay > 1} />
-        {viewingDay !== null ? (() => {
+        {viewingDay !== null && trialMode && viewingDay > DNS_TRIAL_DISPLAY_MAX_DAY ? (
+          // Only reachable from an older record or a stale restored sub-view — the server
+          // would refuse this lesson's media anyway; say why instead of a broken player.
+          <div className="text-center space-y-4 py-8">
+            <Lock size={28} className="mx-auto text-[#6b849e]" />
+            <p className="text-sm text-[#f0f4f8]">Day {viewingDay} is part of the complete program.</p>
+            <button onClick={openTrialUpgrade} className="text-sm font-semibold text-[#00d4c8] hover:underline">
+              Unlock the complete program
+            </button>
+            <button onClick={() => setViewingDay(null)} className="block mx-auto text-xs text-[#6b849e] hover:text-[#f0f4f8]">
+              Back
+            </button>
+          </div>
+        ) : viewingDay !== null ? (() => {
           // Shared by Past Days, History, and QA Lessons — same DayContent, same
           // read-only rewatch behavior, no progress-tracking side effects either way.
           // Only the "Back to" destination differs, based on wherever the tap
@@ -1066,6 +1201,19 @@ export default function DNSCourseView({
             // moved in-tab rather than duplicated, so QA/Past Days/History stay reachable
             // alongside it and the normal start behavior is identical once clicked.
             <BeforeYouStartScreen onStart={() => onUpdateDnsCourse({ startedAt: today })} />
+          ) : trialMode && (trialBoundary || trialUpgradeOpen) ? (
+            <DnsTrialConversion
+              variant={trialConversionVariant(dnsCourse.currentDay, trialCountdown?.expired === true)}
+              onUnlock={handleTrialUnlock}
+              unlocking={checkoutLoading === 'program'}
+              unlockError={trialCheckoutError}
+              onReview={() => {
+                setTrialUpgradeOpen(false);
+                setViewingDay(null);
+                setActiveTab('past');
+              }}
+              onBackToLessons={trialBoundary ? undefined : () => setTrialUpgradeOpen(false)}
+            />
           ) : showCompletionBanner ? (() => {
             // Checked BEFORE the courseComplete branch below — completing Day 84 advances
             // currentDay to 85, so the ordinary permanent course-complete screen would
@@ -1109,6 +1257,10 @@ export default function DNSCourseView({
             <CourseCompleteState onReviewPastDays={() => setActiveTab('past')} />
           ) : (
             <>
+              {/* Trial framing: once at the start (Day 1) and once at the Day 7 → 8
+                  transition (on Day 8's lesson) — inline, never a modal. */}
+              {trialMode && availability.openDay === 1 && <DnsTrialFramingNote text={TRIAL_START_FRAMING} />}
+              {trialMode && availability.openDay === 8 && <DnsTrialFramingNote text={TRIAL_MIDPOINT_FRAMING} />}
               <DayContent day={DNS_COURSE[availability.openDay - 1] as DNSCourseDay} dayIndex={availability.openDay} />
 
               <ModificationNote />
@@ -1121,6 +1273,11 @@ export default function DNSCourseView({
                 <CheckCircle size={18} />
                 {completingOpenDayWouldReachCap ? 'Mark Complete' : 'Mark Complete & Continue'}
               </button>
+              {completeDayError && (
+                <p className="mt-2 text-center text-sm text-[#ffcc00]" role="alert">
+                  We couldn’t save your progress. Please check your connection and try again.
+                </p>
+              )}
 
               {nextDayData && (
                 <div
@@ -1139,7 +1296,9 @@ export default function DNSCourseView({
                           two-session cap means completing this one will not actually
                           unlock it until tomorrow — the CTA/teaser must never promise
                           "Continue" into a lesson the cap is about to block. */}
-                      {completingOpenDayWouldReachCap
+                      {trialMode && dnsCourse.currentDay >= DNS_TRIAL_DISPLAY_MAX_DAY
+                        ? 'Part of the complete 12-week program'
+                        : completingOpenDayWouldReachCap
                         ? 'Unlocks tomorrow'
                         : availability.nextLessonAvailableImmediately
                         ? `Unlocks after you complete Day ${dnsCourse.currentDay}`
