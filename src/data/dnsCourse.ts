@@ -675,7 +675,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Kettlebell Etiquette',
     description: 'Turning from 3–6 months supine and back with resistance — review with added nuance and load.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -684,7 +684,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Build to Low Oblique Sit and Back',
     description: 'Build to low oblique sit and back.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -693,7 +693,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Build to High Oblique Sit and Back',
     description: 'Build to high oblique sit and back.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -702,7 +702,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'High Oblique Sit / S Position to Tripod and Back',
     description: 'Build from high oblique sit / S position to tripod and back.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -711,7 +711,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Uprighting from Tripod and Back',
     description: 'Uprighting from tripod and back.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -720,7 +720,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Tripod to Stand and Back',
     description: 'Tripod to stand and back.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
   {
@@ -729,7 +729,7 @@ export const DNS_COURSE: DNSCourseDay[] = [
     weekPhase: 'Application',
     dayTitle: 'Full Czech Get Up',
     description: 'Squat at the top — full Czech get up forwards and backwards. This is also where people will viscerally feel how much the previous 10 weeks changed them.',
-    hasVideo: false,
+    hasVideo: true,
     isPremium: true,
   },
 
